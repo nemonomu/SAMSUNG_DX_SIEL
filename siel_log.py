@@ -14,10 +14,42 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone, timedelta
 
 IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def detect_chrome_major() -> int | None:
+    """현재 Windows 에 설치된 Chrome major 버전 (int) 반환. 못 찾으면 None.
+    undetected_chromedriver 의 version_main 인자로 사용 — driver 와 browser 버전 매칭.
+    """
+    try:
+        import winreg
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(hive, r"Software\Google\Chrome\BLBeacon") as key:
+                    version, _ = winreg.QueryValueEx(key, "version")
+                m = re.match(r'(\d+)', version)
+                if m:
+                    return int(m.group(1))
+            except OSError:
+                continue
+    except ImportError:
+        pass
+    for path in (
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ):
+        try:
+            out = subprocess.check_output([path, '--version'], timeout=5).decode()
+            m = re.search(r'(\d+)\.', out)
+            if m:
+                return int(m.group(1))
+        except Exception:
+            continue
+    return None
 
 REVIEW_SEP = ' ||| '
 REVIEW_PREFIX_FMT = 'review{n} - {text}'

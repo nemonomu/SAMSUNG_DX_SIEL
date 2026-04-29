@@ -93,7 +93,11 @@ def make_driver(headless: bool = False) -> uc.Chrome:
     opts.add_argument('--disable-dev-shm-usage')
     opts.add_argument('--window-size=1920,1080')
     opts.add_argument('--lang=en-IN')
-    return uc.Chrome(options=opts)
+    kwargs = {'options': opts}
+    major = siel_log.detect_chrome_major()
+    if major:
+        kwargs['version_main'] = major
+    return uc.Chrome(**kwargs)
 
 
 def scroll_to_bottom(driver, pause: float = 1.0, max_scrolls: int = 20) -> None:
