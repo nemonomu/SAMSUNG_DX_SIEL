@@ -9,6 +9,7 @@ psql meta-command (\\encoding 등) 은 자동 strip — psycopg2 가 실행 못�
 from __future__ import annotations
 
 import os
+import re
 import sys
 import traceback
 
@@ -37,28 +38,42 @@ def _strip_psql_meta(sql: str) -> str:
     return '\n'.join(out)
 
 
+def _strip_sql_comments(sql: str) -> str:
+    """-- 줄 주석 + /* */ 블록 주석 제거 (executable 판정용)."""
+    sql = re.sub(r'/\*.*?\*/', '', sql, flags=re.DOTALL)
+    sql = re.sub(r'--[^\n]*', '', sql)
+    return sql
+
+
 def apply(sql_file: str) -> bool:
     if not os.path.exists(sql_file):
         print(f'[apply_sql] skip (not found): {sql_file}', file=sys.stderr)
-        return False
+        return True
     with open(sql_file, 'r', encoding='utf-8') as f:
-        sql = f.read().strip()
-    if not sql:
-        print(f'[apply_sql] skip (empty): {sql_file}', file=sys.stderr)
-        return False
-    sql = _strip_psql_meta(sql)
-    if not sql.strip():
-        print(f'[apply_sql] skip (only meta-commands or comments): {sql_file}',
+        sql = f.read()
+    sql_no_meta = _strip_psql_meta(sql)
+    sql_executable = _strip_sql_comments(sql_no_meta).strip()
+    if not sql_executable:
+        print(f'[apply_sql] skip (no executable statements): {sql_file}',
               file=sys.stderr)
-        return False
+        return True
     print(f'[apply_sql] applying: {sql_file}', file=sys.stderr)
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(sql)
+            cur.execute(sql_no_meta)
         conn.commit()
         print(f'[apply_sql] OK: {sql_file}', file=sys.stderr)
         return True
+    except psycopg2.ProgrammingError as e:
+        conn.rollback()
+        if 'empty query' in str(e).lower():
+            print(f'[apply_sql] skip (empty query): {sql_file}', file=sys.stderr)
+            return True
+        print(f'[apply_sql] FAIL: {sql_file} — {type(e).__name__}: {e}',
+              file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return False
     except Exception as e:
         conn.rollback()
         print(f'[apply_sql] FAIL: {sql_file} — {type(e).__name__}: {e}',
