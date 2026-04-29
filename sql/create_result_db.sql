@@ -1,0 +1,11 @@
+-- SIEL 결과 DB 스키마
+-- 운산 표준 결과 테이블 정의를 그대로 복사해서 채울 자리.
+-- ERD 확정 후 작성. 부서(제품군)별로 별도 DB / 별도 user 생성.
+--
+-- 예상 DB:
+--   siel_hhp_crawl_{YYMMDD}
+--   siel_tv_crawl_{YYMMDD}
+--   siel_ref_crawl_{YYMMDD}
+--   siel_wm_crawl_{YYMMDD}
+--
+-- TODO: ERD 도착 후 작성

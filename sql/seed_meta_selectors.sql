@@ -1,0 +1,5 @@
+-- SIEL 모니터링 메타 DB seed: meta_selectors
+-- 사이트별 셀렉터 INSERT.
+-- 운영 폴더에 meta_selectors_202604291910.csv 있음 — 그걸 베이스로 SIEL 행만 추출/조정 예정.
+--
+-- TODO: ERD/페이지 정보 도착 후 작성

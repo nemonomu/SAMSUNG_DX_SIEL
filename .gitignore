@@ -1,0 +1,64 @@
+# Credentials - NEVER commit
+config.py
+config/config.py
+**/config.py
+.env
+*.env
+credentials.json
+*.pem
+*.key
+# Local runner scripts (may contain DB passwords) - commit *.bat.example template only
+run_*.bat
+!run_*.bat.example
+!run_hhp.bat
+!run_tv.bat
+!run_ref.bat
+
+# Local tool config (per-user, do not commit)
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Crawler artifacts
+*.pkl
+*.log
+*.tmp
+*.html
+capture/
+cookies/
+downloads/
+chromedriver.exe
+chromedriver
+screenshots/
+tmp/
+logs/
+amzn/logs/
+fpkt/logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# OS
+Thumbs.db
+desktop.ini
+
+# Data (client deliverables should not be in code repo)
+*.xlsx
+*.csv
+!requirements.txt
+.gstack/

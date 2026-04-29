@@ -1,0 +1,10 @@
+-- SIEL 모니터링 메타 DB seed: meta_site_pages
+-- 본 법인이 모니터링할 URL 템플릿 INSERT.
+-- 직접 INSERT 보다 모니터링 UI 사용이 1순위. UI에 칸이 없을 때만 SQL 사용.
+--
+-- 대상:
+--   사이트  × 제품군
+--   amazon   × HHP / TV / REF / WM
+--   flipkart × HHP / TV / REF / WM
+--
+-- TODO: 페이지 정보 도착 후 작성
