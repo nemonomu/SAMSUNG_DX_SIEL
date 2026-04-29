@@ -1,0 +1,16 @@
+#!/bin/sh
+# post-merge: git pull 후 sql/*.sql 자동 적용
+# 활성화: setup_hooks.bat 한 번 실행 (git config core.hooksPath .githooks)
+
+set -e
+cd "$(git rev-parse --show-toplevel)"
+
+echo "[post-merge] applying sql/*.sql via apply_sql.py..."
+python apply_sql.py || {
+  echo "[post-merge] python apply_sql.py 실패. py launcher 로 재시도..." >&2
+  py apply_sql.py || {
+    echo "[post-merge] apply_sql.py 실행 실패. PATH 의 python/py 확인 필요." >&2
+    exit 1
+  }
+}
+echo "[post-merge] done."

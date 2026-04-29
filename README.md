@@ -132,6 +132,19 @@ pip install -r requirements.txt
 cp config.example.py config.py    # config.py 에 실제 DB 접속 입력 (gitignored)
 ```
 
+### git pull 시 SQL 자동 적용 — 한 번만 실행
+
+```cmd
+setup_hooks.bat
+```
+
+`git config core.hooksPath .githooks` 설정. 그 후 `git pull` 마다 `.githooks/post-merge` 가 `python apply_sql.py` 를 호출해 `sql/*.sql` 전체 자동 적용. 각 SQL 은 idempotent (`DROP TABLE IF EXISTS` 등) 라 재적용 안전.
+
+첫 적용은 수동으로:
+```cmd
+python apply_sql.py
+```
+
 ## 보안
 
 - `config.py`, `.env`, `*.pkl` 등 평문 secret/cookie 파일은 모두 `.gitignore`. 절대 commit X.
