@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 REM 한 번만 실행. git pull 시 sql/*.sql 자동 적용 활성화.
 REM 내부 동작: git config core.hooksPath .githooks
 REM 그 후 .githooks/post-merge 가 git pull 마다 실행되어 apply_sql.py 호출.
