@@ -246,9 +246,15 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             continue
         if field == 'detailed_review_content':
             parts = _extract_multi_raw(driver, xpath)
+            if not parts:
+                # review section 이 lazy-load 인 경우 — sleep + scroll + 재시도
+                time.sleep(2)
+                scroll_to_bottom(driver, pause=0.5, max_scrolls=3)
+                parts = _extract_multi_raw(driver, xpath)
             rec[field] = siel_log.format_review_content(parts)
         elif field == 'retailer_sku_name_similar':
             parts = _extract_multi_raw(driver, xpath)
+            parts = siel_log.filter_similar_noise(parts)
             rec[field] = siel_log.format_similar_names(parts)
         elif field == 'product_url':
             rec[field] = extract_attr(driver, xpath, 'href')

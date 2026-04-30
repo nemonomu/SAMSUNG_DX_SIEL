@@ -215,6 +215,17 @@ def format_similar_names(parts) -> str | None:
     return SIMILAR_SEP.join(parts)
 
 
+_NUM_ONLY_RE = re.compile(r'\s*\d[\d,]*\s*')
+
+
+def filter_similar_noise(parts):
+    """retailer_sku_name_similar list 에서 단독 숫자 token (review count "164" 등) 제거.
+    제품명 안의 숫자 ("8GB", "5G") 는 fullmatch 안 되므로 보존."""
+    if not parts:
+        return parts
+    return [p for p in parts if p and not _NUM_ONLY_RE.fullmatch(str(p))]
+
+
 def count_review_cards(v) -> int:
     """'review1 - X ||| review2 - Y' 같은 포맷에서 카드 수 카운트.
     단일/다중 모두 review{n} prefix 매칭으로 처리 (1개 케이스 누락 방지).
