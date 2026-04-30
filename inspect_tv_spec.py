@@ -1,6 +1,9 @@
-"""TV detail HTML 의 spec 영역 모든 라벨 dump.
-modern Flipkart pattern: <div ...>LABEL:</div><div ...>VALUE</div>
-"""
+"""TV detail HTML spec label dump (modern Flipkart: <div>LABEL:</div><div>VALUE</div>)."""
+import sys
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
 import os
 import re
 import glob
@@ -28,7 +31,7 @@ for l in uniq:
     print(f'  {l!r}')
 
 # 2) 전기/연도/사이즈 키워드 sweep — 어디 라벨에 들어가는지
-print('\n== keyword sweep (label 외 모든 element) ==')
+print('\n== keyword sweep (all elements) ==')
 KW = ['Power', 'Watt', 'Energy', 'Consumption', 'Year', 'Launch',
       'Model', 'Display', 'Screen', 'Size', 'Wattage']
 for k in KW:
