@@ -306,6 +306,11 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             if ok:
                 time.sleep(3)
                 scroll_to_bottom(driver, pause=1.2, max_scrolls=15)
+                # review page 진입 후 두 번째 HTML snapshot — review xpath 디버깅용
+                if _html_path:
+                    review_html = _html_path.replace('.html', '_review.html')
+                    if siel_log.save_html(driver, review_html) and _logger:
+                        _logger.info('review page HTML saved: %s', review_html)
         parts = _extract_multi_raw(driver, review_xpath, max_n=REVIEW_MAX)
         rec['detailed_review_content'] = siel_log.format_review_content(parts)
     else:
