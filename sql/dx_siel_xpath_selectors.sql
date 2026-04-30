@@ -336,19 +336,21 @@ BEGIN
        './/a[contains(@href,"/p/")]/@title',
        'Flipkart 상품명 — 충분히 긴 텍스트 div 첫 번째'),
       ('Flipkart','main',d,'discount_type',
-       './/div[contains(text(),"off") or contains(text(),"Limited") or contains(text(),"Hot deal")]',
-       NULL, NULL),
+       './/*[contains(text(),"% off") or contains(text(),"Limited") or contains(text(),"Hot deal")]',
+       './/div[contains(.,"% off")][not(.//div[contains(.,"% off")])]',
+       'e.g. "53% off". any-element + text() 직접; fallback 은 innermost div 의 string-value'),
       ('Flipkart','main',d,'sku_popularity',
-       './/div[contains(text(),"Bestseller") or contains(text(),"Best Seller")] | .//img[contains(@alt,"Flipkart Assured") or contains(@src,"assured")]',
-       NULL,
-       'Bestseller / Flipkart Assured. 코드 후처리: 둘 다 잡히면 "Bestseller, Flipkart Assured"'),
+       './/*[contains(text(),"Bestseller") or contains(text(),"Best Seller")] | .//img[contains(@alt,"Assured") or contains(@alt,"FAssured") or contains(@src,"assured") or contains(@src,"fassured")]',
+       './/div[contains(.,"Bestseller")] | .//*[contains(@class,"assured") or contains(@class,"fassured")]',
+       'Bestseller / Flipkart Assured. 둘 다 잡히면 후처리 합침'),
       ('Flipkart','main',d,'sku_status',
-       './/div[contains(text(),"Sponsored")] | .//span[contains(text(),"Sponsored")]',
-       NULL, NULL),
+       './/*[contains(text(),"Sponsored")]',
+       './/div[contains(.,"Sponsored")][not(.//div[contains(.,"Sponsored")])]',
+       'Sponsored — 일부 카드만'),
       ('Flipkart','main',d,'available_quantity_for_purchase',
-       './/div[contains(text(),"Only") and contains(text(),"left")]',
-       NULL,
-       'e.g. "Only 2 left"');
+       './/*[contains(text(),"Only") and contains(text(),"left")]',
+       './/div[contains(.,"Only") and contains(.,"left")][not(.//div[contains(.,"Only")])]',
+       'e.g. "Only 2 left" — 재고 적은 카드만');
   END LOOP;
 END $$;
 
