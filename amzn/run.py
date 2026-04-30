@@ -27,6 +27,7 @@ from amzn import detail as D
 def run_listing_capture(driver, product: str, stage: str,
                         max_rank: int, max_pages: int) -> list:
     """listing 실행 + product_url 캡처. emit monkey-patch."""
+    L.init_logging(product, stage)
     captured: list = []
     original_emit = L.emit
 
@@ -55,6 +56,7 @@ def run_listing_capture(driver, product: str, stage: str,
 
 
 def run_detail(driver, product: str, urls: list, sleep_s: float) -> int:
+    D.init_logging(product)
     sels = D.load_selectors(D.SITE_ACCOUNT, D.STAGE, product)
     batch_id = D.make_batch_id(product)
     if not sels:
