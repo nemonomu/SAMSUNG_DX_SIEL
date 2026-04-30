@@ -197,6 +197,17 @@ def parse_count_of_reviews(v):
     return m2.group(1) if m2 else None
 
 
+_SAVINGS_OFF_RE = re.compile(r'\s*off\s*$', re.I)
+
+
+def parse_savings(v):
+    """'20% off' / '37 % off' / '20%' → '20%'. trailing 'off' 제거 + 공백 정리."""
+    if not v:
+        return None
+    s = _SAVINGS_OFF_RE.sub('', str(v).strip()).strip()
+    return s if s else None
+
+
 _TRADE_UPTO_RE = re.compile(r'Up to (?!₹)(\d)')
 
 

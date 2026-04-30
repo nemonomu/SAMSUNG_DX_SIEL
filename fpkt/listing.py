@@ -187,6 +187,8 @@ def extract_card(card, selectors: dict) -> dict:
             rec[field] = siel_log.parse_count_of_ratings(safe_text(card, xpath))
         elif field == 'count_of_reviews':
             rec[field] = siel_log.parse_count_of_reviews(safe_text(card, xpath))
+        elif field == 'savings':
+            rec[field] = siel_log.parse_savings(safe_text(card, xpath))
         elif field == 'sku_popularity':
             # Bestseller (anchor href) + Flipkart Assured (img src /fa_*.png) — element attr 검사
             labels = []
