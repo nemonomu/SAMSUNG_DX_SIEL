@@ -148,6 +148,28 @@ def parse_int_field(v):
     return int(m.group()) if m else None
 
 
+_STAR_LEAD_RE = re.compile(r'^\s*(\d+(?:\.\d+)?)')
+
+
+def parse_star_rating(v):
+    """'4.2 out of 5' / '4.2' / '4 stars' → '4.2' / '4'. 맨 앞 숫자(소수 허용)만 문자열로 반환."""
+    if not v:
+        return None
+    m = _STAR_LEAD_RE.match(str(v))
+    return m.group(1) if m else None
+
+
+def parse_count_of_ratings(v):
+    """'(6,743)' / '1,009 ratings' / '39,132 global ratings' → '6,743' / '1,009' / '39,132'.
+    양 옆 paren/bracket + 끝의 'ratings'/'global ratings' 제거. 콤마는 보존 (orchestrator 가 int 변환)."""
+    if not v:
+        return None
+    s = str(v).strip()
+    s = re.sub(r'^[\(\[]+|[\)\]]+$', '', s).strip()
+    s = re.sub(r'\s*(?:global\s+)?ratings?\s*$', '', s, flags=re.I).strip()
+    return s if s else None
+
+
 def format_review_content(parts) -> str | None:
     """[review_text, ...] → 'review1 - X ||| review2 - Y ||| ...'"""
     if not parts:

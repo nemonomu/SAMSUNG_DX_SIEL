@@ -236,6 +236,10 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec[field] = siel_log.format_similar_names(parts)
         elif field == 'product_url':
             rec[field] = extract_attr(driver, xpath, 'href')
+        elif field == 'star_rating':
+            rec[field] = siel_log.parse_star_rating(extract_single(driver, xpath))
+        elif field == 'count_of_star_ratings':
+            rec[field] = siel_log.parse_count_of_ratings(extract_single(driver, xpath))
         else:
             rec[field] = extract_single(driver, xpath)
     return rec
