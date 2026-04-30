@@ -15,10 +15,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import traceback
 from datetime import datetime, timezone, timedelta
+
+_ASIN_RE = re.compile(r'/(?:dp|gp/product)/([A-Z0-9]{10})')
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -179,6 +182,7 @@ def maybe_save_html(driver) -> None:
 
 def extract_card(card, selectors: dict) -> dict:
     rec: dict = {}
+    # 1) data-asin attr (Main 카드만 있음. BSR 카드엔 없음)
     try:
         asin = card.get_attribute('data-asin')
         if asin:
@@ -195,6 +199,11 @@ def extract_card(card, selectors: dict) -> dict:
             rec[field] = safe_attr(card, xpath, 'href')
         else:
             rec[field] = safe_text(card, xpath)
+    # 2) asin URL fallback — /dp/{ASIN}/ 패턴 (data-asin 없을 때, 예: BSR)
+    if 'asin' not in rec and rec.get('product_url'):
+        m = _ASIN_RE.search(rec['product_url'])
+        if m:
+            rec['asin'] = m.group(1)
     return rec
 
 
