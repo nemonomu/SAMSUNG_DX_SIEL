@@ -324,9 +324,9 @@ BEGIN
       (site_account,page_type,domain,data_field,xpath_primary,fallback_xpath,notes)
     VALUES
       ('Flipkart','main',d,'base_container',
-       '//div[.//a[contains(@href,"/p/")]][not(ancestor::div[.//a[contains(@href,"/p/")]])]',
-       '//a[contains(@href,"/p/")]/ancestor::div[2]',
-       'Flipkart 검색 결과 카드 — outermost div containing product link'),
+       '//div[@data-id and .//a[contains(@href,"/p/")]]',
+       '//a[contains(@href,"/p/")]/ancestor::div[count(.//a[contains(@href,"/p/")])=1][last()]',
+       'Flipkart 카드 = data-id attr 가진 div (pid 와 일치). 페이지당 ~24 개'),
       ('Flipkart','main',d,'product_url',
        './/a[contains(@href,"/p/")]',
        NULL,
@@ -389,9 +389,9 @@ BEGIN
       (site_account,page_type,domain,data_field,xpath_primary,fallback_xpath,notes)
     VALUES
       ('Flipkart','bsr',d,'base_container',
-       '//div[.//a[contains(@href,"/p/")]][not(ancestor::div[.//a[contains(@href,"/p/")]])]',
-       '//a[contains(@href,"/p/")]/ancestor::div[2]',
-       'Flipkart BSR 카드'),
+       '//div[@data-id and .//a[contains(@href,"/p/")]]',
+       '//a[contains(@href,"/p/")]/ancestor::div[count(.//a[contains(@href,"/p/")])=1][last()]',
+       'Flipkart BSR 카드 = data-id attr div'),
       ('Flipkart','bsr',d,'product_url',
        './/a[contains(@href,"/p/")]',
        NULL,
