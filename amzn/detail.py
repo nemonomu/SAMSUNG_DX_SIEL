@@ -294,8 +294,10 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             parts = _extract_multi_raw(driver, xpath)
             if product == 'ref':
                 parts = siel_log.filter_similar_noise_ref(parts)
+            elif product == 'ldy':
+                parts = siel_log.filter_similar_noise_ldy(parts)
             else:
-                # HHP / TV / LDY — 검증된 path 그대로 (메모 feedback_domain_branching_pattern.md)
+                # HHP / TV — 검증된 path 그대로 (메모 feedback_domain_branching_pattern.md)
                 parts = siel_log.filter_similar_noise(parts)
             rec[field] = siel_log.format_similar_names(parts)
         elif field == 'product_url':

@@ -243,6 +243,11 @@ _NUM_ONLY_RE = re.compile(r'\s*\d[\d,]*\s*')
 _REF_PRICE_NOISE_RE = re.compile(r'^[\s]*[₹$]|^\d+\s*offers?\s+from\s+[₹$]', re.IGNORECASE)
 _REF_REQUIRED_KEYWORD_RE = re.compile(r'refrigerator|freezer|\b\d+\s*l\b|\blitre', re.IGNORECASE)
 
+# LDY 전용 — anonCarousel cross-category 누설 (Refrigerator/AC/TV/Garbage Bags/Mixer 등).
+_LDY_REQUIRED_KEYWORD_RE = re.compile(
+    r'washing\s*machine|washer|top\s*load|front\s*load|pulsator|aqua|fully\s*automatic|semi[\s-]*automatic',
+    re.IGNORECASE)
+
 
 def filter_similar_noise(parts):
     """retailer_sku_name_similar list 에서 단독 숫자 token (review count "164" 등) 제거.
@@ -270,6 +275,29 @@ def filter_similar_noise_ref(parts):
         if _REF_PRICE_NOISE_RE.search(s):
             continue
         if not _REF_REQUIRED_KEYWORD_RE.search(s):
+            continue
+        out.append(s)
+    return out
+
+
+def filter_similar_noise_ldy(parts):
+    """LDY 전용 — base filter + ₹ price label drop + washing machine keyword 필수 (cross-category 차단).
+
+    legit LDY 제품명: 'Washing Machine' / 'Washer' / 'Top Load' / 'Front Load' / 'Pulsator' / 'Aqua' / 'Semi/Fully Automatic' 중 1개 이상 포함.
+    noise: '1 offer from ₹...', '₹X' (price label), 'Whirlpool 184 L Refrigerator' / 'VW 80 cm TV' / 'Panasonic AC' / 'Garbage Bags' / 'Mixer Grinder' (cross-category).
+    HHP / TV / REF 는 이 함수 호출 안 함 — 검증된 도메인 path 1 byte 도 안 건드림.
+    메모: feedback_domain_branching_pattern.md."""
+    if not parts:
+        return parts
+    base = filter_similar_noise(parts)
+    out = []
+    for p in base:
+        s = str(p).strip()
+        if not s:
+            continue
+        if _REF_PRICE_NOISE_RE.search(s):  # 가격 label drop — REF 와 동일 패턴 재사용
+            continue
+        if not _LDY_REQUIRED_KEYWORD_RE.search(s):
             continue
         out.append(s)
     return out
