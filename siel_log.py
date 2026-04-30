@@ -249,6 +249,22 @@ _LDY_REQUIRED_KEYWORD_RE = re.compile(
     re.IGNORECASE)
 
 
+# LDY 전용 — Function Type / Loading Type raw 값에서 'Top Load' / 'Front Load' 만 추출.
+# 끝에 매칭 안 되면 None (e.g. 'Washer only' → None).
+_LDY_LOADING_TAIL_RE = re.compile(r'(top|front)\s*load\s*$', re.IGNORECASE)
+
+
+def parse_ldy_loading_type(v):
+    """'Fully Automatic Top Load' → 'Top Load' / 'Semi Automatic Front Load' → 'Front Load' /
+    'Washer only' → None. 대소문자 무관, 끝 매칭만."""
+    if not v:
+        return None
+    m = _LDY_LOADING_TAIL_RE.search(str(v).strip())
+    if not m:
+        return None
+    return f"{m.group(1).capitalize()} Load"
+
+
 def filter_similar_noise(parts):
     """retailer_sku_name_similar list 에서 단독 숫자 token (review count "164" 등) 제거.
     제품명 안의 숫자 ("8GB", "5G") 는 fullmatch 안 되므로 보존.
