@@ -299,18 +299,49 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
 
     if should_try_reviews:
         if rev_btn_xpath:
-            ok = robust_click(driver, rev_btn_xpath)
-            if _logger:
-                _logger.info('click_show_all_reviews clicked=%s count_of_reviews=%s',
-                             ok, count_reviews)
-            if ok:
-                time.sleep(3)
-                scroll_to_bottom(driver, pause=1.2, max_scrolls=15)
+            # click 대신 anchor href 직접 추출 + driver.get() — 새 탭 / JS interception 회피
+            # aspect 필터 없는 generic 리뷰 link 우선 (&an=Camera 같은 aspect-specific 제외)
+            rev_href = None
+            try:
+                anchors = driver.find_elements(By.XPATH, rev_btn_xpath)
+            except WebDriverException:
+                anchors = []
+            # 1) aspect 없는 href 우선
+            for a in anchors:
+                try:
+                    href = a.get_attribute('href') or ''
+                except WebDriverException:
+                    continue
+                if '/product-reviews/' in href and '&an=' not in href:
+                    rev_href = href
+                    break
+            # 2) fallback: 첫 매치
+            if not rev_href:
+                for a in anchors:
+                    try:
+                        href = a.get_attribute('href')
+                    except WebDriverException:
+                        continue
+                    if href:
+                        rev_href = href
+                        break
+            if rev_href:
+                if _logger:
+                    _logger.info('navigating to review page: %s', rev_href)
+                try:
+                    driver.get(rev_href)
+                    time.sleep(3)
+                    scroll_to_bottom(driver, pause=1.2, max_scrolls=15)
+                except WebDriverException as e:
+                    if _logger:
+                        _logger.warning('review page navigation failed: %s', e)
                 # review page 진입 후 두 번째 HTML snapshot — review xpath 디버깅용
                 if _html_path:
                     review_html = _html_path.replace('.html', '_review.html')
                     if siel_log.save_html(driver, review_html) and _logger:
                         _logger.info('review page HTML saved: %s', review_html)
+            elif _logger:
+                _logger.info('review anchor href not found')
         parts = _extract_multi_raw(driver, review_xpath, max_n=REVIEW_MAX)
         rec['detailed_review_content'] = siel_log.format_review_content(parts)
     else:
