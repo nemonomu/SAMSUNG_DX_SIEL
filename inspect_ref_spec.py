@@ -39,3 +39,18 @@ for kw in KW:
     if n == 0:
         print('  NOT FOUND')
     print()
+
+# Spec 영역 visible text dump — Specifications 헤딩 이후 30KB 범위
+print('=== SPEC SECTION VISIBLE TEXT (Specifications 이후 30KB) ===')
+spec_idx = html.find('>Specifications<', 600000)
+if spec_idx < 0:
+    spec_idx = html.rfind('Specifications')
+if spec_idx >= 0:
+    chunk = html[spec_idx:spec_idx + 30000]
+    text = re.sub(r'<[^>]+>', '|', chunk)
+    text = re.sub(r'\|+', ' | ', text)
+    text = re.sub(r'\s+', ' ', text)
+    print(text[:6000])
+else:
+    print('Specifications heading not found')
+
