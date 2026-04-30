@@ -565,17 +565,18 @@ VALUES
    '//td[normalize-space(text())="Capacity"]/following-sibling::td[1]',
    '//tr[.//td[contains(text(),"Capacity")]]/td[2]', NULL);
 
--- LDY 전용
+-- LDY 전용 (modern Flipkart DOM: <div>label</div><div>value</div> 형제 패턴, 콜론 없음 — TV 와 다름)
 INSERT INTO dx_siel_xpath_selectors
   (site_account,page_type,domain,data_field,xpath_primary,fallback_xpath,notes)
 VALUES
   ('Flipkart','detail','ldy','ldy_loading_type',
+   '//div[normalize-space(text())="Function Type" or normalize-space(text())="Loading Type"]/following-sibling::div[1]',
    '//td[normalize-space(text())="Function Type" or normalize-space(text())="Loading Type"]/following-sibling::td[1]',
-   '//tr[.//td[contains(text(),"Load")]]/td[2]',
-   'Function Type 의 끝 "Top Load" / "Front Load" 만 후처리에서 추출'),
+   'modern Flipkart spec: <div>Function Type</div><div>VALUE</div>. 콜론 없음 (TV 는 콜론 있음). fallback td 보존'),
   ('Flipkart','detail','ldy','ldy_capacity',
+   '//div[normalize-space(text())="Washing Capacity"]/following-sibling::div[1]',
    '//td[normalize-space(text())="Washing Capacity"]/following-sibling::td[1]',
-   '//tr[.//td[contains(text(),"Capacity")]]/td[2]', NULL);
+   'modern Flipkart spec div 패턴. fallback td 보존');
 
 -- =============================================================================
 -- 확인 쿼리
