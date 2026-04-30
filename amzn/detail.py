@@ -189,6 +189,22 @@ def extract_attr(driver, xpath: str, attr: str):
         return None
 
 
+def extract_text_or_value(driver, xpath: str):
+    """element 가 input/option 이면 value, 아니면 visible text. 빈문자열 → None."""
+    try:
+        el = driver.find_element(By.XPATH, xpath)
+    except (NoSuchElementException, WebDriverException):
+        return None
+    try:
+        if el.tag_name in ('input', 'option'):
+            v = el.get_attribute('value')
+        else:
+            v = el.text or el.get_attribute('textContent')
+    except WebDriverException:
+        return None
+    return (v or '').strip() or None
+
+
 def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str) -> dict:
     rec: dict = {
         'account_name':   ACCOUNT_NAME,
@@ -240,6 +256,8 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec[field] = siel_log.parse_star_rating(extract_single(driver, xpath))
         elif field == 'count_of_star_ratings':
             rec[field] = siel_log.parse_count_of_ratings(extract_single(driver, xpath))
+        elif field == 'sku':
+            rec[field] = extract_text_or_value(driver, xpath)
         else:
             rec[field] = extract_single(driver, xpath)
     return rec
