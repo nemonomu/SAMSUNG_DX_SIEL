@@ -298,15 +298,19 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                 pass
 
     if should_try_reviews:
+        # target: count_of_reviews 만큼 (최대 REVIEW_MAX). count None 이면 best-effort = REVIEW_MAX.
+        if count_reviews is not None and count_reviews >= 1:
+            target = min(count_reviews, REVIEW_MAX)
+        else:
+            target = REVIEW_MAX
+        rev_href = None
         if rev_btn_xpath:
             # click 대신 anchor href 직접 추출 + driver.get() — 새 탭 / JS interception 회피
             # aspect 필터 없는 generic 리뷰 link 우선 (&an=Camera 같은 aspect-specific 제외)
-            rev_href = None
             try:
                 anchors = driver.find_elements(By.XPATH, rev_btn_xpath)
             except WebDriverException:
                 anchors = []
-            # 1) aspect 없는 href 우선
             for a in anchors:
                 try:
                     href = a.get_attribute('href') or ''
@@ -315,7 +319,6 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                 if '/product-reviews/' in href and '&an=' not in href:
                     rev_href = href
                     break
-            # 2) fallback: 첫 매치
             if not rev_href:
                 for a in anchors:
                     try:
@@ -327,7 +330,7 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                         break
             if rev_href:
                 if _logger:
-                    _logger.info('navigating to review page: %s', rev_href)
+                    _logger.info('navigating to review page: %s (target=%d)', rev_href, target)
                 try:
                     driver.get(rev_href)
                     time.sleep(3)
@@ -342,8 +345,44 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                         _logger.info('review page HTML saved: %s', review_html)
             elif _logger:
                 _logger.info('review anchor href not found')
-        parts = _extract_multi_raw(driver, review_xpath, max_n=REVIEW_MAX)
-        rec['detailed_review_content'] = siel_log.format_review_content(parts)
+        # 첫 페이지 + 부족 시 &page=N navigate. 페이지당 ~10. REVIEW_MAX=20 → 최대 page 2~3 까지.
+        all_parts = []
+        seen = set()
+        for p in _extract_multi_raw(driver, review_xpath, max_n=None):
+            if p not in seen:
+                seen.add(p)
+                all_parts.append(p)
+                if len(all_parts) >= target:
+                    break
+        page = 2
+        while len(all_parts) < target and rev_href and page <= 3:
+            sep = '&' if '?' in rev_href else '?'
+            page_url = f'{rev_href}{sep}page={page}'
+            if _logger:
+                _logger.info('review page %d: %s (collected=%d/%d)',
+                             page, page_url, len(all_parts), target)
+            try:
+                driver.get(page_url)
+                time.sleep(3)
+                scroll_to_bottom(driver, pause=1.0, max_scrolls=10)
+            except WebDriverException as e:
+                if _logger:
+                    _logger.warning('review page %d navigation failed: %s', page, e)
+                break
+            new_count = 0
+            for p in _extract_multi_raw(driver, review_xpath, max_n=None):
+                if p not in seen:
+                    seen.add(p)
+                    all_parts.append(p)
+                    new_count += 1
+                    if len(all_parts) >= target:
+                        break
+            if new_count == 0:
+                if _logger:
+                    _logger.info('review page %d: no new parts — stop pagination', page)
+                break
+            page += 1
+        rec['detailed_review_content'] = siel_log.format_review_content(all_parts)
     else:
         rec['detailed_review_content'] = None
         if review_xpath and _logger:

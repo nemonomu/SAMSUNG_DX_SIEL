@@ -452,7 +452,7 @@ BEGIN
       ('Flipkart','detail',d,'detailed_review_content',
        '//span[@class="css-1jxf684" and not(normalize-space(text())="more")]',
        '//div[@dir="auto"]/span[string-length(normalize-space(text()))>5 and not(normalize-space(text())="more")]',
-       '리뷰 페이지 navigate 후. body 는 div[dir=auto] > span.css-1jxf684. "more" expand 버튼 제외. max 20'),
+       '리뷰 페이지 navigate 후. body 는 div[dir=auto] > span.css-1jxf684. "more" expand 버튼 제외. count_of_reviews 만큼 수집 (최대 20) — fpkt/detail.py 가 &page=2,3 누적'),
       ('Flipkart','detail',d,'retailer_sku_name_similar',
        '//div[normalize-space(text())="Similar Products"]/following::a[contains(@href,"/p/")]//h1 | //div[normalize-space(text())="Similar Products"]/following::a[contains(@href,"/p/")][position()<=10]//div[string-length(normalize-space(text()))>15]',
        NULL,
