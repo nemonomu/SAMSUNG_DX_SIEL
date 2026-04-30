@@ -24,6 +24,23 @@ from amzn import listing as L
 from amzn import detail as D
 
 
+def _sync_logs_to_retail_com() -> None:
+    """logs 폴더를 retail_com 으로 sync (폴더 있으면). silent best-effort, 회귀 위험 0."""
+    try:
+        import shutil
+        src = os.path.join(_ROOT, 'amzn', 'logs')
+        dst = os.path.expanduser(
+            r'~\Documents\퀵오일\삼성전자\samsung_dx_retail_com\siel\logs')
+        if not os.path.isdir(src) or not os.path.isdir(dst):
+            return
+        for fname in os.listdir(src):
+            sp = os.path.join(src, fname)
+            if os.path.isfile(sp):
+                shutil.copy2(sp, os.path.join(dst, fname))
+    except Exception:
+        pass
+
+
 def run_listing_capture(driver, product: str, stage: str,
                         max_rank: int, max_pages: int) -> list:
     """listing 실행 + product_url 캡처. emit monkey-patch."""
@@ -111,6 +128,7 @@ def main() -> int:
             driver.quit()
         except Exception:
             pass
+        _sync_logs_to_retail_com()
 
 
 if __name__ == '__main__':
