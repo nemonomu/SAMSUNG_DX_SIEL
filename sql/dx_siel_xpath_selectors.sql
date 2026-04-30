@@ -404,11 +404,11 @@ BEGIN
   END LOOP;
 END $$;
 
--- TV / REF / LDY 만 final/original price (HHP 제외)
+-- ERD v1 갱신본: 4 도메인 공통 final/original price (Main Page). 이전엔 tv,ref,ldy 만이었음.
 DO $$
 DECLARE
   d TEXT;
-  domains TEXT[] := ARRAY['tv','ref','ldy'];
+  domains TEXT[] := ARRAY['hhp','tv','ref','ldy'];
 BEGIN
   FOREACH d IN ARRAY domains LOOP
     INSERT INTO dx_siel_xpath_selectors
@@ -422,6 +422,23 @@ BEGIN
        './/div[starts-with(normalize-space(text()),"₹") and (preceding-sibling::div[contains(@style,"text-decoration") or contains(@class,"strike")] or contains(@class,"strike"))]',
        './/div[contains(@class,"_3I9_wc") or contains(@class,"strike")]',
        'M.R.P. — strike-through');
+  END LOOP;
+END $$;
+
+-- ERD v1 row 58: savings 는 HHP+TV 만 Main Page (REF/LDY 는 savings 자체 정의 없음)
+DO $$
+DECLARE
+  d TEXT;
+  domains TEXT[] := ARRAY['hhp','tv'];
+BEGIN
+  FOREACH d IN ARRAY domains LOOP
+    INSERT INTO dx_siel_xpath_selectors
+      (site_account,page_type,domain,data_field,xpath_primary,fallback_xpath,notes)
+    VALUES
+      ('Flipkart','main',d,'savings',
+       './/*[contains(text(),"% off")]',
+       './/div[contains(text(),"%") and string-length(normalize-space(text()))<=5]',
+       'ERD: Main Page (HHP+TV). e.g. "21% off"');
   END LOOP;
 END $$;
 
@@ -498,22 +515,10 @@ BEGIN
   END LOOP;
 END $$;
 
--- HHP 전용 (Flipkart)
+-- HHP 전용 (Flipkart) — ERD v1: 가격 3종 (final/original/savings) 은 Main Page 로 통합. detail 엔 trade_in/storage/color 만.
 INSERT INTO dx_siel_xpath_selectors
   (site_account,page_type,domain,data_field,xpath_primary,fallback_xpath,notes)
 VALUES
-  ('Flipkart','detail','hhp','final_sku_price',
-   '(//div[starts-with(normalize-space(text()),"₹") and not(ancestor::a[contains(@href,"/p/")])])[1]',
-   '//div[contains(@class,"_30jeq3") or contains(@class,"Nx9bqj")]',
-   'HHP: detail 첫 ₹ 가격 (similar product 링크 안 제외)'),
-  ('Flipkart','detail','hhp','original_sku_price',
-   '(//div[contains(@style,"line-through") and not(ancestor::a[contains(@href,"/p/")])])[1]',
-   '//div[contains(@class,"_3I9_wc")]',
-   'HHP: M.R.P. — line-through style. modern Flipkart 는 ₹ prefix 없을 수 있음 (예: "33,999")'),
-  ('Flipkart','detail','hhp','savings',
-   '(//div[contains(text(),"%") and string-length(normalize-space(text()))<=5 and not(ancestor::a[contains(@href,"/p/")])])[1]',
-   '//div[contains(text(),"% off")]',
-   '"21%" 형식 (modern Flipkart). off 텍스트 없음'),
   ('Flipkart','detail','hhp','trade_in',
    '(//div[normalize-space(text())="Exchange offer"])[1]/following::div[(contains(text(),"Up to") or contains(text(),"₹") or contains(text(),"Off")) and not(contains(text(),"Pincode")) and not(contains(text(),"Servicea"))][1]',
    '//*[contains(text(),"Exchange")]/ancestor::div[1]',
@@ -543,24 +548,10 @@ VALUES
    '//td[normalize-space(text())="Power Consumption"]/following-sibling::td[1]',
    '//tr[.//td[contains(text(),"Power")]]/td[2]', NULL);
 
--- REF 전용 (가격 3종 + spec 2종)
--- 가격: HHP 와 동일 modern Flipkart page-level pattern (similar product 카드 제외).
--- trade_in 은 HHP 전용 (REF/TV/LDY 에 Exchange offer 영역이 다른 형식이라 일단 제외)
+-- REF 전용 (Flipkart) — ERD v1: 가격 3종 Main Page 로 통합. REF 는 savings 자체 ERD 에 정의 없음. detail 엔 spec 2종만.
 INSERT INTO dx_siel_xpath_selectors
   (site_account,page_type,domain,data_field,xpath_primary,fallback_xpath,notes)
 VALUES
-  ('Flipkart','detail','ref','final_sku_price',
-   '(//div[starts-with(normalize-space(text()),"₹") and not(ancestor::a[contains(@href,"/p/")])])[1]',
-   '//div[contains(@class,"_30jeq3") or contains(@class,"Nx9bqj")]',
-   'REF: detail 첫 ₹ 가격 (similar product 링크 안 제외) — HHP 와 동일 패턴'),
-  ('Flipkart','detail','ref','original_sku_price',
-   '(//div[contains(@style,"line-through") and not(ancestor::a[contains(@href,"/p/")])])[1]',
-   '//div[contains(@class,"_3I9_wc")]',
-   'REF: M.R.P. — line-through style. modern Flipkart 는 ₹ prefix 없을 수 있음'),
-  ('Flipkart','detail','ref','savings',
-   '(//div[contains(text(),"%") and string-length(normalize-space(text()))<=5 and not(ancestor::a[contains(@href,"/p/")])])[1]',
-   '//div[contains(text(),"% off")]',
-   '"21%" 형식 (modern Flipkart). off 텍스트 없음'),
   ('Flipkart','detail','ref','ref_refrigerator_type',
    '//td[normalize-space(text())="Type" or normalize-space(text())="Refrigerator Type"]/following-sibling::td[1]',
    '//tr[.//td[contains(text(),"Type")]]/td[2]',
