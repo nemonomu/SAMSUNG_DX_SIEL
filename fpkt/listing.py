@@ -177,6 +177,30 @@ def extract_card(card, selectors: dict) -> dict:
             continue
         if field == 'product_url':
             rec[field] = safe_attr(card, xpath, 'href')
+        elif field == 'sku_status':
+            # Sponsored marker (SVG path 안 raster 텍스트 — element 존재로만 검출)
+            try:
+                rec[field] = 'Sponsored' if card.find_elements(By.XPATH, xpath) else None
+            except WebDriverException:
+                rec[field] = None
+        elif field == 'sku_popularity':
+            # Bestseller (anchor href) + Flipkart Assured (img src /fa_*.png) — element attr 검사
+            labels = []
+            try:
+                els = card.find_elements(By.XPATH, xpath)
+            except WebDriverException:
+                els = []
+            for e in els:
+                try:
+                    href = e.get_attribute('href') or ''
+                    src = e.get_attribute('src') or ''
+                except WebDriverException:
+                    continue
+                if 'spotlightTagId=default_BestsellerId' in href and 'Bestseller' not in labels:
+                    labels.append('Bestseller')
+                if '/fa_' in src and 'Flipkart Assured' not in labels:
+                    labels.append('Flipkart Assured')
+            rec[field] = ', '.join(labels) if labels else None
         else:
             rec[field] = safe_text(card, xpath)
     return rec
