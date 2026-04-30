@@ -283,9 +283,9 @@ VALUES
    '//div[@data-hook="cr-summarization-attributes-list"]//span',
    '리뷰 AI 요약 — overall-summary (신 testid) | cr-insights-widget | reviewsMedley union'),
   ('Amazon','detail','ref','detailed_review_content',
-   '//*[@data-hook="reviewText"]',
+   '//*[@data-hook="reviewText"] | //div[@data-hook="review-collapsed" or @data-hook="review-body"]//span[not(@class)]',
    '//*[@data-hook="reviewTextContainer"]//span',
-   'REF 전용 — Amazon refrigerator page 는 camelCase markup (reviewText/reviewTextContainer). HHP 의 review-collapsed/review-body markup 부재. 메모: feedback_domain_branching_pattern.md'),
+   'REF 전용 — Amazon refrigerator page DOM 2 variant flicker (같은 URL 도 visit 마다 markup 변동): A) data-hook=reviewText (camelCase), B) data-hook=review-collapsed/review-body (HHP-style). union 으로 둘 다 catch. 메모: feedback_domain_branching_pattern.md'),
   ('Amazon','detail','ref','sku',
    '//table//tr[.//th[contains(text(),"Manufacturer") and contains(text(),"Part Number")]]/td',
    '//table//tr[.//th[contains(text(),"Item model number")]]/td',
@@ -378,9 +378,9 @@ BEGIN
        './/a[contains(@href,"/p/")]/@title',
        'Flipkart 상품명 — 충분히 긴 텍스트 div 첫 번째'),
       ('Flipkart','main',d,'discount_type',
-       './/*[contains(text(),"% off") or contains(text(),"Limited") or contains(text(),"Hot deal")]',
-       './/div[contains(.,"% off")][not(.//div[contains(.,"% off")])]',
-       'e.g. "53% off". any-element + text() 직접; fallback 은 innermost div 의 string-value'),
+       './/*[contains(text(),"Limited") or contains(text(),"Hot deal") or contains(text(),"Big Saving") or contains(text(),"Coupon") or contains(text(),"Bank Offer")]',
+       NULL,
+       'promotion 표시만 — % off 는 savings 에서 별도 수집 (분리)'),
       ('Flipkart','main',d,'sku_popularity',
        './/a[contains(@href,"spotlightTagId=default_BestsellerId")] | .//img[contains(@src,"/fa_")]',
        NULL,
@@ -415,13 +415,13 @@ BEGIN
       (site_account,page_type,domain,data_field,xpath_primary,fallback_xpath,notes)
     VALUES
       ('Flipkart','main',d,'final_sku_price',
-       './/div[starts-with(normalize-space(text()),"₹") and not(text()[contains(.,"M.R.P")])][1]',
-       './/div[contains(@class,"_30jeq3") or contains(@class,"_3I9_wc")]',
-       '최종 판매가'),
+       './/div[starts-with(normalize-space(text()),"₹")][1]',
+       NULL,
+       'modern Flipkart 카드 안 첫 ₹ div = 최종 판매가'),
       ('Flipkart','main',d,'original_sku_price',
-       './/div[starts-with(normalize-space(text()),"₹") and (preceding-sibling::div[contains(@style,"text-decoration") or contains(@class,"strike")] or contains(@class,"strike"))]',
-       './/div[contains(@class,"_3I9_wc") or contains(@class,"strike")]',
-       'M.R.P. — strike-through');
+       './/div[starts-with(normalize-space(text()),"₹")][1]/following-sibling::div[1][starts-with(normalize-space(text()),"₹")]',
+       NULL,
+       'M.R.P. — first ₹ div 의 직접 sibling 첫 ₹ (없으면 null = 할인 없는 product)');
   END LOOP;
 END $$;
 
