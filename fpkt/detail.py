@@ -269,15 +269,37 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec[field] = siel_log.format_similar_names(parts)
         elif field == 'product_url':
             rec[field] = extract_attr(driver, xpath, 'href')
+        elif field == 'star_rating':
+            rec[field] = siel_log.parse_star_rating(extract_single(driver, xpath))
+        elif field == 'count_of_star_ratings':
+            rec[field] = siel_log.parse_count_of_ratings(extract_single(driver, xpath))
         else:
             rec[field] = extract_single(driver, xpath)
 
-    # count_of_reviews 검사 → review 추출 결정
+    # count_of_reviews 정책:
+    #   숫자 >=1: 명시적으로 리뷰 있음 → 추출
+    #   0:        명시적으로 리뷰 없음 → skip
+    #   None:     count 표기 자체가 페이지에 없음 (modern Flipkart) → click_show_all_reviews
+    #             가 매치되면 best-effort 시도, 매치 안 되면 skip
     count_reviews = siel_log.parse_int_field(rec.get('count_of_reviews'))
-    if review_xpath and count_reviews and count_reviews >= 1:
-        rev_btn = selectors.get('click_show_all_reviews')
-        if rev_btn and rev_btn.get('xpath'):
-            ok = robust_click(driver, rev_btn['xpath'])
+    rev_btn = selectors.get('click_show_all_reviews')
+    rev_btn_xpath = rev_btn.get('xpath') if rev_btn else None
+
+    should_try_reviews = False
+    if review_xpath:
+        if count_reviews is not None and count_reviews >= 1:
+            should_try_reviews = True
+        elif count_reviews is None and rev_btn_xpath:
+            # count 표기 없음. show_all_reviews 버튼 존재 여부로 판단
+            try:
+                if driver.find_elements(By.XPATH, rev_btn_xpath):
+                    should_try_reviews = True
+            except WebDriverException:
+                pass
+
+    if should_try_reviews:
+        if rev_btn_xpath:
+            ok = robust_click(driver, rev_btn_xpath)
             if _logger:
                 _logger.info('click_show_all_reviews clicked=%s count_of_reviews=%s',
                              ok, count_reviews)
@@ -289,8 +311,8 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
     else:
         rec['detailed_review_content'] = None
         if review_xpath and _logger:
-            _logger.info('skip review extraction: count_of_reviews=%s',
-                         count_reviews)
+            _logger.info('skip review extraction: count_of_reviews=%s rev_btn=%s',
+                         count_reviews, bool(rev_btn_xpath))
     return rec
 
 

@@ -160,12 +160,12 @@ def parse_star_rating(v):
 
 
 def parse_count_of_ratings(v):
-    """'(6,743)' / '1,009 ratings' / '39,132 global ratings' → '6,743' / '1,009' / '39,132'.
-    양 옆 paren/bracket + 끝의 'ratings'/'global ratings' 제거. 콤마는 보존 (orchestrator 가 int 변환)."""
+    """'(6,743)' / '1,009 ratings' / '39,132 global ratings' / '| 9,687' → '6,743' / '1,009' / '39,132' / '9,687'.
+    양 옆 paren/bracket/pipe + 끝의 'ratings'/'global ratings' 제거. 콤마는 보존 (orchestrator 가 int 변환)."""
     if not v:
         return None
     s = str(v).strip()
-    s = re.sub(r'^[\(\[]+|[\)\]]+$', '', s).strip()
+    s = re.sub(r'^[\(\[\|]+|[\)\]\|]+$', '', s).strip()
     s = re.sub(r'\s*(?:global\s+)?ratings?\s*$', '', s, flags=re.I).strip()
     return s if s else None
 
