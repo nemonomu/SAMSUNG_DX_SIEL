@@ -170,6 +170,19 @@ def parse_count_of_ratings(v):
     return s if s else None
 
 
+_TRADE_UPTO_RE = re.compile(r'Up to (?!₹)(\d)')
+
+
+def parse_trade_in(v):
+    """'With Exchange\\nUp to    16,100.00 off' → 'With Exchange Up to ₹16,100.00 off'.
+    multi whitespace 정리 + 'Up to ' 뒤 숫자 앞에 ₹ 삽입 (selenium .text 가 hidden ₹ span 누락)."""
+    if not v:
+        return None
+    s = re.sub(r'\s+', ' ', str(v)).strip()
+    s = _TRADE_UPTO_RE.sub(r'Up to ₹\1', s)
+    return s if s else None
+
+
 def format_review_content(parts) -> str | None:
     """[review_text, ...] → 'review1 - X ||| review2 - Y ||| ...'"""
     if not parts:

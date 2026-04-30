@@ -258,6 +258,8 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec[field] = siel_log.parse_count_of_ratings(extract_single(driver, xpath))
         elif field == 'sku':
             rec[field] = extract_text_or_value(driver, xpath)
+        elif field == 'trade_in':
+            rec[field] = siel_log.parse_trade_in(extract_single(driver, xpath))
         else:
             rec[field] = extract_single(driver, xpath)
     return rec
