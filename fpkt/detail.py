@@ -41,6 +41,10 @@ from selenium.webdriver.common.by import By
 import config
 import siel_log
 
+# uc.Chrome.__del__ 가 GC 시점에 quit() 한 번 더 시도 → Windows OSError [WinError 6].
+# finally 에서 driver.quit() 명시 호출하므로 __del__ 은 불필요.
+uc.Chrome.__del__ = lambda self: None
+
 SITE_ACCOUNT = 'Flipkart'
 ACCOUNT_NAME = 'flipkart'
 COMPANY = 'sea'
