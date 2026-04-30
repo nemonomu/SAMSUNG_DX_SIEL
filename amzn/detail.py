@@ -167,17 +167,27 @@ def _extract_multi_raw(driver, xpath: str, max_n=None) -> list:
     try:
         els = driver.find_elements(By.XPATH, xpath)
     except WebDriverException:
+        if _logger is not None:
+            _logger.info('multi_raw xpath=%s WebDriverException', xpath[:80])
         return []
     if max_n is not None:
         els = els[:max_n]
     parts = []
+    raw_samples = []
     for e in els:
         try:
-            t = (e.text or e.get_attribute('textContent') or '').strip()
+            visible = (e.text or '').strip()
+            tc = (e.get_attribute('textContent') or '').strip()
+            t = visible or tc
+            if len(raw_samples) < 2:
+                raw_samples.append((len(visible), len(tc), tc[:100]))
             if t:
                 parts.append(t)
         except WebDriverException:
             continue
+    if _logger is not None:
+        _logger.info('multi_raw xpath=%s els=%d nonempty=%d samples=%r',
+                     xpath[:120], len(els), len(parts), raw_samples)
     return parts
 
 
