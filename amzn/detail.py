@@ -274,10 +274,21 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
         if field == 'detailed_review_content':
             parts = _extract_multi_raw(driver, xpath)
             if not parts:
-                # review section 이 lazy-load 인 경우 — sleep + scroll + 재시도
-                time.sleep(2)
-                scroll_to_bottom(driver, pause=0.5, max_scrolls=3)
+                # review section lazy-load — explicit scroll + sleep 3-tier retry
+                # 같은 product 가 timing 따라 fill/null 변동 (els=8 / els=0). full-run 0/400 회귀 방지
+                try:
+                    driver.execute_script(
+                        "var e = document.getElementById('reviewsMedley');"
+                        " if (e) e.scrollIntoView({block: 'center', behavior: 'instant'});"
+                    )
+                except WebDriverException:
+                    pass
+                time.sleep(3)
+                scroll_to_bottom(driver, pause=0.7, max_scrolls=5)
                 parts = _extract_multi_raw(driver, xpath)
+                if not parts:
+                    time.sleep(3)
+                    parts = _extract_multi_raw(driver, xpath)
             rec[field] = siel_log.format_review_content(parts)
         elif field == 'retailer_sku_name_similar':
             parts = _extract_multi_raw(driver, xpath)
