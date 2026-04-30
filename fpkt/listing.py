@@ -183,6 +183,10 @@ def extract_card(card, selectors: dict) -> dict:
                 rec[field] = 'Sponsored' if card.find_elements(By.XPATH, xpath) else None
             except WebDriverException:
                 rec[field] = None
+        elif field == 'count_of_star_ratings':
+            rec[field] = siel_log.parse_count_of_ratings(safe_text(card, xpath))
+        elif field == 'count_of_reviews':
+            rec[field] = siel_log.parse_count_of_reviews(safe_text(card, xpath))
         elif field == 'sku_popularity':
             # Bestseller (anchor href) + Flipkart Assured (img src /fa_*.png) — element attr 검사
             labels = []

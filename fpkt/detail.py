@@ -345,18 +345,6 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                     review_html = _html_path.replace('.html', '_review.html')
                     if siel_log.save_html(driver, review_html) and _logger:
                         _logger.info('review page HTML saved: %s', review_html)
-                # count_of_reviews 보강: review page 헤더 "X ratings and Y reviews"
-                if rec.get('count_of_reviews') is None:
-                    cnt_sel = selectors.get('count_of_reviews')
-                    if cnt_sel and cnt_sel.get('xpath'):
-                        v = extract_single(driver, cnt_sel['xpath'])
-                        rec['count_of_reviews'] = siel_log.parse_count_of_reviews(v)
-                        new_count = siel_log.parse_int_field(rec.get('count_of_reviews'))
-                        if new_count is not None and new_count >= 1:
-                            target = min(new_count, REVIEW_MAX)
-                            if _logger:
-                                _logger.info('count_of_reviews recovered: %s → target=%d',
-                                             rec['count_of_reviews'], target)
             elif _logger:
                 _logger.info('review anchor href not found')
         # 첫 페이지 + 부족 시 &page=N navigate. 페이지당 ~10. REVIEW_MAX=20 → 최대 page 2~3 까지.
