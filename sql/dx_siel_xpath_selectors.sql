@@ -117,7 +117,58 @@ BEGIN
 END $$;
 
 -- =============================================================================
--- AMAZON × DETAIL × HHP  (Product Page, smartphone)
+-- AMAZON × DETAIL — 4 도메인 (HHP/TV/REF/LDY)
+-- Site-common 컬럼 (DOM 동일): DO $$ FOREACH 단일 정의 → 4 row 자동 INSERT
+-- 도메인별 컬럼 (ERD 스펙 차이): 도메인별 개별 INSERT
+-- =============================================================================
+
+-- Site-common 8 컬럼 (Amazon × detail × {hhp,tv,ref,ldy} 동일 xpath)
+DO $$
+DECLARE
+  d TEXT;
+  domains TEXT[] := ARRAY['hhp','tv','ref','ldy'];
+BEGIN
+  FOREACH d IN ARRAY domains LOOP
+    INSERT INTO dx_siel_xpath_selectors
+      (site_account, page_type, domain, data_field, xpath_primary, fallback_xpath, notes)
+    VALUES
+      ('Amazon','detail',d,'delivery_availability',
+       '//*[@id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE"]//span[1]',
+       '//div[@id="deliveryBlockMessage"]//span',
+       '끝 "Details" 텍스트 후처리에서 제거'),
+      ('Amazon','detail',d,'fastest_delivery',
+       '//*[contains(@class,"udm-delivery-")]//span[contains(text(),"fastest")] | //*[@id="mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE"]//span[1]',
+       NULL,
+       'udm-delivery (신) | mir-layout (구). product 따라 valid null 가능'),
+      ('Amazon','detail',d,'inventory_status',
+       '//*[@id="availability"]//span',
+       '//div[@id="availability"]//span',
+       '"In Stock" 등. 빈값/공백 → null'),
+      ('Amazon','detail',d,'retailer_sku_name_similar',
+       '//*[contains(@id,"anonCarousel")]//li//a/span[1] | //*[@id="anonCarousel2"]//li//a[contains(@class,"a-link-normal")]//div[contains(@class,"a-truncate-full")]',
+       '//*[contains(@id,"sims-fbt")]//div[contains(@class,"a-truncate-full")]',
+       'broad union — anonCarousel li a span[1] | anonCarousel2 a-link-normal a-truncate-full. 노이즈는 후처리'),
+      ('Amazon','detail',d,'star_rating',
+       '//*[@data-hook="rating-out-of-text"] | //*[@id="acrPopover"]//span[@class="a-size-base a-color-base"]',
+       '//*[@id="cm_cr_dp_d_rating_histogram"]//div[contains(@class,"a-section")]/div/div/span/span',
+       'data-hook="rating-out-of-text" (Amazon 공식 위젯) 우선. "4.2 out of 5" 후처리'),
+      ('Amazon','detail',d,'count_of_star_ratings',
+       '//*[@id="acrCustomerReviewText"]',
+       '//*[@id="cm_cr_dp_d_rating_histogram"]//span[contains(text(),"global ratings")]',
+       '"1,009 ratings" or "(6,743)" — 후처리에서 숫자만 + paren strip'),
+      ('Amazon','detail',d,'summarized_review_content',
+       '//*[@data-testid="overall-summary"] | //div[@data-hook="cr-insights-widget"]//span | //*[@id="reviewsMedley"]//div[contains(@id,"review-summary")]//span',
+       '//div[@data-hook="cr-summarization-attributes-list"]//span',
+       '리뷰 AI 요약 — overall-summary (신 testid) | cr-insights-widget | reviewsMedley union'),
+      ('Amazon','detail',d,'detailed_review_content',
+       '//div[@data-hook="review-collapsed" or @data-hook="review-body"]//span[not(@class)]',
+       '//div[contains(@id,"customer_review-")]//span[@data-hook="review-body"]',
+       '다중 추출 — 페이지 하단 끝까지 스크롤 후');
+  END LOOP;
+END $$;
+
+-- =============================================================================
+-- AMAZON × DETAIL × HHP  도메인별 컬럼 (smartphone)
 -- =============================================================================
 
 INSERT INTO dx_siel_xpath_selectors
@@ -127,38 +178,6 @@ VALUES
    '//a[contains(@class,"a-expander-prompt") and contains(text(),"See more")]',
    '//div[@id="productOverview_feature_div"]//a[contains(@class,"a-expander")]',
    'Additional details 섹션 펼치기'),
-  ('Amazon','detail','hhp','delivery_availability',
-   '//*[@id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE"]//span[1]',
-   '//div[@id="deliveryBlockMessage"]//span',
-   '끝 "Details" 텍스트 후처리에서 제거'),
-  ('Amazon','detail','hhp','fastest_delivery',
-   '//*[contains(@class,"udm-delivery-")]//span[contains(text(),"fastest")] | //*[@id="mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE"]//span[1]',
-   NULL,
-   'udm-delivery (신) | mir-layout (구). product 따라 valid null 가능'),
-  ('Amazon','detail','hhp','inventory_status',
-   '//*[@id="availability"]//span',
-   '//div[@id="availability"]//span',
-   '"In Stock" 등. 빈값/공백 → null'),
-  ('Amazon','detail','hhp','retailer_sku_name_similar',
-   '//*[contains(@id,"anonCarousel")]//li//a/span[1] | //*[@id="anonCarousel2"]//li//a[contains(@class,"a-link-normal")]//div[contains(@class,"a-truncate-full")]',
-   '//*[contains(@id,"sims-fbt")]//div[contains(@class,"a-truncate-full")]',
-   'rollback: dp link narrow over-narrow (carousel-card=Bank Offer 카드라 dp link 부재). 옛 broad union 복구. 노이즈는 후처리'),
-  ('Amazon','detail','hhp','star_rating',
-   '//*[@data-hook="rating-out-of-text"] | //*[@id="acrPopover"]//span[@class="a-size-base a-color-base"]',
-   '//*[@id="cm_cr_dp_d_rating_histogram"]//div[contains(@class,"a-section")]/div/div/span/span',
-   'data-hook="rating-out-of-text" (Amazon 공식 위젯) 우선. "4.2 out of 5" 후처리'),
-  ('Amazon','detail','hhp','count_of_star_ratings',
-   '//*[@id="acrCustomerReviewText"]',
-   '//*[@id="cm_cr_dp_d_rating_histogram"]//span[contains(text(),"global ratings")]',
-   '"1,009 ratings" or "(6,743)" — 후처리에서 숫자만 + paren strip'),
-  ('Amazon','detail','hhp','summarized_review_content',
-   '//*[@data-testid="overall-summary"] | //div[@data-hook="cr-insights-widget"]//span | //*[@id="reviewsMedley"]//div[contains(@id,"review-summary")]//span',
-   '//div[@data-hook="cr-summarization-attributes-list"]//span',
-   '리뷰 AI 요약 — overall-summary (신 testid) | cr-insights-widget | reviewsMedley union'),
-  ('Amazon','detail','hhp','detailed_review_content',
-   '//div[@data-hook="review-collapsed" or @data-hook="review-body"]//span[not(@class)]',
-   '//div[contains(@id,"customer_review-")]//span[@data-hook="review-body"]',
-   '다중 추출 — 페이지 하단 끝까지 스크롤 후'),
   ('Amazon','detail','hhp','sku',
    '//input[@id="ASIN"] | //div[@id="detailBullets_feature_div"]//li[.//span[contains(text(),"ASIN")]]/span[2] | //table[contains(@id,"productDetails_detailBullets") or contains(@id,"productDetails_techSpec") or contains(@id,"productDetails_expanderTables")]//tr[.//th[contains(text(),"ASIN")]]/td',
    '//div[@id="detailBullets_feature_div"]//li[.//span[contains(text(),"ASIN")]]/span[2]',
@@ -181,7 +200,7 @@ VALUES
    '"Trade-in and save" / "With Exchange Up to ..."');
 
 -- =============================================================================
--- AMAZON × DETAIL × TV
+-- AMAZON × DETAIL × TV  도메인별 컬럼
 -- =============================================================================
 
 INSERT INTO dx_siel_xpath_selectors
@@ -191,28 +210,6 @@ VALUES
    '//a[contains(@class,"a-expander-prompt") and contains(text(),"See more")]',
    NULL,
    'Item details 섹션 펼치기'),
-  ('Amazon','detail','tv','delivery_availability',
-   '//*[@id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE"]//span[1]',
-   NULL, NULL),
-  ('Amazon','detail','tv','fastest_delivery',
-   '//*[contains(@class,"udm-delivery-")]//span[contains(text(),"fastest")] | //*[@id="mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE"]//span[1]',
-   NULL, 'udm-delivery (신) | mir-layout (구) union'),
-  ('Amazon','detail','tv','inventory_status',
-   '//*[@id="availability"]//span', NULL, NULL),
-  ('Amazon','detail','tv','retailer_sku_name_similar',
-   '//*[contains(@id,"anonCarousel")]//li//a/span[1] | //*[@id="anonCarousel2"]//li//div[contains(@class,"a-truncate-full")]',
-   NULL, 'rollback: dp link narrow over-narrow → 옛 broad union 복구'),
-  ('Amazon','detail','tv','star_rating',
-   '//*[@data-hook="rating-out-of-text"] | //*[@id="acrPopover"]//span[@class="a-size-base a-color-base"]',
-   NULL, 'data-hook="rating-out-of-text" 우선'),
-  ('Amazon','detail','tv','count_of_star_ratings',
-   '//*[@id="acrCustomerReviewText"]', NULL, NULL),
-  ('Amazon','detail','tv','summarized_review_content',
-   '//div[@data-hook="cr-insights-widget"]//span | //*[@id="reviewsMedley"]//div[contains(@id,"review-summary")]//span',
-   NULL, 'cr-insights-widget (신) | reviewsMedley (구) union'),
-  ('Amazon','detail','tv','detailed_review_content',
-   '//div[@data-hook="review-collapsed" or @data-hook="review-body"]//span[not(@class)]',
-   NULL, NULL),
   ('Amazon','detail','tv','sku',
    '//table//tr[.//th[contains(text(),"Manufacturer") and contains(text(),"Part Number")]]/td',
    '//table//tr[.//th[contains(text(),"Item model number")]]/td',
@@ -234,7 +231,7 @@ VALUES
    NULL, NULL);
 
 -- =============================================================================
--- AMAZON × DETAIL × REF
+-- AMAZON × DETAIL × REF  도메인별 컬럼
 -- =============================================================================
 
 INSERT INTO dx_siel_xpath_selectors
@@ -242,31 +239,12 @@ INSERT INTO dx_siel_xpath_selectors
 VALUES
   ('Amazon','detail','ref','expand_item_details',
    '//a[contains(@class,"a-expander-prompt") and contains(text(),"See more")]',
-   NULL, NULL),
-  ('Amazon','detail','ref','delivery_availability',
-   '//*[@id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE"]//span[1]', NULL, NULL),
-  ('Amazon','detail','ref','fastest_delivery',
-   '//*[contains(@class,"udm-delivery-")]//span[contains(text(),"fastest")] | //*[@id="mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE"]//span[1]',
-   NULL, 'udm-delivery (신) | mir-layout (구) union'),
-  ('Amazon','detail','ref','inventory_status',
-   '//*[@id="availability"]//span', NULL, NULL),
-  ('Amazon','detail','ref','retailer_sku_name_similar',
-   '//*[contains(@id,"anonCarousel")]//li//a/span[1] | //*[@id="anonCarousel2"]//li//div[contains(@class,"a-truncate-full")]',
-   NULL, 'rollback: dp link narrow over-narrow → 옛 broad union 복구'),
-  ('Amazon','detail','ref','star_rating',
-   '//*[@data-hook="rating-out-of-text"] | //*[@id="acrPopover"]//span[@class="a-size-base a-color-base"]',
-   NULL, 'data-hook="rating-out-of-text" 우선'),
-  ('Amazon','detail','ref','count_of_star_ratings',
-   '//*[@id="acrCustomerReviewText"]', NULL, NULL),
-  ('Amazon','detail','ref','summarized_review_content',
-   '//div[@data-hook="cr-insights-widget"]//span | //*[@id="reviewsMedley"]//div[contains(@id,"review-summary")]//span',
-   NULL, 'cr-insights-widget (신) | reviewsMedley (구) union'),
-  ('Amazon','detail','ref','detailed_review_content',
-   '//div[@data-hook="review-collapsed" or @data-hook="review-body"]//span[not(@class)]',
-   NULL, NULL),
+   NULL,
+   'Item details 섹션 펼치기'),
   ('Amazon','detail','ref','sku',
    '//table//tr[.//th[contains(text(),"Manufacturer") and contains(text(),"Part Number")]]/td',
-   '//table//tr[.//th[contains(text(),"Item model number")]]/td', NULL),
+   '//table//tr[.//th[contains(text(),"Item model number")]]/td',
+   'REF: Manufacturer Part Number'),
   ('Amazon','detail','ref','ref_refrigerator_type',
    '//table//tr[.//th[contains(text(),"Configuration") or contains(text(),"Refrigerator Type")]]/td',
    '//table//tr[.//th[contains(text(),"Style")]]/td',
@@ -277,38 +255,20 @@ VALUES
    'e.g. "300L"');
 
 -- =============================================================================
--- AMAZON × DETAIL × LDY (laundry / 세탁기)
+-- AMAZON × DETAIL × LDY (laundry / 세탁기)  도메인별 컬럼
 -- =============================================================================
 
 INSERT INTO dx_siel_xpath_selectors
   (site_account, page_type, domain, data_field, xpath_primary, fallback_xpath, notes)
 VALUES
   ('Amazon','detail','ldy','expand_item_details',
-   '//a[contains(@class,"a-expander-prompt") and contains(text(),"See more")]', NULL, NULL),
-  ('Amazon','detail','ldy','delivery_availability',
-   '//*[@id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE"]//span[1]', NULL, NULL),
-  ('Amazon','detail','ldy','fastest_delivery',
-   '//*[contains(@class,"udm-delivery-")]//span[contains(text(),"fastest")] | //*[@id="mir-layout-DELIVERY_BLOCK-slot-SECONDARY_DELIVERY_MESSAGE_LARGE"]//span[1]',
-   NULL, 'udm-delivery (신) | mir-layout (구) union'),
-  ('Amazon','detail','ldy','inventory_status',
-   '//*[@id="availability"]//span', NULL, NULL),
-  ('Amazon','detail','ldy','retailer_sku_name_similar',
-   '//*[contains(@id,"anonCarousel")]//li//a/span[1] | //*[@id="anonCarousel2"]//li//div[contains(@class,"a-truncate-full")]',
-   NULL, 'rollback: dp link narrow over-narrow → 옛 broad union 복구'),
-  ('Amazon','detail','ldy','star_rating',
-   '//*[@data-hook="rating-out-of-text"] | //*[@id="acrPopover"]//span[@class="a-size-base a-color-base"]',
-   NULL, 'data-hook="rating-out-of-text" 우선'),
-  ('Amazon','detail','ldy','count_of_star_ratings',
-   '//*[@id="acrCustomerReviewText"]', NULL, NULL),
-  ('Amazon','detail','ldy','summarized_review_content',
-   '//div[@data-hook="cr-insights-widget"]//span | //*[@id="reviewsMedley"]//div[contains(@id,"review-summary")]//span',
-   NULL, 'cr-insights-widget (신) | reviewsMedley (구) union'),
-  ('Amazon','detail','ldy','detailed_review_content',
-   '//div[@data-hook="review-collapsed" or @data-hook="review-body"]//span[not(@class)]',
-   NULL, NULL),
+   '//a[contains(@class,"a-expander-prompt") and contains(text(),"See more")]',
+   NULL,
+   'Item details 섹션 펼치기'),
   ('Amazon','detail','ldy','sku',
    '//table//tr[.//th[contains(text(),"Manufacturer") and contains(text(),"Part Number")]]/td',
-   NULL, NULL),
+   '//table//tr[.//th[contains(text(),"Item model number")]]/td',
+   'LDY: Manufacturer Part Number'),
   ('Amazon','detail','ldy','ldy_loading_type',
    '//table//tr[.//th[contains(text(),"Access Location") or contains(text(),"Loading Type") or contains(text(),"Configuration")]]/td',
    NULL,
@@ -509,10 +469,24 @@ VALUES
    '//td[normalize-space(text())="Power Consumption"]/following-sibling::td[1]',
    '//tr[.//td[contains(text(),"Power")]]/td[2]', NULL);
 
--- REF 전용
+-- REF 전용 (가격 3종 + spec 2종)
+-- 가격: HHP 와 동일 modern Flipkart page-level pattern (similar product 카드 제외).
+-- trade_in 은 HHP 전용 (REF/TV/LDY 에 Exchange offer 영역이 다른 형식이라 일단 제외)
 INSERT INTO dx_siel_xpath_selectors
   (site_account,page_type,domain,data_field,xpath_primary,fallback_xpath,notes)
 VALUES
+  ('Flipkart','detail','ref','final_sku_price',
+   '(//div[starts-with(normalize-space(text()),"₹") and not(ancestor::a[contains(@href,"/p/")])])[1]',
+   '//div[contains(@class,"_30jeq3") or contains(@class,"Nx9bqj")]',
+   'REF: detail 첫 ₹ 가격 (similar product 링크 안 제외) — HHP 와 동일 패턴'),
+  ('Flipkart','detail','ref','original_sku_price',
+   '(//div[contains(@style,"line-through") and not(ancestor::a[contains(@href,"/p/")])])[1]',
+   '//div[contains(@class,"_3I9_wc")]',
+   'REF: M.R.P. — line-through style. modern Flipkart 는 ₹ prefix 없을 수 있음'),
+  ('Flipkart','detail','ref','savings',
+   '(//div[contains(text(),"%") and string-length(normalize-space(text()))<=5 and not(ancestor::a[contains(@href,"/p/")])])[1]',
+   '//div[contains(text(),"% off")]',
+   '"21%" 형식 (modern Flipkart). off 텍스트 없음'),
   ('Flipkart','detail','ref','ref_refrigerator_type',
    '//td[normalize-space(text())="Type" or normalize-space(text())="Refrigerator Type"]/following-sibling::td[1]',
    '//tr[.//td[contains(text(),"Type")]]/td[2]',
