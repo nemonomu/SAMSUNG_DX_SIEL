@@ -335,9 +335,9 @@ VALUES
    '//div[@data-hook="cr-summarization-attributes-list"]//span',
    '리뷰 AI 요약 — overall-summary (신 testid) | cr-insights-widget | reviewsMedley union'),
   ('Amazon','detail','ldy','detailed_review_content',
-   '//div[@data-hook="review-collapsed" or @data-hook="review-body"]//span[not(@class)]',
-   '//div[contains(@id,"customer_review-")]//span[@data-hook="review-body"]',
-   '다중 추출 — 페이지 하단 끝까지 스크롤 후'),
+   '//*[@data-hook="reviewText"]',
+   '//*[@data-hook="reviewTextContainer"]//span',
+   'LDY 전용 — Amazon laundry page 는 camelCase markup (reviewText/reviewTextContainer). REF 와 동일. HHP 의 review-collapsed/review-body markup 부재. 메모: feedback_domain_branching_pattern.md'),
   ('Amazon','detail','ldy','sku',
    '//table//tr[.//th[contains(text(),"Manufacturer") and contains(text(),"Part Number")]]/td',
    '//table//tr[.//th[contains(text(),"Item model number")]]/td',
@@ -392,7 +392,15 @@ BEGIN
       ('Flipkart','main',d,'available_quantity_for_purchase',
        './/*[contains(text(),"Only") and contains(text(),"left")]',
        './/div[contains(.,"Only") and contains(.,"left")][not(.//div[contains(.,"Only")])]',
-       'e.g. "Only 2 left" — 재고 적은 카드만');
+       'e.g. "Only 2 left" — 재고 적은 카드만'),
+      ('Flipkart','main',d,'count_of_star_ratings',
+       './/span[contains(text(),"Ratings")]',
+       NULL,
+       'ERD: Main Page. 카드 안 "33,837 Ratings" — siel_log.parse_count_of_ratings 가 "Ratings" 제거 + 숫자만'),
+      ('Flipkart','main',d,'count_of_reviews',
+       './/span[contains(text(),"Reviews")]',
+       NULL,
+       'ERD: Main Page. 카드 안 "1,573 Reviews" — siel_log.parse_count_of_reviews 가 "Reviews" 앞 숫자만');
   END LOOP;
 END $$;
 

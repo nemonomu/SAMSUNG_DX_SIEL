@@ -227,13 +227,41 @@ def format_similar_names(parts) -> str | None:
 
 _NUM_ONLY_RE = re.compile(r'\s*\d[\d,]*\s*')
 
+# REF 전용 — anonCarousel 의 cross-category 누설 (washing/AC/phone) + ₹ price label drop.
+# 메모: feedback_domain_branching_pattern.md (HHP 등 검증된 도메인 path 1 byte 도 안 건드림).
+_REF_PRICE_NOISE_RE = re.compile(r'^[\s]*[₹$]|^\d+\s*offers?\s+from\s+[₹$]', re.IGNORECASE)
+_REF_REQUIRED_KEYWORD_RE = re.compile(r'refrigerator|freezer|\b\d+\s*l\b|\blitre', re.IGNORECASE)
+
 
 def filter_similar_noise(parts):
     """retailer_sku_name_similar list 에서 단독 숫자 token (review count "164" 등) 제거.
-    제품명 안의 숫자 ("8GB", "5G") 는 fullmatch 안 되므로 보존."""
+    제품명 안의 숫자 ("8GB", "5G") 는 fullmatch 안 되므로 보존.
+    HHP / TV / LDY default — 도메인 분기 없음."""
     if not parts:
         return parts
     return [p for p in parts if p and not _NUM_ONLY_RE.fullmatch(str(p))]
+
+
+def filter_similar_noise_ref(parts):
+    """REF 전용 — base filter + ₹ price label drop + refrigerator keyword 필수 (cross-category 차단).
+
+    legit REF 제품명: 'Refrigerator' / 'Freezer' 단어 또는 'XXX L' / 'Litre' 용량 표시 포함.
+    noise: '1 offer from ₹...', '₹38,490.00' (price label), 'Panasonic 1.5 Ton ... AC' / 'Haier 6 kg ... Washing Machine' (cross-category).
+    HHP / TV / LDY 는 이 함수 호출 안 함 — filter_similar_noise (기본) 그대로."""
+    if not parts:
+        return parts
+    base = filter_similar_noise(parts)
+    out = []
+    for p in base:
+        s = str(p).strip()
+        if not s:
+            continue
+        if _REF_PRICE_NOISE_RE.search(s):
+            continue
+        if not _REF_REQUIRED_KEYWORD_RE.search(s):
+            continue
+        out.append(s)
+    return out
 
 
 def count_review_cards(v) -> int:

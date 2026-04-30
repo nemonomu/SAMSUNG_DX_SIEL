@@ -55,6 +55,7 @@ EXPAND_FIELDS = {'expand_additional_details', 'expand_item_details'}
 _logger = None
 _html_path = None
 _html_saved = False
+_html_saved_post = False
 
 
 def db_connect():
@@ -127,9 +128,10 @@ def now_ist_iso() -> str:
 
 
 def init_logging(product: str):
-    global _logger, _html_path, _html_saved
+    global _logger, _html_path, _html_saved, _html_saved_post
     _logger, _html_path = siel_log.setup(ACCOUNT_NAME, product, STAGE, _HERE)
     _html_saved = False
+    _html_saved_post = False
 
 
 def maybe_save_html(driver) -> None:
@@ -139,6 +141,18 @@ def maybe_save_html(driver) -> None:
     if siel_log.save_html(driver, _html_path) and _logger is not None:
         _logger.info('HTML snapshot saved: %s', _html_path)
     _html_saved = True
+
+
+def maybe_save_html_post(driver) -> None:
+    """post-scroll snapshot — review/lazy-load 영역 진단용. 첫 URL 만, _post.html 별도 파일."""
+    global _html_saved_post
+    if _html_saved_post or _html_path is None:
+        return
+    root, _ext = os.path.splitext(_html_path)
+    post_path = root + '_post.html'
+    if siel_log.save_html(driver, post_path) and _logger is not None:
+        _logger.info('HTML snapshot (post-scroll) saved: %s', post_path)
+    _html_saved_post = True
 
 
 def asin_from_url(url: str):
@@ -246,6 +260,9 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             try_click_expand(driver, sel['xpath'])
 
     scroll_to_bottom(driver, pause=1.0, max_scrolls=15)
+    if not _html_saved_post:
+        time.sleep(1)  # 첫 URL post-scroll snapshot 진단용 settle (lazy-load fetch 안정화)
+    maybe_save_html_post(driver)
 
     for field, sel in selectors.items():
         if field in EXPAND_FIELDS or field == 'base_container':
@@ -264,7 +281,11 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec[field] = siel_log.format_review_content(parts)
         elif field == 'retailer_sku_name_similar':
             parts = _extract_multi_raw(driver, xpath)
-            parts = siel_log.filter_similar_noise(parts)
+            if product == 'ref':
+                parts = siel_log.filter_similar_noise_ref(parts)
+            else:
+                # HHP / TV / LDY — 검증된 path 그대로 (메모 feedback_domain_branching_pattern.md)
+                parts = siel_log.filter_similar_noise(parts)
             rec[field] = siel_log.format_similar_names(parts)
         elif field == 'product_url':
             rec[field] = extract_attr(driver, xpath, 'href')
