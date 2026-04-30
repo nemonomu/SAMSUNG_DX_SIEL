@@ -54,7 +54,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 REVIEW_MAX = 20
 
-EXPAND_FIELDS = {'expand_specifications'}
+EXPAND_FIELDS = {'expand_specifications', 'expand_see_more'}
 NAVIGATE_FIELDS = {'click_show_all_reviews'}
 CONTROL_FIELDS = EXPAND_FIELDS | NAVIGATE_FIELDS | {'base_container'}
 
@@ -248,6 +248,14 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
         ok = robust_click(driver, spec_sel['xpath'])
         if _logger:
             _logger.info('expand_specifications clicked=%s', ok)
+        time.sleep(1.0)
+
+    # See more 클릭 — deep spec (Power Features 등) lazy load
+    seemore_sel = selectors.get('expand_see_more')
+    if seemore_sel and seemore_sel.get('xpath'):
+        ok = robust_click(driver, seemore_sel['xpath'])
+        if _logger:
+            _logger.info('expand_see_more clicked=%s', ok)
         time.sleep(1.0)
 
     scroll_to_bottom(driver, pause=1.0, max_scrolls=10)

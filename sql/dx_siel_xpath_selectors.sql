@@ -487,6 +487,10 @@ BEGIN
        '//div[normalize-space(text())="Specifications" and not(ancestor::head)]',
        NULL,
        'modern Flipkart 의 Specifications 토글 버튼 — div 자체가 click target. meta head 의 검색 텍스트 제외'),
+      ('Flipkart','detail',d,'expand_see_more',
+       '//div[normalize-space(text())="Specifications" and not(ancestor::head)]/following::div[normalize-space(text())="See more"][1]',
+       '(//div[normalize-space(text())="See more"])[1]',
+       'Specifications 클릭 후 deep spec 영역 (Power Features 등) lazy load 트리거. Specifications 헤더 다음 첫 See more div'),
       ('Flipkart','detail',d,'click_show_all_reviews',
        '//a[contains(@href,"/product-reviews/") and not(contains(@href,"buynow"))]',
        NULL,
@@ -541,17 +545,17 @@ VALUES
    '//div[contains(text(),"% off")]',
    'modern Flipkart detail: "X%" (off 없음). HHP 패턴 동일. siel_log.parse_savings 가 trailing off 제거'),
   ('Flipkart','detail','tv','model_year',
-   '//div[normalize-space(text())="Launch Year:"]/following-sibling::div[1]',
+   '//div[normalize-space(text())="Launch Year:" or normalize-space(text())="Launch Year"]/following-sibling::div[1]',
    '//td[normalize-space(text())="Launch Year"]/following-sibling::td[1]',
-   'modern Flipkart spec: <div>Launch Year:</div><div>VALUE</div>. 콜론 포함. fallback td/tr 보존'),
+   'highlights spec (콜론 포함) + deep spec (콜론 없음 — See more 후 표기) union'),
   ('Flipkart','detail','tv','screen_size',
-   '//div[normalize-space(text())="Display Size:"]/following-sibling::div[1]',
+   '//div[normalize-space(text())="Display Size:" or normalize-space(text())="Display Size"]/following-sibling::div[1]',
    '//td[normalize-space(text())="Display Size"]/following-sibling::td[1]',
-   'modern Flipkart spec. Display Size: 만 사용 (Screen Size 라벨 없음)'),
+   'highlights spec (콜론 포함) + deep spec (콜론 없음) union'),
   ('Flipkart','detail','tv','estimated_annual_electricity_use',
-   '//div[normalize-space(text())="Power Consumption:" or normalize-space(text())="Annual Energy Consumption:" or normalize-space(text())="Energy Consumption:"]/following-sibling::div[1]',
+   '//div[normalize-space(text())="Power Consumption" or normalize-space(text())="Annual Energy Consumption" or normalize-space(text())="Energy Consumption" or normalize-space(text())="Power Consumption:" or normalize-space(text())="Annual Energy Consumption:"]/following-sibling::div[1]',
    '//td[normalize-space(text())="Power Consumption"]/following-sibling::td[1]',
-   'modern Flipkart spec union 3종. 일부 TV 표기 자체 없음 — valid NULL 가능');
+   'deep spec (Power Features 그룹 — See more 후 lazy load). 라벨 콜론 없음 (highlights 와 다름). value 단위 (Standby W vs kWh/Year) 사이트별 의미 mismatch 가능 — raw 그대로 저장 후 분석 단계 분기');
 
 -- REF 전용 (Flipkart) — ERD v1: 가격 3종 Main Page 로 통합. REF 는 savings 자체 ERD 에 정의 없음. detail 엔 spec 2종만.
 -- modern Flipkart React: <div>label</div><div>value</div> sibling. 콜론 없음 (LDY 와 동일 패턴).
