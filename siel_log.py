@@ -67,6 +67,20 @@ SIMILAR_SEP = ', '
 
 _PRICE_NUM_RE = re.compile(r'[-+]?\d+(?:\.\d+)?')
 _INT_RE = re.compile(r'\d+')
+_NUM_TOKEN_RE = re.compile(r'\d[\d,]*\d|\d')
+
+
+def to_western_comma(s):
+    """인도식 콤마 (1,36,357) → 서양식 콤마 (136,357). 통화기호/단위 보존.
+    e.g. '₹1,36,357' → '₹136,357', '8,182' → '8,182' (5자리 미만은 동일)."""
+    if not s:
+        return s
+    def _conv(m):
+        digits = m.group(0).replace(',', '')
+        if not digits.isdigit():
+            return m.group(0)
+        return f'{int(digits):,}'
+    return _NUM_TOKEN_RE.sub(_conv, str(s))
 
 
 def make_basename(account_name: str, product: str, stage: str) -> str:
@@ -169,14 +183,42 @@ def parse_star_rating(v):
     return m.group(1) if m else None
 
 
+_NUM_CHUNK_RE = re.compile(r'\d[\d,]*\d|\d')
+
+
+def westernize_commas(v):
+    """인도식 콤마 (X,XX,XXX) → 서양식 (XXX,XXX). 모든 숫자 chunk 의 콤마 정리.
+    e.g. '1,13,643' → '113,643', '₹1,49,999' → '₹149,999', '0.5 W' 그대로."""
+    if v is None:
+        return None
+    s = str(v)
+    def _repl(m):
+        chunk = m.group()
+        digits = chunk.replace(',', '')
+        if not digits.isdigit():
+            return chunk
+        return f'{int(digits):,}'
+    return _NUM_CHUNK_RE.sub(_repl, s)
+
+
+def parse_price_value(v):
+    """'₹1,49,999' → '149,999'. ₹ prefix 제거 + 인도식 → 서양식 콤마."""
+    if not v:
+        return None
+    s = str(v).replace('₹', '').strip()
+    s = westernize_commas(s)
+    return s if s else None
+
+
 def parse_count_of_ratings(v):
-    """'(6,743)' / '1,009 ratings' / '39,132 global ratings' / '| 9,687' → '6,743' / '1,009' / '39,132' / '9,687'.
-    양 옆 paren/bracket/pipe + 끝의 'ratings'/'global ratings' 제거. 콤마는 보존 (orchestrator 가 int 변환)."""
+    """'(6,743)' / '1,09,687' / '39,132 global ratings' → '6,743' / '109,687' / '39,132'.
+    양 옆 paren/bracket/pipe + 'ratings'/'global ratings' 제거 + 인도식 → 서양식 (orchestrator 가 int 변환)."""
     if not v:
         return None
     s = str(v).strip()
     s = re.sub(r'^[\(\[\|]+|[\)\]\|]+$', '', s).strip()
     s = re.sub(r'\s*(?:global\s+)?ratings?\s*$', '', s, flags=re.I).strip()
+    s = westernize_commas(s)
     return s if s else None
 
 
@@ -185,16 +227,16 @@ _REVIEWS_RE = re.compile(r'(\d[\d,]*)\s*[Rr]eviews?\b')
 
 def parse_count_of_reviews(v):
     """'9,687 ratings and 561 reviews' / '561 Reviews' / '561' → '561'.
-    'reviews' 앞 숫자(콤마 포함) 추출. 콤마는 보존 (orchestrator 가 int 변환)."""
+    'reviews' 앞 숫자(콤마 포함) 추출 + 인도식 → 서양식 (orchestrator 가 int 변환)."""
     if not v:
         return None
     s = str(v).strip()
     m = _REVIEWS_RE.search(s)
     if m:
-        return m.group(1)
+        return westernize_commas(m.group(1))
     # 'reviews' 단어가 없으면 단독 숫자로 간주
     m2 = re.match(r'^[\(\[\|]*\s*(\d[\d,]*)\s*[\)\]\|]*$', s)
-    return m2.group(1) if m2 else None
+    return westernize_commas(m2.group(1)) if m2 else None
 
 
 _SAVINGS_OFF_RE = re.compile(r'\s*off\s*$', re.I)
