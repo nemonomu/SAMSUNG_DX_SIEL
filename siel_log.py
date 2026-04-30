@@ -170,6 +170,23 @@ def parse_count_of_ratings(v):
     return s if s else None
 
 
+_REVIEWS_RE = re.compile(r'(\d[\d,]*)\s*[Rr]eviews?\b')
+
+
+def parse_count_of_reviews(v):
+    """'9,687 ratings and 561 reviews' / '561 Reviews' / '561' → '561'.
+    'reviews' 앞 숫자(콤마 포함) 추출. 콤마는 보존 (orchestrator 가 int 변환)."""
+    if not v:
+        return None
+    s = str(v).strip()
+    m = _REVIEWS_RE.search(s)
+    if m:
+        return m.group(1)
+    # 'reviews' 단어가 없으면 단독 숫자로 간주
+    m2 = re.match(r'^[\(\[\|]*\s*(\d[\d,]*)\s*[\)\]\|]*$', s)
+    return m2.group(1) if m2 else None
+
+
 _TRADE_UPTO_RE = re.compile(r'Up to (?!₹)(\d)')
 
 
