@@ -532,21 +532,26 @@ VALUES
    '//h1[1]',
    '"Selected Color:" 라벨 다음 div. fallback h1 색상 부분 후처리');
 
--- TV 전용
+-- TV 전용 (modern Flipkart DOM: <div>label:</div><div>value</div> 형제 패턴, td/tr 아님)
 INSERT INTO dx_siel_xpath_selectors
   (site_account,page_type,domain,data_field,xpath_primary,fallback_xpath,notes)
 VALUES
   ('Flipkart','detail','tv','savings',
-   '//div[contains(text(),"% off")]', NULL, NULL),
+   '(//div[contains(text(),"%") and string-length(normalize-space(text()))<=5 and not(ancestor::a[contains(@href,"/p/")])])[1]',
+   '//div[contains(text(),"% off")]',
+   'modern Flipkart detail: "X%" (off 없음). HHP 패턴 동일. siel_log.parse_savings 가 trailing off 제거'),
   ('Flipkart','detail','tv','model_year',
+   '//div[normalize-space(text())="Launch Year:"]/following-sibling::div[1]',
    '//td[normalize-space(text())="Launch Year"]/following-sibling::td[1]',
-   '//tr[.//td[contains(text(),"Year")]]/td[2]', NULL),
+   'modern Flipkart spec: <div>Launch Year:</div><div>VALUE</div>. 콜론 포함. fallback td/tr 보존'),
   ('Flipkart','detail','tv','screen_size',
+   '//div[normalize-space(text())="Display Size:"]/following-sibling::div[1]',
    '//td[normalize-space(text())="Display Size"]/following-sibling::td[1]',
-   '//tr[.//td[contains(text(),"Display Size") or contains(text(),"Screen Size")]]/td[2]', NULL),
+   'modern Flipkart spec. Display Size: 만 사용 (Screen Size 라벨 없음)'),
   ('Flipkart','detail','tv','estimated_annual_electricity_use',
+   '//div[normalize-space(text())="Power Consumption:" or normalize-space(text())="Annual Energy Consumption:" or normalize-space(text())="Energy Consumption:"]/following-sibling::div[1]',
    '//td[normalize-space(text())="Power Consumption"]/following-sibling::td[1]',
-   '//tr[.//td[contains(text(),"Power")]]/td[2]', NULL);
+   'modern Flipkart spec union 3종. 일부 TV 표기 자체 없음 — valid NULL 가능');
 
 -- REF 전용 (Flipkart) — ERD v1: 가격 3종 Main Page 로 통합. REF 는 savings 자체 ERD 에 정의 없음. detail 엔 spec 2종만.
 INSERT INTO dx_siel_xpath_selectors
