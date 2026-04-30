@@ -180,9 +180,11 @@ def maybe_save_html(driver) -> None:
 def extract_card(card, selectors: dict) -> dict:
     rec: dict = {}
     try:
-        rec['asin'] = card.get_attribute('data-asin')
+        asin = card.get_attribute('data-asin')
+        if asin:
+            rec['asin'] = asin
     except WebDriverException:
-        rec['asin'] = None
+        pass
     for field, sel in selectors.items():
         if field == 'base_container':
             continue

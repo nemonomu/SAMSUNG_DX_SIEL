@@ -193,29 +193,37 @@ def warn_price_logic(logger, rec: dict) -> None:
 _DEFAULT_EXCLUDE = {
     'account_name', 'product', 'stage', 'company', 'division',
     'source_url', 'batch_id', 'crawl_datetime', 'page_no',
+    'main_rank', 'bsr_rank',  # head 에 별도 표기 — 중복 방지
 }
 
 
 def log_record_summary(logger, rec: dict, exclude=None) -> None:
     """한 record 의 추출된 값 요약 1줄.
-    - detailed_review_content → detailed_review_content_card={n} 으로 표기
-    - retailer_sku_name_similar → 카운트 + truncated value
+    - main_rank / bsr_rank: head 에 표기 (parts 에서 중복 제거)
+    - detailed_review_content → detailed_review_content_card={n}
+    - retailer_sku_name_similar → 카운트 표기
+    - None / 빈 문자열 필드는 출력 X (로그 노이즈 감소)
     """
     skip = set(exclude) if exclude is not None else _DEFAULT_EXCLUDE
     rank_parts = []
     for k in ('main_rank', 'bsr_rank'):
-        if k in rec:
+        if k in rec and rec[k] is not None:
             rank_parts.append(f"{k}={rec[k]}")
     parts = []
     for k, v in rec.items():
         if k in skip:
             continue
+        if v is None or v == '':
+            continue
         if k == 'detailed_review_content':
-            parts.append(f'detailed_review_content_card={count_review_cards(v)}')
+            n = count_review_cards(v)
+            if n:
+                parts.append(f'detailed_review_content_card={n}')
         elif k == 'retailer_sku_name_similar':
             n = count_similar_names(v)
-            parts.append(f'retailer_sku_name_similar_count={n}')
+            if n:
+                parts.append(f'retailer_sku_name_similar_count={n}')
         else:
-            parts.append(f"{k}={_truncate(v)}")
+            parts.append(f"{k}={_truncate(v, 50)}")
     head = ' '.join(rank_parts) + ' | ' if rank_parts else ''
-    logger.info('record: %s%s', head, ' | '.join(parts) if parts else '(empty)')
+    logger.info('record: %s%s', head, ' | '.join(parts) if parts else '(no fields)')

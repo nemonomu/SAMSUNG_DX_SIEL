@@ -92,7 +92,8 @@ END $$;
 
 -- =============================================================================
 -- AMAZON × BSR  (Best Seller 페이지, /gp/bestsellers/)
--- 4 제품군 동일 DOM
+-- ERD: BSR Page = bsr_rank 만 명시. bsr_rank 는 코드의 positional counter 가 자동 할당.
+-- 따라서 base_container + product_url 만 시드. 4 제품군 동일 DOM.
 -- =============================================================================
 
 DO $$
@@ -108,26 +109,10 @@ BEGIN
        '//div[@id="gridItemRoot"]',
        '//div[contains(@class,"zg-grid-general-faceout")]',
        'Amazon BSR 카드'),
-      ('Amazon','bsr',d,'bsr_rank',
-       './/span[contains(@class,"zg-bdg-text")]',
-       './/span[starts-with(normalize-space(text()),"#")]',
-       '"#1", "#2" — 코드 후처리에서 # 제거'),
       ('Amazon','bsr',d,'product_url',
        './/a[contains(@class,"a-link-normal") and contains(@href,"/dp/")]',
        './/a[contains(@href,"/dp/")]',
-       'href attr'),
-      ('Amazon','bsr',d,'retailer_sku_name',
-       './/a[contains(@href,"/dp/")]//div[contains(@class,"line-clamp")]',
-       './/a[contains(@href,"/dp/")]//div[1]',
-       'BSR 상품명'),
-      ('Amazon','bsr',d,'final_sku_price',
-       './/span[contains(@class,"_cDEzb_p13n-sc-price_") or @class="a-size-base a-color-price"]',
-       './/span[contains(text(),"₹")]',
-       'BSR 가격'),
-      ('Amazon','bsr',d,'star_rating',
-       './/span[@class="a-icon-alt"]',
-       './/i[contains(@class,"a-star")]/span',
-       '"4.2 out of 5 stars" — 후처리에서 첫 숫자만');
+       'href attr — BSR 의 ASIN 은 url 에서 추출 가능');
   END LOOP;
 END $$;
 
@@ -390,7 +375,8 @@ END $$;
 
 -- =============================================================================
 -- FLIPKART × BSR  (popularity 정렬)
--- DOM 동일, 정렬만 다름
+-- ERD: bsr_rank 만 명시. 코드의 positional counter 가 자동 할당.
+-- base_container + product_url 만 시드.
 -- =============================================================================
 
 DO $$
@@ -404,15 +390,12 @@ BEGIN
     VALUES
       ('Flipkart','bsr',d,'base_container',
        '//div[.//a[contains(@href,"/p/")]][not(ancestor::div[.//a[contains(@href,"/p/")]])]',
-       '//a[contains(@href,"/p/")]/ancestor::div[2]', NULL),
+       '//a[contains(@href,"/p/")]/ancestor::div[2]',
+       'Flipkart BSR 카드'),
       ('Flipkart','bsr',d,'product_url',
-       './/a[contains(@href,"/p/")]', NULL, NULL),
-      ('Flipkart','bsr',d,'retailer_sku_name',
-       './/a[contains(@href,"/p/")]//div[string-length(normalize-space(text()))>10][1]',
-       NULL, NULL),
-      ('Flipkart','bsr',d,'final_sku_price',
-       './/div[starts-with(normalize-space(text()),"₹")][1]',
-       NULL, NULL);
+       './/a[contains(@href,"/p/")]',
+       NULL,
+       'href attr');
   END LOOP;
 END $$;
 
