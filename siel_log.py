@@ -18,6 +18,16 @@ import subprocess
 import sys
 from datetime import datetime, timezone, timedelta
 
+# Windows cmd `>` redirect 시 stdout encoding 이 cp1252 → ₹ / 이모지 출력 시 UnicodeEncodeError.
+# Python 3.7+ 의 reconfigure 로 UTF-8 강제. 모든 크롤러가 siel_log import 하니 1군데로 충분.
+for _stream in (sys.stdout, sys.stderr):
+    enc = getattr(_stream, 'encoding', '') or ''
+    if enc.lower() not in ('utf-8', 'utf8') and hasattr(_stream, 'reconfigure'):
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
