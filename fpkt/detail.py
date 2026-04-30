@@ -252,6 +252,12 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
 
     scroll_to_bottom(driver, pause=1.0, max_scrolls=10)
 
+    # spec 영역 디버깅용 — expand_specifications 클릭 후 HTML snapshot (마지막 URL 가 덮어씀)
+    if _html_path:
+        spec_html = _html_path.replace('.html', '_spec.html')
+        if siel_log.save_html(driver, spec_html) and _logger:
+            _logger.info('spec section HTML saved: %s', spec_html)
+
     # product page 의 spec / 일반 컬럼 추출 (review 는 보류)
     review_xpath = None
     for field, sel in selectors.items():

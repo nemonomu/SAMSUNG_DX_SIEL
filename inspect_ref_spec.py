@@ -1,7 +1,18 @@
 import os
 import re
 
-HTML = 'fpkt/logs/siel_flipkart_ref_detail_2604301520.html'
+import sys
+import glob
+
+# 최신 _spec.html 우선, 없으면 일반 detail html
+_logs = sorted(glob.glob('fpkt/logs/siel_flipkart_ref_detail_*_spec.html'))
+if not _logs:
+    _logs = sorted(glob.glob('fpkt/logs/siel_flipkart_ref_detail_*.html'))
+    _logs = [p for p in _logs if not p.endswith('_review.html') and not p.endswith('_spec.html')]
+if not _logs:
+    print('no html snapshot found in fpkt/logs/')
+    sys.exit(1)
+HTML = _logs[-1]
 
 with open(HTML, encoding='utf-8') as f:
     html = f.read()
