@@ -57,6 +57,60 @@ _html_path = None
 _html_saved = False
 _html_saved_post = False
 
+# emit() 가 갱신, PROGRESS_INTERVAL 마다 + 완료 시 1줄 출력
+_progress = {'total': 0, 'done': 0, 'start': 0.0,
+             'fills': {'inventory_status': 0, 'detailed_review_content': 0,
+                       'sku': 0, 'star_rating': 0},
+             'errors': 0}
+PROGRESS_INTERVAL = 25
+
+
+def init_progress(total: int) -> None:
+    global _progress
+    _progress = {'total': total, 'done': 0, 'start': time.time(),
+                 'fills': {'inventory_status': 0, 'detailed_review_content': 0,
+                           'sku': 0, 'star_rating': 0},
+                 'errors': 0}
+
+
+def _format_elapsed(sec: float) -> str:
+    s = int(sec)
+    h, r = divmod(s, 3600)
+    m, ss = divmod(r, 60)
+    if h:
+        return f"{h}h{m}m{ss}s"
+    if m:
+        return f"{m}m{ss}s"
+    return f"{ss}s"
+
+
+def _update_progress(rec: dict) -> None:
+    if _logger is None:
+        return
+    p = _progress
+    p['done'] += 1
+    if rec.get('_error'):
+        p['errors'] += 1
+    else:
+        for f in p['fills']:
+            v = rec.get(f)
+            if v not in (None, '', []):
+                p['fills'][f] += 1
+    n, t = p['done'], p['total']
+    is_final = (t > 0 and n == t)
+    if n % PROGRESS_INTERVAL == 0 or is_final:
+        elapsed = _format_elapsed(time.time() - p['start'])
+        f = p['fills']
+        if is_final:
+            _logger.info('[done] %d records in %s | rev=%d sku=%d inv=%d star=%d errors=%d',
+                         n, elapsed, f['detailed_review_content'], f['sku'],
+                         f['inventory_status'], f['star_rating'], p['errors'])
+        else:
+            pct = n * 100 // t if t else 0
+            _logger.info('[progress] %d/%d (%d%%) %s | rev=%d sku=%d inv=%d star=%d',
+                         n, t, pct, elapsed, f['detailed_review_content'], f['sku'],
+                         f['inventory_status'], f['star_rating'])
+
 
 def db_connect():
     cfg = dict(config.DB_CONFIG)
@@ -116,6 +170,7 @@ def emit(rec: dict) -> None:
     if _logger is not None:
         siel_log.warn_price_logic(_logger, rec)
         siel_log.log_record_summary(_logger, rec)
+    _update_progress(rec)
 
 
 def make_batch_id(product: str) -> str:
@@ -239,6 +294,7 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
         'division':       DIVISION,
         'source_url':     url,
         'asin':           asin,
+        'item':           asin,
         'batch_id':       batch_id,
         'crawl_datetime': now_ist_iso(),
     }
