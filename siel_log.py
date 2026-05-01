@@ -250,6 +250,17 @@ def parse_savings(v):
     return s if s else None
 
 
+_HHP_STORAGE_RE = re.compile(r'(\d+\s*[GT]B)\s*ROM', re.I)
+
+
+def parse_hhp_storage(v):
+    """'4 GB RAM | 64 GB ROM' → '64 GB'. ROM 앞 숫자+단위만."""
+    if not v:
+        return None
+    m = _HHP_STORAGE_RE.search(str(v))
+    return m.group(1).replace(' ', ' ').strip() if m else None
+
+
 _TRADE_UPTO_RE = re.compile(r'Up to (?!₹)(\d)')
 
 

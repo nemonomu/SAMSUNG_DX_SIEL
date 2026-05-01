@@ -504,13 +504,13 @@ BEGIN
        '//div[@dir="auto"]/span[string-length(normalize-space(text()))>5 and not(normalize-space(text())="more")]',
        '리뷰 페이지 navigate 후. body 는 div[dir=auto] > span.css-1jxf684. "more" expand 버튼 제외. count_of_reviews 만큼 수집 (최대 20) — fpkt/detail.py 가 &page=2,3 누적'),
       ('Flipkart','detail',d,'retailer_sku_name_similar',
-       '//div[normalize-space(text())="Similar Products"]/following::a[contains(@href,"/p/")]//h1 | //div[normalize-space(text())="Similar Products"]/following::a[contains(@href,"/p/")][position()<=10]//div[string-length(normalize-space(text()))>15]',
+       '//div[normalize-space(text())="Similar Products"]/following::a[contains(@href,"/p/")]//div[(contains(text(),"GB") or contains(text(),"TB")) and not(starts-with(normalize-space(text()),"₹"))]',
        NULL,
-       'Similar Products 헤딩 다음 a /p/ 카드들의 제목'),
+       'ERD: similar products 제품명만 — "GB"/"TB" 포함 div 중 ₹ 시작 제외. 가격/Bank offer 노이즈 자연 제외'),
       ('Flipkart','detail',d,'sku',
+       '//div[normalize-space(text())="Model Name"]/following-sibling::div[1]',
        '//h1[1]',
-       NULL,
-       'modern Flipkart spec table 에 안 보임 — h1 전체 텍스트 반환. orchestrator 후처리에서 모델명 파싱');
+       'ERD: All details > Specifications > General > Model Name 바로 아래 텍스트. expand_specifications click 후 spec 영역에 노출 — fallback h1 전체 (post-process)');
   END LOOP;
 END $$;
 
@@ -523,13 +523,13 @@ VALUES
    '//*[contains(text(),"Exchange")]/ancestor::div[1]',
    '두 xpath 결과 공백 1개 두고 합치기 — 후처리 필요'),
   ('Flipkart','detail','hhp','hhp_storage',
-   '//h1[1]',
-   '//ul/li[contains(text(),"GB ROM") or contains(text(),"GB RAM")][1]',
-   'modern Flipkart h1 = "vivo T5x 5G (Star Silver, 256 GB) (8 GB RAM)" — orchestrator 후처리에서 storage 추출'),
+   '//div[contains(text(),"GB ROM") or contains(text(),"TB ROM")][1]',
+   '//div[contains(text(),"GB RAM") and contains(text(),"ROM")][1]',
+   'ERD: Product highlights 최상단 "4 GB RAM | 64 GB ROM" → siel_log.parse_hhp_storage 가 ROM 앞 단위 추출 ("64 GB")'),
   ('Flipkart','detail','hhp','hhp_color',
+   '//div[normalize-space(text())="Color"]/following-sibling::div[1]',
    '//div[normalize-space(text())="Selected Color:"]/following::div[1]',
-   '//h1[1]',
-   '"Selected Color:" 라벨 다음 div. fallback h1 색상 부분 후처리');
+   'ERD: Specifications > General > Color 바로 아래 div. expand_specifications click 후 spec 에 노출');
 
 -- TV 전용 (modern Flipkart DOM: <div>label:</div><div>value</div> 형제 패턴, td/tr 아님)
 INSERT INTO dx_siel_xpath_selectors
