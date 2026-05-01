@@ -250,6 +250,18 @@ def parse_savings(v):
     return s if s else None
 
 
+def parse_sku_assurance(v):
+    """'Fulfilled' → 'Amazon Fulfilled'. 이미 'Amazon ' prefix 있으면 그대로 (idempotent)."""
+    if not v:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    if s.lower().startswith('amazon'):
+        return s
+    return f'Amazon {s}'
+
+
 _HHP_STORAGE_RE = re.compile(r'(\d+\s*[GT]B)\s*ROM', re.I)
 
 

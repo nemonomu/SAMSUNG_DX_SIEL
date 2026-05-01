@@ -170,6 +170,10 @@ VALUES
   -- sku/item 둘 다 SQL selector 제거 — amzn/detail.py 가 source_url 에서 ASIN 추출해 rec['sku'] 채움
   -- 이유: input[@id="ASIN"] 은 page 의 default variant 따라 dynamic (B0FC5XDV5R url → B0FC5TBWG5 잡힘 사례).
   -- url 의 ASIN 은 절대 변경 안 됨 → stable. TV/REF/LDY sku (Manufacturer Part Number) 와는 다른 의미.
+  ('Amazon','detail','hhp','sku_assurance',
+   '//*[@id="freeShippingPriceBadging_feature_div"]//i//span',
+   '//*[contains(@id,"shippedBy") or contains(@id,"merchant-info")]//span',
+   '"Fulfilled" → 후처리에서 "Amazon Fulfilled" 로 저장 (전 4 도메인 공통)'),
   ('Amazon','detail','hhp','hhp_storage',
    '//table//tr[.//th[contains(text(),"Memory Storage Capacity") or contains(text(),"Internal Memory")]]/td',
    '//div[@id="poExpander"]//table//tr[.//td[contains(text(),"Memory")]]/td[2]',
@@ -285,6 +289,10 @@ VALUES
    '//table//tr[.//th[contains(text(),"Manufacturer") and contains(text(),"Part Number")]]/td',
    '//table//tr[.//th[contains(text(),"Item model number")]]/td',
    'REF: Manufacturer Part Number'),
+  ('Amazon','detail','ref','sku_assurance',
+   '//*[@id="freeShippingPriceBadging_feature_div"]//i//span',
+   '//*[contains(@id,"shippedBy") or contains(@id,"merchant-info")]//span',
+   '"Fulfilled" → 후처리에서 "Amazon Fulfilled" 로 저장 (전 4 도메인 공통)'),
   ('Amazon','detail','ref','ref_refrigerator_type',
    '//table//tr[.//th[contains(text(),"Configuration") or contains(text(),"Refrigerator Type")]]/td',
    '//table//tr[.//th[contains(text(),"Style")]]/td',
@@ -337,6 +345,10 @@ VALUES
    '//table//tr[.//th[contains(text(),"Manufacturer") and contains(text(),"Part Number")]]/td',
    '//table//tr[.//th[contains(text(),"Item model number")]]/td',
    'LDY: Manufacturer Part Number'),
+  ('Amazon','detail','ldy','sku_assurance',
+   '//*[@id="freeShippingPriceBadging_feature_div"]//i//span',
+   '//*[contains(@id,"shippedBy") or contains(@id,"merchant-info")]//span',
+   '"Fulfilled" → 후처리에서 "Amazon Fulfilled" 로 저장 (전 4 도메인 공통)'),
   ('Amazon','detail','ldy','ldy_loading_type',
    '//table//tr[.//th[contains(text(),"Access Location") or contains(text(),"Loading Type") or contains(text(),"Configuration")]]/td',
    NULL,
