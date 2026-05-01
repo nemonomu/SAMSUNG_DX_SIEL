@@ -63,7 +63,7 @@ CREATE TABLE dx_siel_test_retail_com (
   fastest_delivery                      TEXT,
   inventory_status                      VARCHAR(64),
   sku_assurance                         VARCHAR(64),
-  number_of_units_purchased_past_month  VARCHAR(20),
+  number_of_units_purchased_past_month  VARCHAR(64),  -- "2K+ bought in past month" 형식 (24 char)
   -- 시스템
   inserted_at TIMESTAMPTZ DEFAULT NOW()
 );
