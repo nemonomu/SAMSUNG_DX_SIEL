@@ -407,7 +407,11 @@ BEGIN
       ('Flipkart','main',d,'count_of_reviews',
        './/span[contains(text(),"Reviews")]',
        NULL,
-       'ERD: Main Page. 카드 안 "1,573 Reviews" — siel_log.parse_count_of_reviews 가 "Reviews" 앞 숫자만');
+       'ERD: Main Page. 카드 안 "1,573 Reviews" — siel_log.parse_count_of_reviews 가 "Reviews" 앞 숫자만'),
+      ('Flipkart','main',d,'star_rating',
+       './/div[(string-length(normalize-space(text()))=3) and (substring(normalize-space(text()),2,1)=".") and (number(text())=number(text()))][1]',
+       NULL,
+       'ERD reference R56: Main Page 별점. 카드 안 "X.X" 패턴 (length=3, 가운데 dot, 유효 숫자). siel_log.parse_star_rating 후처리');
   END LOOP;
 END $$;
 

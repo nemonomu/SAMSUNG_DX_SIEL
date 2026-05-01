@@ -183,6 +183,8 @@ def extract_card(card, selectors: dict) -> dict:
                 rec[field] = 'Sponsored' if card.find_elements(By.XPATH, xpath) else None
             except WebDriverException:
                 rec[field] = None
+        elif field == 'star_rating':
+            rec[field] = siel_log.parse_star_rating(safe_text(card, xpath))
         elif field == 'count_of_star_ratings':
             rec[field] = siel_log.parse_count_of_ratings(safe_text(card, xpath))
         elif field == 'count_of_reviews':
