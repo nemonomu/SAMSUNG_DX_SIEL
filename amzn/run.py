@@ -76,15 +76,17 @@ def _auto_insert() -> None:
 
 
 def _auto_apply_sql():
-    """run 시작 전 SQL latest 자동 적용 — post-merge hook 미설치 환경 안전장치.
-    DROP+CREATE+INSERT idempotent 라 매 run OK. 실패 시 (DB down 등) skip — crawler 는 진행."""
-    sql_path = os.path.join(_ROOT, 'sql', 'dx_siel_xpath_selectors.sql')
+    """run 시작 전 sql/*.sql 전체 자동 적용 — post-merge hook 미설치 환경 안전장치.
+    selectors (idempotent INSERT) + dx_siel_test_retail_com (DROP+CREATE) 모두 포함.
+    매 run 시작 시 test_retail_com 은 깨끗한 상태 → 사용자가 매 run 결과만 검수.
+    실패 시 (DB down 등) skip — crawler 는 진행."""
     apply_script = os.path.join(_ROOT, 'apply_sql.py')
-    if not (os.path.exists(sql_path) and os.path.exists(apply_script)):
+    if not os.path.exists(apply_script):
         return
     try:
-        subprocess.run([sys.executable, apply_script, sql_path],
-                       check=False, timeout=60)
+        # 인자 없이 → sql/*.sql 알파벳 순서로 전체 적용
+        subprocess.run([sys.executable, apply_script],
+                       check=False, timeout=120)
     except Exception as e:
         print(f'[run.py] auto apply_sql skip: {type(e).__name__}: {e}', file=sys.stderr)
 
@@ -114,8 +116,10 @@ def _sync_logs_to_retail_com() -> None:
 
 def run_listing_capture(driver, product: str, stage: str,
                         max_rank: int, max_pages: int) -> list:
-    """listing 실행 + product_url 캡처. emit monkey-patch."""
+    """listing 실행 + product_url 캡처. emit monkey-patch.
+    init_progress(max_rank) 으로 stage 별 진행도 tracker reset."""
     L.init_logging(product, stage)
+    L.init_progress(max_rank)
     captured: list = []
     original_emit = L.emit
 
@@ -137,7 +141,7 @@ def run_listing_capture(driver, product: str, stage: str,
             L.crawl_main(driver, product, sels, batch_id,
                          max_rank=max_rank, max_pages=max_pages)
         else:
-            L.crawl_bsr(driver, product, sels, batch_id)
+            L.crawl_bsr(driver, product, sels, batch_id, max_rank=max_rank)
     finally:
         L.emit = original_emit
     return captured
@@ -166,9 +170,14 @@ def run_detail(driver, product: str, urls: list, sleep_s: float) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description='Amazon.In 통합 크롤러')
     ap.add_argument('--product', required=True, choices=['hhp', 'tv', 'ref', 'ldy'])
-    ap.add_argument('--stages', nargs='+', required=True,
-                    choices=['main', 'bsr', 'detail'])
-    ap.add_argument('--max-rank', type=int, default=300)
+    ap.add_argument('--stages', nargs='+',
+                    default=['main', 'bsr', 'detail'],
+                    choices=['main', 'bsr', 'detail'],
+                    help='default: main bsr detail (full run)')
+    ap.add_argument('--max-rank', type=int, default=300,
+                    help='main 단계 max rank (default 300)')
+    ap.add_argument('--bsr-max-rank', type=int, default=100,
+                    help='bsr 단계 max rank cap (default 100)')
     ap.add_argument('--max-pages', type=int, default=30)
     ap.add_argument('--max-detail', type=int, default=None,
                     help='detail 단계 처리 URL 수 제한 (default 무제한)')
@@ -198,8 +207,9 @@ def main() -> int:
     try:
         for stage in args.stages:
             if stage in ('main', 'bsr'):
+                stage_max = args.max_rank if stage == 'main' else args.bsr_max_rank
                 urls = run_listing_capture(driver, args.product, stage,
-                                           args.max_rank, args.max_pages)
+                                           stage_max, args.max_pages)
                 added = 0
                 for u in urls:
                     # Amazon 은 ASIN 만 비교 (URL query/path 변동 무관)
