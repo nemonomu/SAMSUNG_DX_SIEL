@@ -202,10 +202,10 @@ def westernize_commas(v):
 
 
 def parse_price_value(v):
-    """'₹1,49,999' → '149,999'. ₹ prefix 제거 + 인도식 → 서양식 콤마."""
+    """'₹1,49,999' → '₹149,999'. ₹ prefix 보존, 인도식 → 서양식 콤마만 정리."""
     if not v:
         return None
-    s = str(v).replace('₹', '').strip()
+    s = str(v).strip()
     s = westernize_commas(s)
     return s if s else None
 
