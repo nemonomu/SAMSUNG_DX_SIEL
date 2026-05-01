@@ -427,9 +427,9 @@ _DEFAULT_EXCLUDE = {
 
 
 def log_record_summary(logger, rec: dict, exclude=None) -> None:
-    """한 record 의 추출된 값 요약 1줄.
+    """한 record 의 추출된 값 요약 1줄. "수집대상 스키마 : 수집된 값" 형식.
     - main_rank / bsr_rank: head 에 표기 (parts 에서 중복 제거)
-    - detailed_review_content → detailed_review_content_card={n}
+    - detailed_review_content → detailed_review_content_card : {n}
     - retailer_sku_name_similar → 카운트 표기
     - None / 빈 문자열 필드는 출력 X (로그 노이즈 감소)
     """
@@ -437,7 +437,7 @@ def log_record_summary(logger, rec: dict, exclude=None) -> None:
     rank_parts = []
     for k in ('main_rank', 'bsr_rank'):
         if k in rec and rec[k] is not None:
-            rank_parts.append(f"{k}={rec[k]}")
+            rank_parts.append(f"{k} : {rec[k]}")
     parts = []
     for k, v in rec.items():
         if k in skip:
@@ -447,12 +447,12 @@ def log_record_summary(logger, rec: dict, exclude=None) -> None:
         if k == 'detailed_review_content':
             n = count_review_cards(v)
             if n:
-                parts.append(f'detailed_review_content_card={n}')
+                parts.append(f'detailed_review_content_card : {n}')
         elif k == 'retailer_sku_name_similar':
             n = count_similar_names(v)
             if n:
-                parts.append(f'retailer_sku_name_similar_count={n}')
+                parts.append(f'retailer_sku_name_similar_count : {n}')
         else:
-            parts.append(f"{k}={_truncate(v, 50)}")
+            parts.append(f"{k} : {_truncate(v, 50)}")
     head = ' '.join(rank_parts) + ' | ' if rank_parts else ''
     logger.info('record: %s%s', head, ' | '.join(parts) if parts else '(no fields)')
