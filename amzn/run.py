@@ -74,6 +74,7 @@ def run_listing_capture(driver, product: str, stage: str,
 
 def run_detail(driver, product: str, urls: list, sleep_s: float) -> int:
     D.init_logging(product)
+    D.init_progress(len(urls))
     sels = D.load_selectors(D.SITE_ACCOUNT, D.STAGE, product)
     batch_id = D.make_batch_id(product)
     if not sels:
