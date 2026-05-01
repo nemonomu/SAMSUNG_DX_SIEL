@@ -102,7 +102,11 @@ def main() -> int:
     ap.add_argument('--stages', nargs='+', required=True,
                     choices=['main', 'bsr', 'detail'])
     ap.add_argument('--max-rank', type=int, default=None,
-                    help='listing 단계 max_rank. default: main=300, bsr=100')
+                    help='listing 단계 공통 max_rank (호환). default: main=300, bsr=100')
+    ap.add_argument('--max-rank-main', type=int, default=None,
+                    help='main 단계 max_rank. 있으면 --max-rank 보다 우선')
+    ap.add_argument('--max-rank-bsr', type=int, default=None,
+                    help='bsr 단계 max_rank. 있으면 --max-rank 보다 우선')
     ap.add_argument('--max-pages', type=int, default=30)
     ap.add_argument('--max-detail', type=int, default=None,
                     help='detail 단계 처리 URL 수 제한 (default 무제한)')
@@ -116,8 +120,12 @@ def main() -> int:
     try:
         for stage in args.stages:
             if stage in ('main', 'bsr'):
+                if stage == 'main':
+                    mr = args.max_rank_main if args.max_rank_main is not None else args.max_rank
+                else:
+                    mr = args.max_rank_bsr if args.max_rank_bsr is not None else args.max_rank
                 urls = run_listing_capture(driver, args.product, stage,
-                                           args.max_rank, args.max_pages)
+                                           mr, args.max_pages)
                 added = 0
                 for u in urls:
                     key = (u or '').split('?', 1)[0].rstrip('/')

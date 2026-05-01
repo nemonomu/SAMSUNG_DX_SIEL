@@ -88,6 +88,7 @@ def main():
     args = ap.parse_args()
 
     main_by_url = {}
+    bsr_by_url = {}
     detail_by_url = {}
 
     with open(args.jsonl, encoding='utf-8') as f:
@@ -105,22 +106,41 @@ def main():
                 continue
             if stage == 'detail':
                 detail_by_url[url] = r
+            elif stage == 'bsr':
+                bsr_by_url[url] = r
+            elif stage == 'main':
+                main_by_url[url] = r
             else:
+                # stage 미상 — main 으로 가정
                 main_by_url[url] = r
 
     rows = []
-    for url, m in main_by_url.items():
+    all_urls = set(main_by_url) | set(bsr_by_url) | set(detail_by_url)
+    for url in all_urls:
+        m = main_by_url.get(url, {})
+        b = bsr_by_url.get(url, {})
         d = detail_by_url.get(url, {})
-        merged = {**m, **d}
-        # detail 의 source_url 이 main 의 product_url 을 덮어쓰지 않도록
-        merged['product_url'] = m.get('product_url') or d.get('source_url')
+        # main → bsr → detail 순으로 merge (detail 이 가장 최신 spec). main_rank/bsr_rank 둘 다 보존.
+        merged = {**m, **b, **d}
+        merged['product_url'] = m.get('product_url') or b.get('product_url') or d.get('source_url')
+
+        # main_rank / bsr_rank 는 union merge 후 각각 살림
+        if m.get('main_rank') is not None:
+            merged['main_rank'] = m.get('main_rank')
+        if b.get('bsr_rank') is not None:
+            merged['bsr_rank'] = b.get('bsr_rank')
+
+        page_parts = []
+        if m: page_parts.append('main')
+        if b: page_parts.append('bsr')
+        if d: page_parts.append('detail')
 
         row = {c: None for c in COLS}
         row['country'] = args.country
         row['product'] = normalize_product(merged.get('product'))
         row['account_name'] = normalize_account(merged.get('account_name'))
         row['item'] = merged.get('fsn') or merged.get('item')
-        row['page_type'] = 'main+detail' if d else 'main'
+        row['page_type'] = '+'.join(page_parts) if page_parts else None
 
         for k in COLS:
             if row[k] is None and k in merged and merged[k] not in (None, ''):
@@ -136,7 +156,7 @@ def main():
         rows.append(row)
 
     if not rows:
-        print(f'no rows to insert (main_n={len(main_by_url)} detail_n={len(detail_by_url)})')
+        print(f'no rows to insert (main_n={len(main_by_url)} bsr_n={len(bsr_by_url)} detail_n={len(detail_by_url)})')
         return 0
 
     cfg = dict(config.DB_CONFIG)
@@ -150,7 +170,7 @@ def main():
             psycopg2.extras.execute_batch(cur, sql, data)
         conn.commit()
         print(f'inserted {len(rows)} rows into {args.table} '
-              f'(main_n={len(main_by_url)} detail_n={len(detail_by_url)})')
+              f'(main_n={len(main_by_url)} bsr_n={len(bsr_by_url)} detail_n={len(detail_by_url)})')
     finally:
         conn.close()
     return 0
