@@ -62,7 +62,7 @@ _progress = {'total': 0, 'done': 0, 'start': 0.0,
              'fills': {'inventory_status': 0, 'detailed_review_content': 0,
                        'sku': 0, 'star_rating': 0},
              'errors': 0}
-PROGRESS_INTERVAL = 25
+PROGRESS_INTERVAL = 1  # 매 record 마다 progress + 누적 elapsed 출력
 
 
 def init_progress(total: int) -> None:

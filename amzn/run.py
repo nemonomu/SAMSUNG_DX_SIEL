@@ -11,15 +11,68 @@ listing 단계에서 추출된 product_url 을 모아서 detail 단계 입력으
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
 import time
 import traceback
+from datetime import datetime, timezone, timedelta
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+# emit dual write — stdout JSONL (사용자 redirect) + 자동 results file (auto INSERT 용)
+_results_path = None
+_results_file = None
+
+
+def _setup_results(product: str) -> None:
+    global _results_path, _results_file
+    ts = datetime.now(_IST).strftime('%Y%m%d%H%M%S')
+    logs_dir = os.path.join(_ROOT, 'amzn', 'logs')
+    os.makedirs(logs_dir, exist_ok=True)
+    _results_path = os.path.join(logs_dir, f'siel_amazon_{product}_run_{ts}.jsonl')
+    _results_file = open(_results_path, 'w', encoding='utf-8')
+
+
+def _write_results(rec: dict) -> None:
+    if _results_file is None:
+        return
+    try:
+        _results_file.write(json.dumps(rec, ensure_ascii=False) + '\n')
+        _results_file.flush()
+    except Exception:
+        pass
+
+
+def _close_results() -> None:
+    global _results_file
+    if _results_file is not None:
+        try:
+            _results_file.close()
+        except Exception:
+            pass
+        _results_file = None
+
+
+def _auto_insert() -> None:
+    """run 끝난 후 results jsonl 의 모든 row 를 dx_siel_test_retail_com 에 INSERT."""
+    if not (_results_path and os.path.exists(_results_path)):
+        return
+    insert_script = os.path.join(_ROOT, 'insert_test_retail_com.py')
+    if not os.path.exists(insert_script):
+        return
+    print(f'[run.py] auto INSERT to dx_siel_test_retail_com from {_results_path}',
+          file=sys.stderr)
+    try:
+        subprocess.run([sys.executable, insert_script, _results_path, '999999'],
+                       check=False, timeout=600)
+    except Exception as e:
+        print(f'[run.py] auto INSERT failed: {type(e).__name__}: {e}', file=sys.stderr)
 
 
 def _auto_apply_sql():
@@ -123,6 +176,22 @@ def main() -> int:
     ap.add_argument('--headless', action='store_true')
     args = ap.parse_args()
 
+    # results jsonl + emit dual write (stdout 그대로 + 자동 file → finally 에 INSERT)
+    _setup_results(args.product)
+    _orig_L_emit = L.emit
+    _orig_D_emit = D.emit
+
+    def _L_dual(rec):
+        _orig_L_emit(rec)
+        _write_results(rec)
+
+    def _D_dual(rec):
+        _orig_D_emit(rec)
+        _write_results(rec)
+
+    L.emit = _L_dual
+    D.emit = _D_dual
+
     driver = L.make_driver(headless=args.headless)
     captured: list = []
     seen = set()  # url path dedupe — main+bsr 중복 제거 (Amazon 은 ASIN 으로 dedupe)
@@ -162,7 +231,9 @@ def main() -> int:
             driver.quit()
         except Exception:
             pass
+        _close_results()
         _sync_logs_to_retail_com()
+        _auto_insert()
 
 
 if __name__ == '__main__':
