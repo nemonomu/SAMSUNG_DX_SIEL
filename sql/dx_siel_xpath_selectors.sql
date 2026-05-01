@@ -506,11 +506,7 @@ BEGIN
        '//a[contains(@href,"/product-reviews/") and not(contains(@href,"buynow"))]',
        NULL,
        '리뷰 페이지 anchor — Buy now 회피'),
-      ('Flipkart','detail',d,'star_rating',
-       '(//a[contains(@href,"ratings-reviews-details-page")]//div[@dir="auto"])[1]',
-       '//div[@dir="auto" and (string-length(normalize-space(text()))<=4) and (number(text()) = number(text()))][1]',
-       '"4.5" — modern Flipkart 는 ratings-reviews-details-page anchor 안 첫 dir=auto div'),
-      -- count_of_star_ratings / count_of_reviews 는 ERD 기준 Main Page 에서 수집 (이전엔 detail 에 정의했으나 ERD 어긋남 — 2026-04-30 이전).
+      -- star_rating / count_of_star_ratings / count_of_reviews 는 ERD 기준 Main Page 에서 수집 (reference 시트 r56/r51/r49). detail 정의 X.
       ('Flipkart','detail',d,'delivery_availability',
        '//div[normalize-space(text())="Delivery"]/parent::div',
        '//div[contains(text(),"Delivery by") or contains(text(),"FREE Delivery") or contains(text(),"Free Delivery")][1]',
