@@ -204,6 +204,10 @@ def extract_card(card, selectors: dict) -> dict:
         m = _ASIN_RE.search(rec['product_url'])
         if m:
             rec['asin'] = m.group(1)
+    # 3) Sponsored 카드 fallback — selector 가 ad redirect URL 못 잡으면
+    # data-asin 으로 canonical /dp/<ASIN> URL 생성 (retail_com 분석 일관성)
+    if rec.get('asin') and not rec.get('product_url'):
+        rec['product_url'] = f'https://www.amazon.in/dp/{rec["asin"]}'
     return rec
 
 
