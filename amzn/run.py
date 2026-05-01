@@ -125,18 +125,33 @@ def main() -> int:
 
     driver = L.make_driver(headless=args.headless)
     captured: list = []
+    seen = set()  # url path dedupe — main+bsr 중복 제거 (Amazon 은 ASIN 으로 dedupe)
     try:
         for stage in args.stages:
             if stage in ('main', 'bsr'):
                 urls = run_listing_capture(driver, args.product, stage,
                                            args.max_rank, args.max_pages)
-                captured.extend(urls)
+                added = 0
+                for u in urls:
+                    # Amazon 은 ASIN 만 비교 (URL query/path 변동 무관)
+                    import re as _re
+                    m = _re.search(r'/(?:dp|gp/product)/([A-Z0-9]{10})', u or '')
+                    key = m.group(1) if m else (u or '').split('?', 1)[0].rstrip('/')
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    captured.append(u)
+                    added += 1
+                print(f'[run] stage={stage} captured={len(urls)} unique_added={added} total_unique={len(captured)}',
+                      file=sys.stderr)
             else:  # detail
                 use_urls = captured if args.max_detail is None else captured[:args.max_detail]
                 if not use_urls:
                     D.emit({'_warn': 'no product_urls captured for detail',
                             'product': args.product})
                     continue
+                print(f'[run] stage=detail processing={len(use_urls)} (dedupe 후)',
+                      file=sys.stderr)
                 run_detail(driver, args.product, use_urls, args.detail_sleep)
         return 0
     except Exception as e:
