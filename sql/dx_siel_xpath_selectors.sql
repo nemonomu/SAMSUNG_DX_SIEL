@@ -72,9 +72,9 @@ BEGIN
        './/span[@data-a-strike="true"]//span[@class="a-offscreen"]',
        'M.R.P. 가격 (할인 전)'),
       ('Amazon','main',d,'discount_type',
-       './/*[contains(@id,"DEAL_") and contains(@id,"-label")]//span[contains(@class,"a-badge-text")]',
+       './/*[contains(@id,"DEAL_") and contains(@id,"-label")]//span[contains(@class,"a-badge-text")] | .//*[contains(@id,"DEAL_") and contains(@id,"-label")]/span/span',
        './/span[contains(@class,"s-coupon-clipped")]',
-       'Limited time deal / Coupon 등 — Amazon Choice 배지 분리'),
+       'Limited time deal / Coupon 등. union: a-badge-text class layout | nested /span/span layout (class 부재). 첫 매치 우선'),
       ('Amazon','main',d,'sku_popularity',
        './/span[@aria-label="Amazon''s Choice" or contains(text(),"Best Seller")]',
        './/*[contains(@id,"amazons-choice-label")]//span',
@@ -342,9 +342,9 @@ VALUES
    NULL,
    'e.g. "Top load" / "Front load"'),
   ('Amazon','detail','ldy','ldy_capacity',
-   '//table//tr[.//th[contains(text(),"Capacity")]]/td',
-   '//table//tr[.//th[contains(text(),"Washing Capacity")]]/td',
-   'e.g. "8kg"');
+   '//table//tr[.//th[contains(text(),"Capacity")]]/td | //div[@id="detailBullets_feature_div"]//li[.//span[contains(text(),"Capacity")]]/span[2] | //div[@id="productOverview_feature_div"]//table//tr[.//td[contains(text(),"Capacity")]]/td[2]',
+   '//table//tr[.//th[contains(text(),"Washing Capacity") or contains(text(),"Total Capacity") or contains(text(),"Drum Capacity")]]/td',
+   'union: table | detailBullets | poExpander. fallback 에 라벨 variation. e.g. "8kg"');
 
 -- =============================================================================
 -- FLIPKART × MAIN  (relevance 정렬 검색 결과)
