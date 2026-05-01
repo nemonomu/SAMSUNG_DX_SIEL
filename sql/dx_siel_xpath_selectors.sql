@@ -171,10 +171,7 @@ VALUES
    '//input[@id="ASIN"] | //div[@id="detailBullets_feature_div"]//li[.//span[contains(text(),"ASIN")]]/span[2] | //table[contains(@id,"productDetails_detailBullets") or contains(@id,"productDetails_techSpec") or contains(@id,"productDetails_expanderTables")]//tr[.//th[contains(text(),"ASIN")]]/td',
    '//div[@id="detailBullets_feature_div"]//li[.//span[contains(text(),"ASIN")]]/span[2]',
    'HHP ASIN: hidden input[@id="ASIN"] (신 UI, primary) | detailBullets | productDetails table. input 은 코드가 attr value 로 추출'),
-  ('Amazon','detail','hhp','item',
-   '//table//tr[.//th[contains(text(),"ASIN")]]/td',
-   '//div[@id="detailBullets_feature_div"]//li[.//span[contains(text(),"ASIN")]]/span[2]',
-   'item = asin (코드는 url 에서도 추출 시도)'),
+  -- item 컬럼은 SQL selector 제거 — orchestrator 가 source_url 에서 ASIN 추출 (TV/REF/LDY 와 일관)
   ('Amazon','detail','hhp','hhp_storage',
    '//table//tr[.//th[contains(text(),"Memory Storage Capacity") or contains(text(),"Internal Memory")]]/td',
    '//div[@id="poExpander"]//table//tr[.//td[contains(text(),"Memory")]]/td[2]',
