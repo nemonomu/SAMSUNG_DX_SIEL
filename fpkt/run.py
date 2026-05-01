@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import time
 import traceback
@@ -18,6 +19,23 @@ import traceback
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+
+
+def _auto_apply_sql():
+    """run 시작 전 SQL latest 자동 적용 — post-merge hook 미설치 환경 안전장치.
+    DROP+CREATE+INSERT idempotent 라 매 run OK. 실패 시 (DB down 등) skip — crawler 는 진행."""
+    sql_path = os.path.join(_ROOT, 'sql', 'dx_siel_xpath_selectors.sql')
+    apply_script = os.path.join(_ROOT, 'apply_sql.py')
+    if not (os.path.exists(sql_path) and os.path.exists(apply_script)):
+        return
+    try:
+        subprocess.run([sys.executable, apply_script, sql_path],
+                       check=False, timeout=60)
+    except Exception as e:
+        print(f'[run.py] auto apply_sql skip: {type(e).__name__}: {e}', file=sys.stderr)
+
+
+_auto_apply_sql()
 
 from fpkt import listing as L
 from fpkt import detail as D
