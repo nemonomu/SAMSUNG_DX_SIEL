@@ -15,9 +15,9 @@
 
 \encoding UTF8
 
-DROP TABLE IF EXISTS dx_siel_xpath_selectors;
+-- 데이터 보존 — DROP 금지. INSERT 는 ON CONFLICT 로 update.
 
-CREATE TABLE dx_siel_xpath_selectors (
+CREATE TABLE IF NOT EXISTS dx_siel_xpath_selectors (
   id              SERIAL PRIMARY KEY,
   site_account    VARCHAR(20)  NOT NULL,   -- 'Amazon' / 'Flipkart'
   page_type       VARCHAR(10)  NOT NULL,   -- 'main' / 'bsr' / 'detail'
@@ -32,7 +32,7 @@ CREATE TABLE dx_siel_xpath_selectors (
   UNIQUE (site_account, page_type, domain, data_field)
 );
 
-CREATE INDEX idx_dx_siel_xpath_lookup ON dx_siel_xpath_selectors
+CREATE INDEX IF NOT EXISTS idx_dx_siel_xpath_lookup ON dx_siel_xpath_selectors
   (site_account, page_type, domain, is_active);
 
 -- =============================================================================
@@ -86,7 +86,13 @@ BEGIN
       ('Amazon','main',d,'number_of_units_purchased_past_month',
        './/span[contains(@class,"a-color-secondary") and contains(text(),"bought in past month")]',
        './/span[contains(text(),"bought in past")]',
-       'e.g. "2K+ bought in past month"');
+       'e.g. "2K+ bought in past month"')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
   END LOOP;
 END $$;
 
@@ -112,7 +118,13 @@ BEGIN
       ('Amazon','bsr',d,'product_url',
        './/a[contains(@class,"a-link-normal") and contains(@href,"/dp/")]',
        './/a[contains(@href,"/dp/")]',
-       'href attr — BSR 의 ASIN 은 url 에서 추출 가능');
+       'href attr — BSR 의 ASIN 은 url 에서 추출 가능')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
   END LOOP;
 END $$;
 
@@ -185,7 +197,13 @@ VALUES
   ('Amazon','detail','hhp','trade_in',
    '//*[@id="buyBackAccordionRow"]//h5',
    '//div[contains(@id,"buyBack") or contains(@id,"exchangePopover")]//*[contains(text(),"Exchange") or contains(text(),"Trade-in")]',
-   '"Trade-in and save" / "With Exchange Up to ..."');
+   '"Trade-in and save" / "With Exchange Up to ..."')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
 
 -- =============================================================================
 -- AMAZON × DETAIL × TV  — 미검증, HHP 와 동일 selector 가정 (검증 후 결정)
@@ -244,7 +262,13 @@ VALUES
    'e.g. "237.25 Kilowatt Hours Per Year"'),
   ('Amazon','detail','tv','model_year',
    '//table//tr[.//th[contains(text(),"Model Year")]]/td',
-   NULL, NULL);
+   NULL, NULL)
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
 
 -- =============================================================================
 -- AMAZON × DETAIL × REF  — 미검증, HHP 와 동일 selector 가정 (검증 후 결정)
@@ -300,7 +324,13 @@ VALUES
   ('Amazon','detail','ref','ref_capacity',
    '//table//tr[.//th[contains(text(),"Capacity")]]/td',
    '//table//tr[.//th[contains(text(),"Total Capacity") or contains(text(),"Capacity (Litres)")]]/td',
-   'e.g. "300L"');
+   'e.g. "300L"')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
 
 -- =============================================================================
 -- AMAZON × DETAIL × LDY (laundry / 세탁기)  — 미검증, HHP 와 동일 selector 가정
@@ -356,7 +386,13 @@ VALUES
   ('Amazon','detail','ldy','ldy_capacity',
    '//table//tr[.//th[contains(text(),"Capacity")]]/td | //div[@id="detailBullets_feature_div"]//li[.//span[contains(text(),"Capacity")]]/span[2] | //div[@id="productOverview_feature_div"]//table//tr[.//td[contains(text(),"Capacity")]]/td[2]',
    '//table//tr[.//th[contains(text(),"Washing Capacity") or contains(text(),"Total Capacity") or contains(text(),"Drum Capacity")]]/td',
-   'union: table | detailBullets | poExpander. fallback 에 라벨 variation. e.g. "8kg"');
+   'union: table | detailBullets | poExpander. fallback 에 라벨 variation. e.g. "8kg"')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
 
 -- =============================================================================
 -- FLIPKART × MAIN  (relevance 정렬 검색 결과)
@@ -411,7 +447,13 @@ BEGIN
       ('Flipkart','main',d,'star_rating',
        './/div[(string-length(normalize-space(text()))=3) and (substring(normalize-space(text()),2,1)=".") and (number(text())=number(text()))][1]',
        NULL,
-       'ERD reference R56: Main Page 별점. 카드 안 "X.X" 패턴 (length=3, 가운데 dot, 유효 숫자). siel_log.parse_star_rating 후처리');
+       'ERD reference R56: Main Page 별점. 카드 안 "X.X" 패턴 (length=3, 가운데 dot, 유효 숫자). siel_log.parse_star_rating 후처리')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
   END LOOP;
 END $$;
 
@@ -432,7 +474,13 @@ BEGIN
       ('Flipkart','main',d,'original_sku_price',
        './/div[starts-with(normalize-space(text()),"₹")][1]/following-sibling::div[1][starts-with(normalize-space(text()),"₹")]',
        NULL,
-       'M.R.P. — first ₹ div 의 직접 sibling 첫 ₹ (없으면 null = 할인 없는 product)');
+       'M.R.P. — first ₹ div 의 직접 sibling 첫 ₹ (없으면 null = 할인 없는 product)')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
   END LOOP;
 END $$;
 
@@ -449,7 +497,13 @@ BEGIN
       ('Flipkart','main',d,'savings',
        './/*[contains(text(),"% off")]',
        './/div[contains(text(),"%") and string-length(normalize-space(text()))<=5]',
-       'ERD: Main Page (HHP+TV). e.g. "21% off"');
+       'ERD: Main Page (HHP+TV). e.g. "21% off"')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
   END LOOP;
 END $$;
 
@@ -475,7 +529,13 @@ BEGIN
       ('Flipkart','bsr',d,'product_url',
        './/a[contains(@href,"/p/")]',
        NULL,
-       'href attr');
+       'href attr')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
   END LOOP;
 END $$;
 
@@ -526,7 +586,13 @@ BEGIN
       ('Flipkart','detail',d,'sku',
        '//div[normalize-space(text())="Model Name"]/following-sibling::div[1]',
        '//h1[1]',
-       'ERD: All details > Specifications > General > Model Name 바로 아래 텍스트. expand_specifications click 후 spec 영역에 노출 — fallback h1 전체 (post-process)');
+       'ERD: All details > Specifications > General > Model Name 바로 아래 텍스트. expand_specifications click 후 spec 영역에 노출 — fallback h1 전체 (post-process)')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
   END LOOP;
 END $$;
 
@@ -545,7 +611,13 @@ VALUES
   ('Flipkart','detail','hhp','hhp_color',
    '//div[normalize-space(text())="Color"]/following-sibling::div[1]',
    '//div[normalize-space(text())="Selected Color:"]/following::div[1]',
-   'ERD: Specifications > General > Color 바로 아래 div. expand_specifications click 후 spec 에 노출');
+   'ERD: Specifications > General > Color 바로 아래 div. expand_specifications click 후 spec 에 노출')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
 
 -- TV 전용 (modern Flipkart DOM: <div>label:</div><div>value</div> 형제 패턴, td/tr 아님)
 INSERT INTO dx_siel_xpath_selectors
@@ -566,7 +638,13 @@ VALUES
   ('Flipkart','detail','tv','estimated_annual_electricity_use',
    '//div[normalize-space(text())="Power Consumption" or normalize-space(text())="Annual Energy Consumption" or normalize-space(text())="Energy Consumption" or normalize-space(text())="Power Consumption:" or normalize-space(text())="Annual Energy Consumption:"]/following-sibling::div[1]',
    '//td[normalize-space(text())="Power Consumption"]/following-sibling::td[1]',
-   'deep spec (Power Features 그룹 — See more 후 lazy load). 라벨 콜론 없음 (highlights 와 다름). value 단위 (Standby W vs kWh/Year) 사이트별 의미 mismatch 가능 — raw 그대로 저장 후 분석 단계 분기');
+   'deep spec (Power Features 그룹 — See more 후 lazy load). 라벨 콜론 없음 (highlights 와 다름). value 단위 (Standby W vs kWh/Year) 사이트별 의미 mismatch 가능 — raw 그대로 저장 후 분석 단계 분기')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
 
 -- REF 전용 (Flipkart) — ERD v1: 가격 3종 Main Page 로 통합. REF 는 savings 자체 ERD 에 정의 없음. detail 엔 spec 2종만.
 -- HHP hhp_color 와 동일 sibling 패턴 (ERD 의 Specifications 표 라벨 → sibling 값 div).
@@ -582,7 +660,13 @@ VALUES
   ('Flipkart','detail','ref','ref_capacity',
    '(//div[normalize-space(text())="Specifications"]/following::div[normalize-space(text())="Capacity"])[1]/following-sibling::div[1]',
    '//div[normalize-space(text())="Capacity:"]/following::div[1]',
-   'ERD: Specifications > General > Capacity. Capacity 라벨이 icon/mini-spec 에도 존재 → Specifications heading scope 필수 (HHP Color 보다 stray 우려 큼). Samsung 301L 4.4 별점 stray 차단. expand 실패 product 는 valid null');
+   'ERD: Specifications > General > Capacity. Capacity 라벨이 icon/mini-spec 에도 존재 → Specifications heading scope 필수 (HHP Color 보다 stray 우려 큼). Samsung 301L 4.4 별점 stray 차단. expand 실패 product 는 valid null')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
 
 -- LDY 전용 (modern Flipkart DOM: <div>label</div><div>value</div> 형제 패턴, 콜론 없음 — TV 와 다름)
 INSERT INTO dx_siel_xpath_selectors
@@ -595,7 +679,13 @@ VALUES
   ('Flipkart','detail','ldy','ldy_capacity',
    '//div[normalize-space(text())="Washing Capacity"]/following-sibling::div[1]',
    '//td[normalize-space(text())="Washing Capacity"]/following-sibling::td[1]',
-   'modern Flipkart spec div 패턴. fallback td 보존');
+   'modern Flipkart spec div 패턴. fallback td 보존')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
 
 -- =============================================================================
 -- 확인 쿼리
