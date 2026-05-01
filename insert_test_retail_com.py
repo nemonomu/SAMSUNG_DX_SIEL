@@ -102,8 +102,8 @@ def merge(main: dict, detail: dict, max_n: int = 10) -> list:
             'batch_id':          m.get('batch_id') or d.get('batch_id'),
             # 평점/리뷰: detail 에 있으면 detail 우선 (더 정확)
             'star_rating':               d.get('star_rating'),
-            'count_of_star_ratings':     m.get('count_of_star_ratings'),
-            'count_of_reviews':          m.get('count_of_reviews'),
+            'count_of_star_ratings':     d.get('count_of_star_ratings') or m.get('count_of_star_ratings'),
+            'count_of_reviews':          d.get('count_of_reviews') or m.get('count_of_reviews'),
             'detailed_review_content':   d.get('detailed_review_content'),
             'retailer_sku_name_similar': d.get('retailer_sku_name_similar'),
             # 가격: main (ERD)
