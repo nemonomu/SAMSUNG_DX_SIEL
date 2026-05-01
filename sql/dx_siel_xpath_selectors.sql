@@ -167,11 +167,9 @@ VALUES
    '//div[@data-hook="review-collapsed" or @data-hook="review-body"]//span[not(@class)] | //div[@data-hook="reviewRichContentContainer"]',
    '//div[contains(@id,"customer_review-")]//span[@data-hook="review-body"]',
    'Amazon HHP 도 review widget A/B 마이그레이션 영향 — full-run 247/400 회귀 (3d4e280 retry 강화로도 복구 안 됨). 옛 review-collapsed/body | 신 cr-top-reviews carousel reviewRichContentContainer union. superset 이라 옛 케이스 회귀 0'),
-  ('Amazon','detail','hhp','sku',
-   '//input[@id="ASIN"] | //div[@id="detailBullets_feature_div"]//li[.//span[contains(text(),"ASIN")]]/span[2] | //table[contains(@id,"productDetails_detailBullets") or contains(@id,"productDetails_techSpec") or contains(@id,"productDetails_expanderTables")]//tr[.//th[contains(text(),"ASIN")]]/td',
-   '//div[@id="detailBullets_feature_div"]//li[.//span[contains(text(),"ASIN")]]/span[2]',
-   'HHP ASIN: hidden input[@id="ASIN"] (신 UI, primary) | detailBullets | productDetails table. input 은 코드가 attr value 로 추출'),
-  -- item 컬럼은 SQL selector 제거 — orchestrator 가 source_url 에서 ASIN 추출 (TV/REF/LDY 와 일관)
+  -- sku/item 둘 다 SQL selector 제거 — amzn/detail.py 가 source_url 에서 ASIN 추출해 rec['sku'] 채움
+  -- 이유: input[@id="ASIN"] 은 page 의 default variant 따라 dynamic (B0FC5XDV5R url → B0FC5TBWG5 잡힘 사례).
+  -- url 의 ASIN 은 절대 변경 안 됨 → stable. TV/REF/LDY sku (Manufacturer Part Number) 와는 다른 의미.
   ('Amazon','detail','hhp','hhp_storage',
    '//table//tr[.//th[contains(text(),"Memory Storage Capacity") or contains(text(),"Internal Memory")]]/td',
    '//div[@id="poExpander"]//table//tr[.//td[contains(text(),"Memory")]]/td[2]',

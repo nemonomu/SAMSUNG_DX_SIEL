@@ -230,6 +230,7 @@ def extract_text_or_value(driver, xpath: str):
 
 
 def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str) -> dict:
+    asin = asin_from_url(url)
     rec: dict = {
         'account_name':   ACCOUNT_NAME,
         'product':        product,
@@ -237,10 +238,14 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
         'company':        COMPANY,
         'division':       DIVISION,
         'source_url':     url,
-        'asin':           asin_from_url(url),
+        'asin':           asin,
         'batch_id':       batch_id,
         'crawl_datetime': now_ist_iso(),
     }
+    # HHP sku = url 의 ASIN (stable). input[@id="ASIN"] 은 default variant 따라 dynamic 이라 unsafe.
+    # TV/REF/LDY 는 SQL selector (Manufacturer Part Number) 사용 — 분기 X.
+    if product == 'hhp':
+        rec['sku'] = asin
     if _logger:
         _logger.info('detail url=%s', url)
     try:
