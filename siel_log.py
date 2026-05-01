@@ -261,6 +261,14 @@ def parse_hhp_storage(v):
     return m.group(1).replace(' ', ' ').strip() if m else None
 
 
+def parse_delivery(v):
+    """multi-line whitespace 정리: 'Delivery\\nby 4 May, Mon' → 'Delivery by 4 May, Mon'"""
+    if not v:
+        return None
+    s = re.sub(r'\s+', ' ', str(v)).strip()
+    return s or None
+
+
 _TRADE_UPTO_RE = re.compile(r'Up to (?!₹)(\d)')
 
 
