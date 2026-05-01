@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -48,6 +49,18 @@ def _to_int(v):
     s = str(v).replace(',', '').strip()
     m = re.match(r'-?\d+', s)
     return int(m.group()) if m else None
+
+
+def calendar_week_from_iso(v):
+    """ISO datetime ('2026-05-01T11:30:00+05:30') → 'YYYY-Www' (ISO week)."""
+    if not v:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(v))
+    except ValueError:
+        return None
+    iso = dt.isocalendar()
+    return f'{iso[0]}-W{iso[1]:02d}'
 
 
 def normalize_account(v):
@@ -115,6 +128,10 @@ def main():
 
         for k in INT_COLS:
             row[k] = _to_int(row[k])
+
+        # crawl_datetime → ISO week 자동 계산 (ERD: '2026-W18')
+        if not row.get('calendar_week'):
+            row['calendar_week'] = calendar_week_from_iso(row.get('crawl_datetime'))
 
         rows.append(row)
 
