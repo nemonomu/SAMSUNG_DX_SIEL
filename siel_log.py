@@ -273,6 +273,18 @@ def parse_hhp_storage(v):
     return m.group(1).replace(' ', ' ').strip() if m else None
 
 
+_LDY_CAPACITY_RE = re.compile(r'(\d+(?:\.\d+)?)\s*(?:kg|kilogram)', re.I)
+
+
+def parse_ldy_capacity(v):
+    """'7.5 Kilograms' / '7.5 Kg' / '8kg' / '8 kg' → '7.5 kg' / '8 kg'.
+    숫자+kg 통일 (단위 lowercase, 공백 1개)."""
+    if not v:
+        return None
+    m = _LDY_CAPACITY_RE.search(str(v))
+    return f"{m.group(1)} kg" if m else None
+
+
 def parse_delivery(v):
     """multi-line whitespace 정리: 'Delivery\\nby 4 May, Mon' → 'Delivery by 4 May, Mon'"""
     if not v:

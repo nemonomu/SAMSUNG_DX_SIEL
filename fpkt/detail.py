@@ -297,6 +297,8 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec[field] = siel_log.parse_delivery(extract_single(driver, xpath))
         elif field == 'ldy_loading_type':
             rec[field] = siel_log.parse_ldy_loading_type(extract_single(driver, xpath))
+        elif field == 'ldy_capacity':
+            rec[field] = siel_log.parse_ldy_capacity(extract_single(driver, xpath))
         else:
             rec[field] = extract_single(driver, xpath)
 
