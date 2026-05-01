@@ -79,6 +79,50 @@ _logger = None
 _html_path = None
 _html_saved = False
 
+# emit() 가 갱신, 매 record progress + 누적 elapsed
+_progress = {'total': 0, 'done': 0, 'start': 0.0,
+             'fills': {'asin': 0, 'product_url': 0,
+                       'final_sku_price': 0, 'retailer_sku_name': 0}}
+
+
+def init_progress(total: int) -> None:
+    global _progress
+    _progress = {'total': total, 'done': 0, 'start': time.time(),
+                 'fills': {'asin': 0, 'product_url': 0,
+                           'final_sku_price': 0, 'retailer_sku_name': 0}}
+
+
+def _format_elapsed(sec: float) -> str:
+    s = int(sec)
+    h, r = divmod(s, 3600)
+    m, ss = divmod(r, 60)
+    if h:
+        return f"{h}h{m}m{ss}s"
+    if m:
+        return f"{m}m{ss}s"
+    return f"{ss}s"
+
+
+def _update_progress(rec: dict) -> None:
+    if _logger is None:
+        return
+    p = _progress
+    if p['total'] == 0:
+        return  # init_progress 미호출 — listing.py 단독 실행 시 skip
+    p['done'] += 1
+    for f in p['fills']:
+        v = rec.get(f)
+        if v not in (None, '', []):
+            p['fills'][f] += 1
+    n, t = p['done'], p['total']
+    elapsed = _format_elapsed(time.time() - p['start'])
+    pct = n * 100 // t if t else 0
+    f = p['fills']
+    stage_tag = rec.get('stage') or 'listing'
+    _logger.info('[%s] %d/%d (%d%%) %s | asin=%d url=%d price=%d name=%d',
+                 stage_tag, n, t, pct, elapsed, f['asin'], f['product_url'],
+                 f['final_sku_price'], f['retailer_sku_name'])
+
 
 def db_connect():
     cfg = dict(config.DB_CONFIG)
@@ -154,6 +198,7 @@ def emit(rec: dict) -> None:
     if _logger is not None:
         siel_log.warn_price_logic(_logger, rec)
         siel_log.log_record_summary(_logger, rec)
+    _update_progress(rec)
 
 
 def make_batch_id(stage: str, product: str) -> str:
@@ -257,7 +302,9 @@ def crawl_main(driver, product: str, selectors: dict, batch_id: str,
     return rank
 
 
-def crawl_bsr(driver, product: str, selectors: dict, batch_id: str) -> int:
+def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
+              max_rank: int = 0) -> int:
+    """max_rank=0 (default) → 무제한, >0 이면 cap."""
     container_xpath = (selectors.get('base_container') or {}).get('xpath')
     if not container_xpath:
         emit({'_error': 'base_container selector missing',
@@ -265,6 +312,8 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str) -> int:
         return 0
     rank = 0
     for page_no, url in enumerate(BSR_URL_TEMPLATES[product], start=1):
+        if max_rank and rank >= max_rank:
+            break
         if _logger:
             _logger.info('page=%d url=%s', page_no, url)
         driver.get(url)
@@ -276,6 +325,8 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str) -> int:
         if _logger:
             _logger.info('page=%d cards=%d', page_no, len(cards))
         for card in cards:
+            if max_rank and rank >= max_rank:
+                break
             rank += 1
             rec = extract_card(card, selectors)
             rec.update({
