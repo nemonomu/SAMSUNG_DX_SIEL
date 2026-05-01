@@ -569,19 +569,19 @@ VALUES
    'deep spec (Power Features 그룹 — See more 후 lazy load). 라벨 콜론 없음 (highlights 와 다름). value 단위 (Standby W vs kWh/Year) 사이트별 의미 mismatch 가능 — raw 그대로 저장 후 분석 단계 분기');
 
 -- REF 전용 (Flipkart) — ERD v1: 가격 3종 Main Page 로 통합. REF 는 savings 자체 ERD 에 정의 없음. detail 엔 spec 2종만.
--- modern Flipkart React: <div>label</div><div>value</div> sibling. 콜론 없음 (LDY 와 동일 패턴).
--- "Type" 라벨은 도어타입(Double Door/Single Door) 이라 제외 — "Refrigerator Type" 만 사용.
+-- TV 패턴 따라 콜론 + 콜론없음 union (highlights + deep spec). "Type" 라벨은 도어타입이라 제외 — "Refrigerator Type" 만 사용.
+-- ref_capacity 는 Specifications 헤딩 이후로 scope — icon/highlights 영역의 stray "Capacity" div (예: Samsung 301L 이 4.4 별점값 매치) 차단.
 INSERT INTO dx_siel_xpath_selectors
   (site_account,page_type,domain,data_field,xpath_primary,fallback_xpath,notes)
 VALUES
   ('Flipkart','detail','ref','ref_refrigerator_type',
-   '//div[normalize-space(text())="Refrigerator Type"]/following-sibling::div[1]',
+   '//div[normalize-space(text())="Refrigerator Type:" or normalize-space(text())="Refrigerator Type"]/following-sibling::div[1]',
    '//td[normalize-space(text())="Refrigerator Type"]/following-sibling::td[1]',
-   'modern Flipkart spec div 패턴. "Top Freezer Refrigerator" / "Side-by-Side" / "French Door" 등. fallback td 보존'),
+   'TV 패턴: highlights (콜론) + deep spec (콜론 없음) union. "Top Freezer Refrigerator" / "Side-by-Side" 등. 라벨 unique 라 stray 위험 낮음'),
   ('Flipkart','detail','ref','ref_capacity',
-   '//div[normalize-space(text())="Capacity"]/following-sibling::div[1]',
+   '(//div[normalize-space(text())="Specifications"]/following::div[normalize-space(text())="Capacity:" or normalize-space(text())="Capacity"])[1]/following-sibling::div[1]',
    '//td[normalize-space(text())="Capacity"]/following-sibling::td[1]',
-   'modern Flipkart spec div 패턴. "467 L" 형식. fallback td 보존');
+   'Specifications 헤딩 이후 first Capacity div 의 sibling. icon/highlights 영역의 stray Capacity 차단 (Samsung 301L 4.4 별점 stray 케이스 방지). expand 실패 product 는 valid null');
 
 -- LDY 전용 (modern Flipkart DOM: <div>label</div><div>value</div> 형제 패턴, 콜론 없음 — TV 와 다름)
 INSERT INTO dx_siel_xpath_selectors
