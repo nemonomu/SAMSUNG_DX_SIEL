@@ -343,28 +343,44 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
         rev_href = None
         if rev_btn_xpath:
             # click 대신 anchor href 직접 추출 + driver.get() — 새 탭 / JS interception 회피
-            # aspect 필터 없는 generic 리뷰 link 우선 (&an=Camera 같은 aspect-specific 제외)
+            # source_url 의 fsn (pid) 과 review URL fsn 일치 확인 → 다른 product review 링크 차단
+            # aspect 필터 없는 generic link 우선 (&an=Camera 같은 aspect-specific 후순위)
+            src_fsn = fsn_from_url(url)
             try:
                 anchors = driver.find_elements(By.XPATH, rev_btn_xpath)
             except WebDriverException:
                 anchors = []
+            # 1차: same product (fsn 매치) + aspect 없음
             for a in anchors:
                 try:
                     href = a.get_attribute('href') or ''
                 except WebDriverException:
                     continue
-                if '/product-reviews/' in href and '&an=' not in href:
+                if '/product-reviews/' not in href:
+                    continue
+                href_fsn = fsn_from_url(href)
+                if src_fsn and href_fsn and src_fsn != href_fsn:
+                    continue  # 다른 product 의 review link → skip
+                if '&an=' not in href:
                     rev_href = href
                     break
+            # 2차 fallback: same product (aspect 있어도 OK)
             if not rev_href:
                 for a in anchors:
                     try:
-                        href = a.get_attribute('href')
+                        href = a.get_attribute('href') or ''
                     except WebDriverException:
                         continue
-                    if href:
-                        rev_href = href
-                        break
+                    if '/product-reviews/' not in href:
+                        continue
+                    href_fsn = fsn_from_url(href)
+                    if src_fsn and href_fsn and src_fsn != href_fsn:
+                        continue
+                    rev_href = href
+                    break
+            if not rev_href and _logger:
+                _logger.warning('review anchor 매치되었으나 source fsn (%s) 일치 anchor 없음 — review skip',
+                                src_fsn)
             if rev_href:
                 if _logger:
                     _logger.info('navigating to review page: %s (target=%d)', rev_href, target)
