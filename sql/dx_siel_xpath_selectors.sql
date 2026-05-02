@@ -677,9 +677,9 @@ VALUES
    '//td[normalize-space(text())="Function Type" or normalize-space(text())="Loading Type"]/following-sibling::td[1]',
    'modern Flipkart spec: <div>Function Type</div><div>VALUE</div>. 콜론 없음 (TV 는 콜론 있음). fallback td 보존'),
   ('Flipkart','detail','ldy','ldy_capacity',
-   '//div[normalize-space(text())="Washing Capacity"]/following-sibling::div[1][contains(text(),"kg")]',
-   '//td[normalize-space(text())="Washing Capacity"]/following-sibling::td[1][contains(text(),"kg")]',
-   'modern Flipkart spec div 패턴. value 가 "kg" 단위 포함 조건 — noisy 매치 차단')
+   '//div[normalize-space(text())="Washing Capacity" or normalize-space(text())="Capacity"]/following-sibling::div[1][contains(text(),"kg")]',
+   '//td[normalize-space(text())="Washing Capacity" or normalize-space(text())="Capacity"]/following-sibling::td[1][contains(text(),"kg")]',
+   'LDY spec 라벨 product 따라 "Washing Capacity" 또는 "Capacity". 단위 "kg" 필터로 REF "L" 과 자연 분리. user inspect: WTT60UNX → 라벨 "Capacity"')
     ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
       xpath_primary  = EXCLUDED.xpath_primary,
       fallback_xpath = EXCLUDED.fallback_xpath,
