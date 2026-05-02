@@ -27,8 +27,10 @@ if _ROOT not in sys.path:
 import psycopg2
 import psycopg2.extras
 import undetected_chromedriver as uc
-from selenium.common.exceptions import NoSuchElementException, WebDriverException
+from selenium.common.exceptions import (NoSuchElementException, TimeoutException,
+                                         WebDriverException)
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
 
 import config
 import siel_log
@@ -244,6 +246,23 @@ def crawl_paged(driver, product: str, stage: str, base_url: str, selectors: dict
         driver.get(url)
         time.sleep(3)
         scroll_to_bottom(driver, pause=1.2, max_scrolls=10)
+        # 카드들 + 첫 카드의 가격 element (₹) 등장 시까지 — TV 등 lazy load 카드 가격 NULL 방지.
+        # 빠른 server: 즉시. 느린 server: max 15초.
+        def _cards_with_price_ready(d):
+            try:
+                cs = d.find_elements(By.XPATH, container_xpath)
+                if not cs:
+                    return False
+                # 첫 카드 안 ₹ element 등장 = 모든 카드 가격 lazy 완료 추정
+                return bool(cs[0].find_elements(By.XPATH,
+                    './/div[starts-with(normalize-space(text()),"₹")]'))
+            except WebDriverException:
+                return False
+        try:
+            WebDriverWait(driver, 15, poll_frequency=0.3).until(_cards_with_price_ready)
+        except TimeoutException:
+            if _logger:
+                _logger.warning('page=%d 가격 element 15초 내 미등장 — 진행 (NULL 가능)', page)
         if page == 1:
             maybe_save_html(driver)
         cards = driver.find_elements(By.XPATH, container_xpath)
