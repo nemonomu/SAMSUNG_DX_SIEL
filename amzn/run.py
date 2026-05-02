@@ -1,18 +1,15 @@
-"""
-Amazon.In 통합 크롤러 (SIEL).
-listing → detail 한 프로세스 안 (driver 1 회 시작/종료).
-listing 단계에서 추출된 product_url 을 모아서 detail 단계 입력으로 사용.
+"""Amazon.In 통합 크롤러 (SIEL) — listing → detail 한 프로세스, dual emit + streaming INSERT.
 
 사용:
-  python amzn/run.py --product hhp --stages main detail
-  python amzn/run.py --product tv  --stages bsr detail --max-detail 50
-  python amzn/run.py --product ref --stages main           # listing 만
+  python amzn/run.py --product hhp tv ref ldy --stages main detail --max-rank 10 --max-detail 10
+  python amzn/run.py --product hhp --max-detail 50
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -24,10 +21,98 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 _IST = timezone(timedelta(hours=5, minutes=30))
-
-# emit dual write — stdout JSONL (사용자 redirect) + 자동 results file (auto INSERT 용)
 _results_path = None
 _results_file = None
+
+# streaming insert state — main/bsr cache + DB connection
+_main_cache: dict = {}
+_bsr_cache: dict = {}
+_db_conn = None
+_db_cursor = None
+_streaming_enabled = False
+_insert_sql = None
+
+
+def _url_key(url: str) -> str:
+    """? 앞 path 만 — fallback dedupe key. ASIN 우선 (rec 기반)."""
+    return (url or '').split('?', 1)[0].rstrip('/')
+
+
+def _rec_key(rec: dict) -> str:
+    """ASIN 우선, fallback url path. main / bsr / detail 공통 매칭 key."""
+    asin = rec.get('asin')
+    if asin:
+        return asin
+    src = rec.get('product_url') or rec.get('source_url') or ''
+    # url 에서 ASIN 추출 시도
+    import re as _re
+    m = _re.search(r'/(?:dp|gp/product)/([A-Z0-9]{10})', src)
+    return m.group(1) if m else _url_key(src)
+
+
+def _setup_db():
+    """run 시작 시 DB connection long-lived. detail emit 마다 INSERT."""
+    global _db_conn, _db_cursor, _streaming_enabled, _insert_sql
+    try:
+        import psycopg2
+        sys.path.insert(0, _ROOT)
+        import config
+        import insert_test_retail_com as ITR
+        cfg = dict(config.DB_CONFIG)
+        cfg.setdefault('database', 'postgres')
+        cfg.setdefault('client_encoding', 'utf8')
+        _db_conn = psycopg2.connect(**cfg)
+        _db_cursor = _db_conn.cursor()
+        cols = ', '.join(ITR.COLUMNS)
+        placeholders = ', '.join(f'%({c})s' for c in ITR.COLUMNS)
+        _insert_sql = f'INSERT INTO dx_siel_test_retail_com ({cols}) VALUES ({placeholders})'
+        _streaming_enabled = True
+        print('[run.py] streaming INSERT enabled — detail emit 마다 즉시 INSERT', file=sys.stderr)
+    except Exception as e:
+        print(f'[run.py] streaming INSERT setup failed: {type(e).__name__}: {e}', file=sys.stderr)
+        _streaming_enabled = False
+
+
+def _close_db():
+    global _db_conn, _db_cursor, _streaming_enabled
+    if _db_cursor is not None:
+        try:
+            _db_cursor.close()
+        except Exception:
+            pass
+        _db_cursor = None
+    if _db_conn is not None:
+        try:
+            _db_conn.close()
+        except Exception:
+            pass
+        _db_conn = None
+    _streaming_enabled = False
+
+
+def _stream_insert(detail_rec: dict) -> None:
+    """detail record 도착 즉시 main/bsr cache 와 merge → 1 row INSERT."""
+    if not _streaming_enabled or _db_cursor is None:
+        return
+    try:
+        import insert_test_retail_com as ITR
+    except Exception:
+        return
+    key = _rec_key(detail_rec)
+    main_rec = _main_cache.get(key)
+    bsr_rec = _bsr_cache.get(key)
+    row = ITR.make_row(main_rec, bsr_rec, detail_rec)
+    if not row:
+        return
+    try:
+        _db_cursor.execute(_insert_sql, row)
+        _db_conn.commit()
+    except Exception as e:
+        try:
+            _db_conn.rollback()
+        except Exception:
+            pass
+        print(f'[run.py] streaming INSERT row failed: {type(e).__name__}: {e}', file=sys.stderr)
 
 
 def _setup_results(product: str) -> None:
@@ -59,15 +144,19 @@ def _close_results() -> None:
         _results_file = None
 
 
+def _reset_caches() -> None:
+    """product 변경 시 in-memory cache reset (다중 product run 사이)."""
+    _main_cache.clear()
+    _bsr_cache.clear()
+
+
 def _auto_insert() -> None:
-    """run 끝난 후 results jsonl 의 모든 row 를 dx_siel_test_retail_com 에 INSERT."""
-    if not (_results_path and os.path.exists(_results_path)):
-        return
+    """streaming 비활성 시 fallback — run 끝난 후 jsonl → batch INSERT."""
     insert_script = os.path.join(_ROOT, 'insert_test_retail_com.py')
-    if not os.path.exists(insert_script):
+    if not (_results_path and os.path.exists(_results_path)
+            and os.path.exists(insert_script)):
         return
-    print(f'[run.py] auto INSERT to dx_siel_test_retail_com from {_results_path}',
-          file=sys.stderr)
+    print(f'[run.py] auto INSERT (batch) from {_results_path}', file=sys.stderr)
     try:
         subprocess.run([sys.executable, insert_script, _results_path, '999999'],
                        check=False, timeout=600)
@@ -76,17 +165,15 @@ def _auto_insert() -> None:
 
 
 def _auto_apply_sql():
-    """run 시작 전 sql/*.sql 전체 자동 적용 — post-merge hook 미설치 환경 안전장치.
-    selectors (idempotent INSERT) + dx_siel_test_retail_com (DROP+CREATE) 모두 포함.
-    매 run 시작 시 test_retail_com 은 깨끗한 상태 → 사용자가 매 run 결과만 검수.
-    실패 시 (DB down 등) skip — crawler 는 진행."""
+    """run 시작 전 selectors SQL 자동 적용 (post-merge hook 미설치 안전망).
+    test_retail_com 은 적용 X — DROP 자동 트리거 차단."""
+    sql_path = os.path.join(_ROOT, 'sql', 'dx_siel_xpath_selectors.sql')
     apply_script = os.path.join(_ROOT, 'apply_sql.py')
-    if not os.path.exists(apply_script):
+    if not (os.path.exists(sql_path) and os.path.exists(apply_script)):
         return
     try:
-        # 인자 없이 → sql/*.sql 알파벳 순서로 전체 적용
-        subprocess.run([sys.executable, apply_script],
-                       check=False, timeout=120)
+        subprocess.run([sys.executable, apply_script, sql_path],
+                       check=False, timeout=60)
     except Exception as e:
         print(f'[run.py] auto apply_sql skip: {type(e).__name__}: {e}', file=sys.stderr)
 
@@ -98,13 +185,12 @@ from amzn import detail as D
 
 
 def _sync_logs_to_retail_com() -> None:
-    """logs 폴더를 retail_com 으로 sync (폴더 있으면). silent best-effort, 회귀 위험 0."""
+    """logs/ → retail_com sync (best-effort)."""
     try:
-        import shutil
         src = os.path.join(_ROOT, 'amzn', 'logs')
         dst = os.path.expanduser(
             r'~\Documents\퀵오일\삼성전자\samsung_dx_retail_com\siel\logs')
-        if not os.path.isdir(src) or not os.path.isdir(dst):
+        if not (os.path.isdir(src) and os.path.isdir(dst)):
             return
         for fname in os.listdir(src):
             sp = os.path.join(src, fname)
@@ -114,10 +200,28 @@ def _sync_logs_to_retail_com() -> None:
         pass
 
 
+def _make_dual(orig_emit):
+    """emit monkey-patch — original (stdout) + jsonl write + streaming INSERT (detail 마다)."""
+    def dual(rec):
+        orig_emit(rec)
+        _write_results(rec)
+        if not _streaming_enabled:
+            return
+        stage = rec.get('stage')
+        key = _rec_key(rec)
+        if not key:
+            return
+        if stage == 'main':
+            _main_cache[key] = rec
+        elif stage == 'bsr':
+            _bsr_cache[key] = rec
+        elif stage == 'detail':
+            _stream_insert(rec)
+    return dual
+
+
 def run_listing_capture(driver, product: str, stage: str,
                         max_rank: int, max_pages: int) -> list:
-    """listing 실행 + product_url 캡처. emit monkey-patch.
-    init_progress(max_rank) 으로 stage 별 진행도 tracker reset."""
     L.init_logging(product, stage)
     L.init_progress(max_rank)
     captured: list = []
@@ -167,13 +271,49 @@ def run_detail(driver, product: str, urls: list, sleep_s: float) -> int:
     return n
 
 
+def _run_one_product(driver, product: str, args) -> None:
+    """단일 product 의 main/bsr/detail 처리 — driver 공유, cache reset, jsonl/INSERT 별개."""
+    _reset_caches()
+    _setup_results(product)
+    captured: list = []
+    seen = set()
+    try:
+        for stage in args.stages:
+            if stage in ('main', 'bsr'):
+                stage_max = args.max_rank if stage == 'main' else args.bsr_max_rank
+                urls = run_listing_capture(driver, product, stage,
+                                           stage_max, args.max_pages)
+                added = 0
+                for u in urls:
+                    key = D.asin_from_url(u or '') or _url_key(u)
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    captured.append(u)
+                    added += 1
+                print(f'[run] product={product} stage={stage} captured={len(urls)} unique_added={added} total={len(captured)}',
+                      file=sys.stderr)
+            else:  # detail
+                use_urls = captured if args.max_detail is None else captured[:args.max_detail]
+                if not use_urls:
+                    D.emit({'_warn': 'no product_urls captured', 'product': product})
+                    continue
+                print(f'[run] product={product} stage=detail processing={len(use_urls)}',
+                      file=sys.stderr)
+                run_detail(driver, product, use_urls, args.detail_sleep)
+    finally:
+        _close_results()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description='Amazon.In 통합 크롤러')
-    ap.add_argument('--product', required=True, choices=['hhp', 'tv', 'ref', 'ldy'])
+    ap.add_argument('--product', nargs='+', required=True,
+                    choices=['hhp', 'tv', 'ref', 'ldy'],
+                    help='1개 이상 — 여러 개 주면 driver 공유하며 순차 처리')
     ap.add_argument('--stages', nargs='+',
                     default=['main', 'bsr', 'detail'],
                     choices=['main', 'bsr', 'detail'],
-                    help='default: main bsr detail (full run)')
+                    help='default: main bsr detail')
     ap.add_argument('--max-rank', type=int, default=300,
                     help='main 단계 max rank (default 300)')
     ap.add_argument('--bsr-max-rank', type=int, default=100,
@@ -183,67 +323,38 @@ def main() -> int:
                     help='detail 단계 처리 URL 수 제한 (default 무제한)')
     ap.add_argument('--detail-sleep', type=float, default=2.0)
     ap.add_argument('--headless', action='store_true')
+    ap.add_argument('--no-auto-insert', action='store_true',
+                    help='streaming INSERT 비활성 (jsonl 만)')
     args = ap.parse_args()
 
-    # results jsonl + emit dual write (stdout 그대로 + 자동 file → finally 에 INSERT)
-    _setup_results(args.product)
-    _orig_L_emit = L.emit
-    _orig_D_emit = D.emit
+    # dual emit (stdout + jsonl + streaming INSERT) — emit monkey-patch 1번만
+    L.emit = _make_dual(L.emit)
+    D.emit = _make_dual(D.emit)
 
-    def _L_dual(rec):
-        _orig_L_emit(rec)
-        _write_results(rec)
-
-    def _D_dual(rec):
-        _orig_D_emit(rec)
-        _write_results(rec)
-
-    L.emit = _L_dual
-    D.emit = _D_dual
+    if not args.no_auto_insert:
+        _setup_db()
 
     driver = L.make_driver(headless=args.headless)
-    captured: list = []
-    seen = set()  # url path dedupe — main+bsr 중복 제거 (Amazon 은 ASIN 으로 dedupe)
     try:
-        for stage in args.stages:
-            if stage in ('main', 'bsr'):
-                stage_max = args.max_rank if stage == 'main' else args.bsr_max_rank
-                urls = run_listing_capture(driver, args.product, stage,
-                                           stage_max, args.max_pages)
-                added = 0
-                for u in urls:
-                    # Amazon 은 ASIN 만 비교 (URL query/path 변동 무관)
-                    import re as _re
-                    m = _re.search(r'/(?:dp|gp/product)/([A-Z0-9]{10})', u or '')
-                    key = m.group(1) if m else (u or '').split('?', 1)[0].rstrip('/')
-                    if not key or key in seen:
-                        continue
-                    seen.add(key)
-                    captured.append(u)
-                    added += 1
-                print(f'[run] stage={stage} captured={len(urls)} unique_added={added} total_unique={len(captured)}',
-                      file=sys.stderr)
-            else:  # detail
-                use_urls = captured if args.max_detail is None else captured[:args.max_detail]
-                if not use_urls:
-                    D.emit({'_warn': 'no product_urls captured for detail',
-                            'product': args.product})
-                    continue
-                print(f'[run] stage=detail processing={len(use_urls)} (dedupe 후)',
-                      file=sys.stderr)
-                run_detail(driver, args.product, use_urls, args.detail_sleep)
+        for product in args.product:
+            print(f'\n=== [run] starting product={product} ===\n', file=sys.stderr)
+            try:
+                _run_one_product(driver, product, args)
+            except Exception:
+                traceback.print_exc(file=sys.stderr)
+                print(f'[run] product={product} failed — 다음 product 진행', file=sys.stderr)
         return 0
-    except Exception as e:
-        traceback.print_exc(file=sys.stderr)
-        return 1
     finally:
         try:
             driver.quit()
         except Exception:
             pass
         _close_results()
+        _close_db()
         _sync_logs_to_retail_com()
-        _auto_insert()
+        # streaming 비활성 시만 batch fallback
+        if not _streaming_enabled and not args.no_auto_insert:
+            pass  # streaming setup 이 fail 했어도 jsonl 은 있음 — 사용자가 수동 INSERT
 
 
 if __name__ == '__main__':
