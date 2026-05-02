@@ -194,7 +194,7 @@ def extract_card(card, selectors: dict) -> dict:
         elif field in ('final_sku_price', 'original_sku_price'):
             rec[field] = siel_log.parse_price_value(safe_text(card, xpath))
         elif field == 'sku_popularity':
-            # Bestseller (anchor href) + Flipkart Assured (img src /fa_*.png) — element attr 검사
+            # Bestseller (anchor href) + Flipkart Assured (img /fa_*.png) + Flipkart's Choice (text) — 3개 marker
             labels = []
             try:
                 els = card.find_elements(By.XPATH, xpath)
@@ -204,12 +204,16 @@ def extract_card(card, selectors: dict) -> dict:
                 try:
                     href = e.get_attribute('href') or ''
                     src = e.get_attribute('src') or ''
+                    text = (e.text or '').strip()
                 except WebDriverException:
                     continue
                 if 'spotlightTagId=default_BestsellerId' in href and 'Bestseller' not in labels:
                     labels.append('Bestseller')
                 if '/fa_' in src and 'Flipkart Assured' not in labels:
                     labels.append('Flipkart Assured')
+                if ("Flipkart's Choice" in text or 'Flipkart Choice' in text) \
+                        and "Flipkart's Choice" not in labels:
+                    labels.append("Flipkart's Choice")
             rec[field] = ', '.join(labels) if labels else None
         else:
             rec[field] = safe_text(card, xpath)
