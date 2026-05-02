@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import traceback
 from datetime import datetime, timezone, timedelta
@@ -47,9 +48,25 @@ COLUMNS = [
 ]
 
 
+_ASIN_RE = re.compile(r'/(?:dp|gp/product)/([A-Z0-9]{10})')
+
+
 def url_path(url: str) -> str:
-    """? 앞 path 만 — main 의 product_url 과 detail 의 source_url 매칭용."""
+    """? 앞 path 만 — fallback 매칭용."""
     return (url or '').split('?', 1)[0].rstrip('/')
+
+
+def listing_key(rec: dict) -> str:
+    """main/bsr/detail 공통 dedupe key — Amazon ASIN / Flipkart fsn / fallback url path.
+    같은 ASIN 의 main+bsr/detail URL 이 ref=sr_... vs ref=zg_bs_... 로 path 가 달라도 매칭."""
+    asin = rec.get('asin') or rec.get('fsn')
+    if asin:
+        return asin
+    url = rec.get('product_url') or rec.get('source_url') or ''
+    m = _ASIN_RE.search(url)
+    if m:
+        return m.group(1)
+    return url_path(url)
 
 
 def calendar_week_iso(dt) -> str:
@@ -74,52 +91,69 @@ def parse_int_safe(v):
         return None
 
 
-def merge(main: dict, detail: dict, max_n: int = 10) -> list:
-    """main_by_url + detail_by_url merge → list of retail_com row dict (max_n)."""
+def make_row(main_rec, bsr_rec, detail_rec):
+    """단일 main + bsr + detail record → 1 row dict (None 가능). streaming insert 용 helper."""
+    listing_one = {'_': {'main': main_rec, 'bsr': bsr_rec}}
+    detail_one = {'_': detail_rec or {}}
+    rows = merge(listing_one, detail_one, max_n=1)
+    return rows[0] if rows else None
+
+
+def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
+    """listing[key] = {'main': rec or None, 'bsr': rec or None} + detail merge → row list.
+    main_rank / bsr_rank 둘 다 set (같은 SKU 가 main+bsr 양쪽에 있으면).
+    page_type: main 우선, 없으면 bsr.
+    max_n=0 → 무제한, >0 이면 cap."""
     rows = []
-    for key, m in list(main.items())[:max_n]:
+    items = list(listing.items())
+    if max_n and max_n > 0:
+        items = items[:max_n]
+    for key, entry in items:
+        m = entry.get('main') or {}
+        b = entry.get('bsr') or {}
+        primary = m or b  # 정보량 main >= bsr 가정
+        if not primary:
+            continue
         d = detail.get(key, {})
-        # account/product 정규화
-        account = (m.get('account_name') or d.get('account_name') or '').capitalize()  # 'Flipkart'/'Amazon'
-        prod = (m.get('product') or d.get('product') or '').upper()  # 'HHP'/'TV'/'REF'/'LDY'
-        # item: fsn / asin
-        item = d.get('fsn') or d.get('asin') or m.get('fsn') or m.get('asin')
-        # sku: detail 우선
-        sku = d.get('sku') or m.get('sku')
-        # crawl_datetime: detail 우선 (더 최근)
-        cdt = d.get('crawl_datetime') or m.get('crawl_datetime')
+        # account/product 정규화 (primary 기준)
+        account = (primary.get('account_name') or d.get('account_name') or '').capitalize()
+        prod = (primary.get('product') or d.get('product') or '').upper()
+        item = d.get('fsn') or d.get('asin') or primary.get('fsn') or primary.get('asin')
+        sku = d.get('sku') or primary.get('sku')
+        cdt = d.get('crawl_datetime') or primary.get('crawl_datetime')
+        page_type = 'main' if m else 'bsr'
         row = {
             'country':           'siel',
             'product':           prod or None,
             'item':              item,
             'sku':               sku,
             'account_name':      account or None,
-            'page_type':         'main',  # 통합 row 는 main rank 보존이 의미라 main 기본
-            'retailer_sku_name': m.get('retailer_sku_name') or d.get('retailer_sku_name'),
-            'product_url':       m.get('product_url') or d.get('source_url'),
+            'page_type':         page_type,
+            'retailer_sku_name': primary.get('retailer_sku_name') or d.get('retailer_sku_name'),
+            'product_url':       primary.get('product_url') or d.get('source_url'),
             'calendar_week':     calendar_week_iso(cdt),
             'crawl_datetime':    cdt,
-            'batch_id':          m.get('batch_id') or d.get('batch_id'),
-            # 평점/리뷰: detail 에 있으면 detail 우선 (더 정확)
+            'batch_id':          primary.get('batch_id') or d.get('batch_id'),
+            # 평점/리뷰: detail 우선
             'star_rating':               d.get('star_rating'),
-            'count_of_star_ratings':     d.get('count_of_star_ratings') or m.get('count_of_star_ratings'),
-            'count_of_reviews':          d.get('count_of_reviews') or m.get('count_of_reviews'),
+            'count_of_star_ratings':     d.get('count_of_star_ratings') or primary.get('count_of_star_ratings'),
+            'count_of_reviews':          d.get('count_of_reviews') or primary.get('count_of_reviews'),
             'detailed_review_content':   d.get('detailed_review_content'),
             'retailer_sku_name_similar': d.get('retailer_sku_name_similar'),
-            # 가격: main (ERD)
-            'final_sku_price':    m.get('final_sku_price'),
-            'original_sku_price': m.get('original_sku_price'),
-            'savings':            m.get('savings'),
-            'discount_type':      m.get('discount_type'),
+            # 가격: primary (main 우선, 없으면 bsr)
+            'final_sku_price':    primary.get('final_sku_price'),
+            'original_sku_price': primary.get('original_sku_price'),
+            'savings':            primary.get('savings'),
+            'discount_type':      primary.get('discount_type'),
             # 배송/재고
-            'delivery_availability':           d.get('delivery_availability') or m.get('delivery_availability'),
-            'available_quantity_for_purchase': m.get('available_quantity_for_purchase'),
+            'delivery_availability':           d.get('delivery_availability') or primary.get('delivery_availability'),
+            'available_quantity_for_purchase': primary.get('available_quantity_for_purchase'),
             # 마케팅
-            'sku_popularity': m.get('sku_popularity'),
-            'sku_status':     m.get('sku_status'),
-            # 순위
-            'main_rank': parse_int_safe(m.get('main_rank')),
-            'bsr_rank':  parse_int_safe(m.get('bsr_rank')),
+            'sku_popularity': primary.get('sku_popularity'),
+            'sku_status':     primary.get('sku_status'),
+            # 순위 — main + bsr 둘 다 보존 (같은 SKU 가 양쪽에 있으면 함께 set)
+            'main_rank': parse_int_safe(m.get('main_rank')) if m else None,
+            'bsr_rank':  parse_int_safe(b.get('bsr_rank')) if b else None,
             # TV
             'screen_size':                      d.get('screen_size'),
             'model_year':                       d.get('model_year'),
@@ -139,7 +173,7 @@ def merge(main: dict, detail: dict, max_n: int = 10) -> list:
             'fastest_delivery':                     d.get('fastest_delivery'),
             'inventory_status':                     d.get('inventory_status'),
             'sku_assurance':                        d.get('sku_assurance'),
-            'number_of_units_purchased_past_month': m.get('number_of_units_purchased_past_month'),
+            'number_of_units_purchased_past_month': primary.get('number_of_units_purchased_past_month'),
         }
         rows.append(row)
     return rows
@@ -147,7 +181,7 @@ def merge(main: dict, detail: dict, max_n: int = 10) -> list:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print('usage: python insert_test_retail_com.py <jsonl_path> [max_n=10]', file=sys.stderr)
+        print('usage: python insert_test_retail_com.py <jsonl_path> [max_n=10|0=unlimited]', file=sys.stderr)
         return 2
     jsonl_path = sys.argv[1]
     max_n = int(sys.argv[2]) if len(sys.argv) > 2 else 10
@@ -156,9 +190,9 @@ def main() -> int:
         print(f'[insert_test] file not found: {jsonl_path}', file=sys.stderr)
         return 2
 
-    main_by_url = {}
+    listing_by_url = {}  # key → {'main': rec or None, 'bsr': rec or None}
     detail_by_url = {}
-    n_main = n_detail = n_other = 0
+    n_main = n_bsr = n_detail = n_other = 0
 
     with open(jsonl_path, 'r', encoding='utf-8') as f:
         for line in f:
@@ -170,23 +204,27 @@ def main() -> int:
             except json.JSONDecodeError:
                 continue
             stage = rec.get('stage')
-            if stage == 'main':
-                key = url_path(rec.get('product_url', ''))
-                if key:
-                    main_by_url[key] = rec
+            key = listing_key(rec)
+            if not key:
+                n_other += 1
+                continue
+            if stage in ('main', 'bsr'):
+                entry = listing_by_url.setdefault(key, {'main': None, 'bsr': None})
+                entry[stage] = rec
+                if stage == 'main':
                     n_main += 1
+                else:
+                    n_bsr += 1
             elif stage == 'detail':
-                key = url_path(rec.get('source_url', ''))
-                if key:
-                    detail_by_url[key] = rec
-                    n_detail += 1
+                detail_by_url[key] = rec
+                n_detail += 1
             else:
                 n_other += 1
 
-    print(f'[insert_test] read main={n_main} detail={n_detail} other={n_other}',
+    print(f'[insert_test] read main={n_main} bsr={n_bsr} detail={n_detail} other={n_other} unique_listing={len(listing_by_url)}',
           file=sys.stderr)
 
-    rows = merge(main_by_url, detail_by_url, max_n=max_n)
+    rows = merge(listing_by_url, detail_by_url, max_n=max_n)
     print(f'[insert_test] merging top {len(rows)} rows', file=sys.stderr)
 
     if not rows:

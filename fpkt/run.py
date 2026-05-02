@@ -26,6 +26,84 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 _results_path = None
 _results_file = None
 
+# streaming insert state — main/bsr cache + DB connection
+_main_cache: dict = {}
+_bsr_cache: dict = {}
+_db_conn = None
+_db_cursor = None
+_streaming_enabled = False
+_insert_sql = None
+
+
+def _url_key(url: str) -> str:
+    return (url or '').split('?', 1)[0].rstrip('/')
+
+
+def _setup_db():
+    """run 시작 시 DB connection long-lived. detail emit 마다 INSERT."""
+    global _db_conn, _db_cursor, _streaming_enabled, _insert_sql
+    try:
+        import psycopg2
+        sys.path.insert(0, _ROOT)
+        import config
+        import insert_test_retail_com as ITR
+        cfg = dict(config.DB_CONFIG)
+        cfg.setdefault('database', 'postgres')
+        cfg.setdefault('client_encoding', 'utf8')
+        _db_conn = psycopg2.connect(**cfg)
+        _db_cursor = _db_conn.cursor()
+        cols = ', '.join(ITR.COLUMNS)
+        placeholders = ', '.join(f'%({c})s' for c in ITR.COLUMNS)
+        _insert_sql = f'INSERT INTO dx_siel_test_retail_com ({cols}) VALUES ({placeholders})'
+        _streaming_enabled = True
+        print(f'[run.py] streaming INSERT enabled — detail emit 마다 즉시 INSERT', file=sys.stderr)
+    except Exception as e:
+        print(f'[run.py] streaming INSERT setup failed: {type(e).__name__}: {e}', file=sys.stderr)
+        _streaming_enabled = False
+
+
+def _close_db():
+    global _db_conn, _db_cursor, _streaming_enabled
+    if _db_cursor is not None:
+        try:
+            _db_cursor.close()
+        except Exception:
+            pass
+        _db_cursor = None
+    if _db_conn is not None:
+        try:
+            _db_conn.close()
+        except Exception:
+            pass
+        _db_conn = None
+    _streaming_enabled = False
+
+
+def _stream_insert(detail_rec: dict) -> None:
+    """detail record 도착 즉시 main/bsr cache 와 merge → 1 row INSERT."""
+    if not _streaming_enabled or _db_cursor is None:
+        return
+    try:
+        import insert_test_retail_com as ITR
+    except Exception:
+        return
+    src = detail_rec.get('source_url') or detail_rec.get('product_url') or ''
+    key = _url_key(src)
+    main_rec = _main_cache.get(key)
+    bsr_rec = _bsr_cache.get(key)
+    row = ITR.make_row(main_rec, bsr_rec, detail_rec)
+    if not row:
+        return
+    try:
+        _db_cursor.execute(_insert_sql, row)
+        _db_conn.commit()
+    except Exception as e:
+        try:
+            _db_conn.rollback()
+        except Exception:
+            pass
+        print(f'[run.py] streaming INSERT row failed: {type(e).__name__}: {e}', file=sys.stderr)
+
 
 def _setup_results(product: str) -> None:
     """fpkt/logs/siel_flipkart_{product}_run_{ts}.jsonl 자동 생성. dual emit 으로 stdout + file 동시."""
@@ -58,11 +136,31 @@ def _close_results() -> None:
 
 
 def _make_dual(orig_emit):
-    """emit monkey-patch — original (stdout) 호출 + jsonl file 동시 write."""
+    """emit monkey-patch — original (stdout) + jsonl write + streaming INSERT (detail 마다)."""
     def dual(rec):
         orig_emit(rec)
         _write_results(rec)
+        # streaming: main/bsr → cache, detail → 즉시 INSERT
+        if not _streaming_enabled:
+            return
+        stage = rec.get('stage')
+        url = rec.get('product_url') or rec.get('source_url') or ''
+        key = _url_key(url)
+        if not key:
+            return
+        if stage == 'main':
+            _main_cache[key] = rec
+        elif stage == 'bsr':
+            _bsr_cache[key] = rec
+        elif stage == 'detail':
+            _stream_insert(rec)
     return dual
+
+
+def _reset_caches() -> None:
+    """product 변경 시 in-memory cache reset (다중 product run 사이)."""
+    _main_cache.clear()
+    _bsr_cache.clear()
 
 
 def _auto_insert() -> None:
@@ -154,9 +252,49 @@ def run_detail(driver, product: str, urls: list, sleep_s: float) -> int:
     return n
 
 
+def _run_one_product(driver, product: str, args) -> None:
+    """단일 product 의 main/bsr/detail 처리 — driver 공유, cache reset, jsonl/INSERT 별개."""
+    _reset_caches()
+    _setup_results(product)
+    captured: list = []
+    seen = set()
+    try:
+        for stage in args.stages:
+            if stage in ('main', 'bsr'):
+                if stage == 'main':
+                    mr = args.max_rank_main if args.max_rank_main is not None else args.max_rank
+                else:
+                    mr = args.max_rank_bsr if args.max_rank_bsr is not None else args.max_rank
+                urls = run_listing_capture(driver, product, stage,
+                                           mr, args.max_pages)
+                added = 0
+                for u in urls:
+                    key = (u or '').split('?', 1)[0].rstrip('/')
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    captured.append(u)
+                    added += 1
+                print(f'[run] product={product} stage={stage} captured={len(urls)} unique_added={added} total_unique={len(captured)}',
+                      file=sys.stderr)
+            else:  # detail
+                use_urls = captured if args.max_detail is None else captured[:args.max_detail]
+                if not use_urls:
+                    D.emit({'_warn': 'no product_urls captured for detail',
+                            'product': product})
+                    continue
+                print(f'[run] product={product} stage=detail processing={len(use_urls)} (dedupe 후)',
+                      file=sys.stderr)
+                run_detail(driver, product, use_urls, args.detail_sleep)
+    finally:
+        _close_results()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description='Flipkart 통합 크롤러')
-    ap.add_argument('--product', required=True, choices=['hhp', 'tv', 'ref', 'ldy'])
+    ap.add_argument('--product', nargs='+', required=True,
+                    choices=['hhp', 'tv', 'ref', 'ldy'],
+                    help='1개 이상 — 여러 개 주면 driver 공유하며 순차 처리')
     ap.add_argument('--stages', nargs='+', required=True,
                     choices=['main', 'bsr', 'detail'])
     ap.add_argument('--max-rank', type=int, default=None,
@@ -171,57 +309,33 @@ def main() -> int:
     ap.add_argument('--detail-sleep', type=float, default=2.0)
     ap.add_argument('--headless', action='store_true')
     ap.add_argument('--no-auto-insert', action='store_true',
-                    help='run 끝난 후 dx_siel_test_retail_com 자동 INSERT 비활성')
+                    help='streaming INSERT 비활성 (jsonl 만)')
     args = ap.parse_args()
 
-    # dual emit + auto jsonl file
-    _setup_results(args.product)
+    # dual emit (stdout + jsonl + streaming INSERT) — emit monkey-patch 1번만
     L.emit = _make_dual(L.emit)
     D.emit = _make_dual(D.emit)
 
+    if not args.no_auto_insert:
+        _setup_db()
+
     driver = L.make_driver(headless=args.headless)
-    captured: list = []
-    seen = set()  # url path dedupe — main+bsr 중복 제거
     try:
-        for stage in args.stages:
-            if stage in ('main', 'bsr'):
-                if stage == 'main':
-                    mr = args.max_rank_main if args.max_rank_main is not None else args.max_rank
-                else:
-                    mr = args.max_rank_bsr if args.max_rank_bsr is not None else args.max_rank
-                urls = run_listing_capture(driver, args.product, stage,
-                                           mr, args.max_pages)
-                added = 0
-                for u in urls:
-                    key = (u or '').split('?', 1)[0].rstrip('/')
-                    if not key or key in seen:
-                        continue
-                    seen.add(key)
-                    captured.append(u)
-                    added += 1
-                print(f'[run] stage={stage} captured={len(urls)} unique_added={added} total_unique={len(captured)}',
-                      file=sys.stderr)
-            else:  # detail
-                use_urls = captured if args.max_detail is None else captured[:args.max_detail]
-                if not use_urls:
-                    D.emit({'_warn': 'no product_urls captured for detail',
-                            'product': args.product})
-                    continue
-                print(f'[run] stage=detail processing={len(use_urls)} (dedupe 후)',
-                      file=sys.stderr)
-                run_detail(driver, args.product, use_urls, args.detail_sleep)
+        for product in args.product:
+            print(f'\n=== [run] starting product={product} ===\n', file=sys.stderr)
+            try:
+                _run_one_product(driver, product, args)
+            except Exception as e:
+                traceback.print_exc(file=sys.stderr)
+                print(f'[run] product={product} failed — 다음 product 진행', file=sys.stderr)
         return 0
-    except Exception as e:
-        traceback.print_exc(file=sys.stderr)
-        return 1
     finally:
         try:
             driver.quit()
         except Exception:
             pass
         _close_results()
-        if not args.no_auto_insert:
-            _auto_insert()
+        _close_db()
 
 
 if __name__ == '__main__':
