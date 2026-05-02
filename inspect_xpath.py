@@ -170,7 +170,7 @@ def repl(driver, url: str):
             'screen':    '//div[normalize-space(text())="Display Size"]/following-sibling::div[1]',
             'year':      '//div[normalize-space(text())="Launch Year:" or normalize-space(text())="Launch Year"]/following-sibling::div[1]',
             'power':     '//div[normalize-space(text())="Power Consumption" or normalize-space(text())="Annual Energy Consumption" or normalize-space(text())="Energy Consumption"]/following-sibling::div[1]',
-            'delivery':  '//div[normalize-space(text())="Delivery"]/parent::div',
+            'delivery':  '//div[normalize-space(text())="Delivery" or normalize-space(text())="Delivery by"]/parent::div',
             'trade':     '(//div[normalize-space(text())="Exchange offer"])[1]/following::div[(contains(text(),"Up to") or contains(text(),"₹") or contains(text(),"Off")) and not(contains(text(),"Pincode")) and not(contains(text(),"Servicea"))][1]',
             'rating':    '(//a[contains(@href,"ratings-reviews-details-page")]//div[@dir="auto"])[1]',
             'ratings':   '(//a[contains(@href,"ratings-reviews-details-page")]//div[@dir="auto"])[2]',
