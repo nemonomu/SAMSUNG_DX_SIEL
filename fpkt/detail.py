@@ -248,15 +248,26 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
         ok = robust_click(driver, spec_sel['xpath'])
         if _logger:
             _logger.info('expand_specifications clicked=%s', ok)
-        time.sleep(1.0)
+        time.sleep(1.5)
 
     # See more 클릭 — deep spec (Power Features 등) lazy load
+    # 일부 product 의 lazy load 가 늦어 Model Name 매치 안 되는 케이스 → sleep 2.5 + Model Name 등장 대기
     seemore_sel = selectors.get('expand_see_more')
     if seemore_sel and seemore_sel.get('xpath'):
         ok = robust_click(driver, seemore_sel['xpath'])
         if _logger:
             _logger.info('expand_see_more clicked=%s', ok)
-        time.sleep(1.0)
+        # Model Name label 등장 대기 (max 5초). 이미 있으면 즉시 진행, lazy load 면 polling
+        for _ in range(10):
+            try:
+                if driver.find_elements(By.XPATH,
+                        '//div[normalize-space(text())="Model Name"]'):
+                    break
+            except WebDriverException:
+                pass
+            time.sleep(0.5)
+        else:
+            time.sleep(1.0)  # fallback sleep
 
     scroll_to_bottom(driver, pause=1.0, max_scrolls=10)
 
