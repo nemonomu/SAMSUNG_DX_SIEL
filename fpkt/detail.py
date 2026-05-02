@@ -378,9 +378,13 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                         continue
                     rev_href = href
                     break
-            if not rev_href and _logger:
-                _logger.warning('review anchor 매치되었으나 source fsn (%s) 일치 anchor 없음 — review skip',
-                                src_fsn)
+            # 3차 fallback: anchor 없거나 매치 0 → source URL 의 /p/ → /product-reviews/ 변환
+            #               URL 자체에 fsn 포함되어 100% 같은 product 보장
+            if not rev_href and '/p/' in url:
+                rev_href = url.replace('/p/', '/product-reviews/', 1)
+                if _logger:
+                    _logger.info('anchor 매치 없음 — source URL 변환으로 review URL 생성: %s',
+                                 rev_href)
             if rev_href:
                 if _logger:
                     _logger.info('navigating to review page: %s (target=%d)', rev_href, target)
