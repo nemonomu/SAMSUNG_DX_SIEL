@@ -159,7 +159,7 @@ def repl(driver, url: str):
             time.sleep(1)
             continue
         if line == 'see':
-            robust_click(driver, '//button[normalize-space(text())="Read More"] | //div[normalize-space(text())="Read More"]')
+            robust_click(driver, '//button[normalize-space(text())="Read More" or normalize-space(text())="See more" or normalize-space(text())="Show more" or normalize-space(text())="View More"] | //div[normalize-space(text())="Read More" or normalize-space(text())="See more" or normalize-space(text())="Show more" or normalize-space(text())="View More"]')
             time.sleep(1)
             continue
         if line.startswith('click '):
