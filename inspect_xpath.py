@@ -162,6 +162,37 @@ def repl(driver, url: str):
             robust_click(driver, '//button[normalize-space(text())="Read More" or normalize-space(text())="See more" or normalize-space(text())="Show more" or normalize-space(text())="View More"] | //div[normalize-space(text())="Read More" or normalize-space(text())="See more" or normalize-space(text())="Show more" or normalize-space(text())="View More"]')
             time.sleep(1)
             continue
+        # 컬럼별 단축키 — Flipkart detail spec 의 SQL xpath 와 동일
+        SHORTCUTS = {
+            'sku':       '//div[normalize-space(text())="Model Name"]/following-sibling::div[1]',
+            'storage':   '//div[contains(text(),"GB ROM") or contains(text(),"TB ROM")][1]',
+            'color':     '//div[normalize-space(text())="Color"]/following-sibling::div[1]',
+            'screen':    '//div[normalize-space(text())="Display Size"]/following-sibling::div[1]',
+            'year':      '//div[normalize-space(text())="Launch Year:" or normalize-space(text())="Launch Year"]/following-sibling::div[1]',
+            'power':     '//div[normalize-space(text())="Power Consumption" or normalize-space(text())="Annual Energy Consumption" or normalize-space(text())="Energy Consumption"]/following-sibling::div[1]',
+            'delivery':  '//div[normalize-space(text())="Delivery"]/parent::div',
+            'trade':     '(//div[normalize-space(text())="Exchange offer"])[1]/following::div[(contains(text(),"Up to") or contains(text(),"₹") or contains(text(),"Off")) and not(contains(text(),"Pincode")) and not(contains(text(),"Servicea"))][1]',
+            'rating':    '(//a[contains(@href,"ratings-reviews-details-page")]//div[@dir="auto"])[1]',
+            'ratings':   '(//a[contains(@href,"ratings-reviews-details-page")]//div[@dir="auto"])[2]',
+            'similar':   '//a[contains(@href,"hl_lid=")]//div[contains(@style,"text-overflow: ellipsis") and (contains(text(),"GB") or contains(text(),"TB")) and not(contains(text(),"₹"))]',
+            'capacity':  '//div[normalize-space(text())="Capacity:" or normalize-space(text())="Capacity"]/following-sibling::div[1]',
+            'type':      '//div[normalize-space(text())="Refrigerator Type:" or normalize-space(text())="Refrigerator Type" or normalize-space(text())="Function Type:" or normalize-space(text())="Function Type"]/following-sibling::div[1]',
+        }
+        if line in SHORTCUTS:
+            xp = SHORTCUTS[line]
+            print(f'  [shortcut={line}] xpath={xp}')
+            if line == 'similar':
+                # multi 결과
+                els = find_elements_safe(driver, xp)
+                print(f'  count={len(els)}')
+                for i, e in enumerate(els):
+                    t = get_text(e)
+                    if len(t) > 150:
+                        t = t[:150] + '...'
+                    print(f'  [{i}] {t!r}')
+            else:
+                show_xpath(driver, xp)
+            continue
         if line.startswith('click '):
             xp = line[6:].strip()
             robust_click(driver, xp)
