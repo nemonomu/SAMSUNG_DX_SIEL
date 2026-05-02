@@ -10,20 +10,78 @@ listing 단계의 product_url 캡처 → detail 단계 입력.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
 import time
 import traceback
+from datetime import datetime, timezone, timedelta
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+_IST = timezone(timedelta(hours=5, minutes=30))
+_results_path = None
+_results_file = None
+
+
+def _setup_results(product: str) -> None:
+    """fpkt/logs/siel_flipkart_{product}_run_{ts}.jsonl 자동 생성. dual emit 으로 stdout + file 동시."""
+    global _results_path, _results_file
+    ts = datetime.now(_IST).strftime('%Y%m%d%H%M%S')
+    logs_dir = os.path.join(_ROOT, 'fpkt', 'logs')
+    os.makedirs(logs_dir, exist_ok=True)
+    _results_path = os.path.join(logs_dir, f'siel_flipkart_{product}_run_{ts}.jsonl')
+    _results_file = open(_results_path, 'w', encoding='utf-8')
+
+
+def _write_results(rec: dict) -> None:
+    if _results_file is None:
+        return
+    try:
+        _results_file.write(json.dumps(rec, ensure_ascii=False) + '\n')
+        _results_file.flush()
+    except Exception:
+        pass
+
+
+def _close_results() -> None:
+    global _results_file
+    if _results_file is not None:
+        try:
+            _results_file.close()
+        except Exception:
+            pass
+        _results_file = None
+
+
+def _make_dual(orig_emit):
+    """emit monkey-patch — original (stdout) 호출 + jsonl file 동시 write."""
+    def dual(rec):
+        orig_emit(rec)
+        _write_results(rec)
+    return dual
+
+
+def _auto_insert() -> None:
+    """run 끝난 후 jsonl → dx_siel_test_retail_com INSERT."""
+    insert_script = os.path.join(_ROOT, 'insert_test_retail_com.py')
+    if not (_results_path and os.path.exists(_results_path)
+            and os.path.exists(insert_script)):
+        return
+    print(f'[run.py] auto INSERT from {_results_path}', file=sys.stderr)
+    try:
+        subprocess.run([sys.executable, insert_script, _results_path, '999999'],
+                       check=False, timeout=600)
+    except Exception as e:
+        print(f'[run.py] auto INSERT failed: {type(e).__name__}: {e}', file=sys.stderr)
+
 
 def _auto_apply_sql():
     """run 시작 전 SQL latest 자동 적용 — post-merge hook 미설치 환경 안전장치.
-    DROP+CREATE+INSERT idempotent 라 매 run OK. 실패 시 (DB down 등) skip — crawler 는 진행."""
+    sql/*.sql idempotent (DROP 없음, IF NOT EXISTS / ON CONFLICT). sql/manual/ 은 자동 적용 X."""
     sql_path = os.path.join(_ROOT, 'sql', 'dx_siel_xpath_selectors.sql')
     apply_script = os.path.join(_ROOT, 'apply_sql.py')
     if not (os.path.exists(sql_path) and os.path.exists(apply_script)):
@@ -112,7 +170,14 @@ def main() -> int:
                     help='detail 단계 처리 URL 수 제한 (default 무제한)')
     ap.add_argument('--detail-sleep', type=float, default=2.0)
     ap.add_argument('--headless', action='store_true')
+    ap.add_argument('--no-auto-insert', action='store_true',
+                    help='run 끝난 후 dx_siel_test_retail_com 자동 INSERT 비활성')
     args = ap.parse_args()
+
+    # dual emit + auto jsonl file
+    _setup_results(args.product)
+    L.emit = _make_dual(L.emit)
+    D.emit = _make_dual(D.emit)
 
     driver = L.make_driver(headless=args.headless)
     captured: list = []
@@ -154,6 +219,9 @@ def main() -> int:
             driver.quit()
         except Exception:
             pass
+        _close_results()
+        if not args.no_auto_insert:
+            _auto_insert()
 
 
 if __name__ == '__main__':
