@@ -1,8 +1,11 @@
-"""jsonl 의 detail stage record 에서 product_url 추출. selector fix 검증용 sample URL 파일 생성.
+"""jsonl 의 stage record 에서 URL 추출. selector fix 검증용 sample URL 파일 생성.
 
 사용:
   python dump_urls.py amzn/logs/siel_amazon_tv_run_20260503163628.jsonl --max 5 > urls_tv.txt
-  python amzn/detail.py --product tv --urls-file urls_tv.txt > test_tv_detail.jsonl
+  # main 단계의 discount_type 채워진 product 만 (dealBadge 검증용):
+  python dump_urls.py amzn/logs/siel_amazon_tv_run_20260503112635.jsonl \\
+      --stage main --has discount_type --max 2 > urls_tv_deal.txt
+  python amzn/detail.py --product tv --urls-file urls_tv_deal.txt > test_tv_deal_detail.jsonl
 """
 from __future__ import annotations
 
@@ -16,6 +19,8 @@ def main() -> int:
     ap.add_argument('jsonl', help='소스 jsonl (run 결과)')
     ap.add_argument('--stage', default='detail', help='추출 대상 stage (default: detail)')
     ap.add_argument('--max', type=int, default=0, help='최대 N 개 (0 = 무제한)')
+    ap.add_argument('--has', action='append', default=[],
+                    help='해당 field 가 None/빈 아닌 record 만 (반복 가능, 다중 AND)')
     args = ap.parse_args()
 
     n = 0
@@ -32,6 +37,8 @@ def main() -> int:
             # main/bsr stage record 는 product_url 에 URL, source_url=상위 페이지 URL.
             url = r.get('source_url') if args.stage == 'detail' else r.get('product_url')
             if not url or url in seen:
+                continue
+            if any(not r.get(f) for f in args.has):
                 continue
             seen.add(url)
             print(url)
