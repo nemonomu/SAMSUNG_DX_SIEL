@@ -580,6 +580,37 @@ BEGIN
 END $$;
 
 -- =============================================================================
+-- FLIPKART × BSR — DATA selectors 보강 (사용자 요청, 2026-05-03)
+-- ERD v1 은 bsr=순위만 시드했으나, bsr only URL (main 300 에 없는 URL) 의 데이터가
+-- 100% NULL 로 떨어짐. main selectors 를 page_type='bsr' 로 카피해 데이터 채움.
+-- Flipkart bsr 페이지 (?sort=popularity) = default search 와 동일 카드 dom (검증됨).
+-- main row 변경 시 다음 apply_sql 에서 bsr 도 자동 동기.
+-- =============================================================================
+
+INSERT INTO dx_siel_xpath_selectors
+  (site_account, page_type, domain, data_field, xpath_primary, fallback_xpath, is_active, notes)
+SELECT site_account,
+       'bsr' AS page_type,
+       domain,
+       data_field,
+       xpath_primary,
+       fallback_xpath,
+       is_active,
+       COALESCE(notes,'') || ' [auto-copied from main 2026-05-03]' AS notes
+FROM dx_siel_xpath_selectors
+WHERE site_account = 'Flipkart'
+  AND page_type    = 'main'
+  AND domain       IN ('hhp','tv','ref','ldy')
+  AND data_field   NOT IN ('base_container','product_url')
+  AND is_active    = TRUE
+ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+  xpath_primary  = EXCLUDED.xpath_primary,
+  fallback_xpath = EXCLUDED.fallback_xpath,
+  notes          = EXCLUDED.notes,
+  is_active      = TRUE,
+  updated_at     = NOW();
+
+-- =============================================================================
 -- FLIPKART × DETAIL  (Product Page)
 -- 공통 base + 제품군별 spec
 -- =============================================================================
@@ -637,9 +668,15 @@ BEGIN
 END $$;
 
 -- HHP 전용 (Flipkart) — ERD v1: 가격 3종 (final/original/savings) 은 Main Page 로 통합. detail 엔 trade_in/storage/color 만.
+-- 추가 (2026-05-03): HHP sku 만 Model Number override (공통 'Model Name' → HHP 는 시리즈명이라 dup 발생, Model Number 가 진짜 unique 코드).
+--                    TV/REF/LDY 는 Specifications General 에 'Model Number' 라벨 자체가 없어 공통 'Model Name' 유지.
 INSERT INTO dx_siel_xpath_selectors
   (site_account,page_type,domain,data_field,xpath_primary,fallback_xpath,notes)
 VALUES
+  ('Flipkart','detail','hhp','sku',
+   '//div[normalize-space(text())="Model Number"]/following-sibling::div[1]',
+   '//h1[1]',
+   'HHP 전용 override (2026-05-03): Specifications > General > Model Number (예: V2510). 공통 selector 의 Model Name 은 HHP 만 시리즈명 ("T4 Pro 5G") 이라 variant 미반영 dup. TV/REF/LDY 는 Model Number 라벨 자체 부재 → 공통 Model Name 유지.'),
   ('Flipkart','detail','hhp','trade_in',
    '(//div[normalize-space(text())="Exchange offer"])[1]/following::div[(contains(text(),"Up to") or contains(text(),"₹") or contains(text(),"Off")) and not(contains(text(),"Pincode")) and not(contains(text(),"Servicea"))][1]',
    '//*[contains(text(),"Exchange")]/ancestor::div[1]',
