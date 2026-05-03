@@ -381,6 +381,13 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec[field] = siel_log.parse_ldy_loading_type(extract_single(driver, xpath))
         elif field == 'ldy_capacity':
             rec[field] = siel_log.parse_ldy_capacity(extract_single(driver, xpath))
+        elif field == 'final_sku_price':
+            # 신 layout (apex-pricetopay-accessibility-label) primary, 구 layout (a-offscreen) fallback.
+            # 위치 동일 (corePriceDisplay/centerCol 안 가격 영역). 다른 field 의 fallback 은 활성 X.
+            v = extract_single(driver, xpath)
+            if v is None and sel.get('fallback'):
+                v = extract_single(driver, sel['fallback'])
+            rec[field] = siel_log.parse_amzn_apex_price(v)
         else:
             rec[field] = extract_single(driver, xpath)
     return rec

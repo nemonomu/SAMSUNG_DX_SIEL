@@ -210,6 +210,21 @@ def parse_price_value(v):
     return s if s else None
 
 
+_AMZN_RUPEE_PRICE_RE = re.compile(r'₹[\d,]+')
+
+
+def parse_amzn_apex_price(v):
+    """Amazon detail 의 apex-pricetopay-accessibility-label text 에서 ₹가격만 추출.
+    e.g. '₹11,990.00 with 52 percent savings' → '₹11,990'
+         '₹13,999.00' → '₹13,999'
+         '₹24,999' → '₹24,999' (구 a-offscreen text fallback 도 호환)
+    [\\d,]+ 가 . 만나면 멈춰 .00 fraction 자동 strip."""
+    if not v:
+        return None
+    m = _AMZN_RUPEE_PRICE_RE.search(str(v))
+    return m.group(0) if m else None
+
+
 def parse_count_of_ratings(v):
     """'(6,743)' / '1,09,687' / '39,132 global ratings' → '6,743' / '109,687' / '39,132'.
     양 옆 paren/bracket/pipe + 'ratings'/'global ratings' 제거 + 인도식 → 서양식 (orchestrator 가 int 변환)."""
