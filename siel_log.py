@@ -293,6 +293,34 @@ def parse_delivery(v):
     return s or None
 
 
+_DETAILS_TAIL_RE = re.compile(r'\s*Details\.?\s*$', re.I)
+
+
+def parse_delivery_availability(v):
+    """'FREE' 시작 검수 + 끝 'Details' 제거.
+    'FREE delivery Monday, 11 May. Order within 4 hrs 42 mins. Details' → 'FREE delivery Monday, 11 May. Order within 4 hrs 42 mins.'
+    'This item cannot be shipped...' (FREE 시작 X) → None."""
+    if not v:
+        return None
+    s = re.sub(r'\s+', ' ', str(v)).strip()
+    if not s.startswith('FREE'):
+        return None
+    s = _DETAILS_TAIL_RE.sub('', s).strip()
+    return s if s else None
+
+
+def parse_fastest_delivery(v):
+    """앞 'Or ' 제거 + 끝 'Details' 제거.
+    'Or fastest delivery Today 4 pm - 8 pm. Order within 1 hr 35 mins. Details' → 'fastest delivery Today 4 pm - 8 pm. Order within 1 hr 35 mins.'"""
+    if not v:
+        return None
+    s = re.sub(r'\s+', ' ', str(v)).strip()
+    if s[:3].lower() == 'or ':
+        s = s[3:].strip()
+    s = _DETAILS_TAIL_RE.sub('', s).strip()
+    return s if s else None
+
+
 _TRADE_UPTO_RE = re.compile(r'Up to (?!₹)(\d)')
 
 

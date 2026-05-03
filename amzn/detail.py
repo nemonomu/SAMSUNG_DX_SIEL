@@ -371,6 +371,10 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec[field] = extract_text_or_value(driver, xpath)
         elif field == 'sku_assurance':
             rec[field] = siel_log.parse_sku_assurance(extract_single(driver, xpath))
+        elif field == 'delivery_availability':
+            rec[field] = siel_log.parse_delivery_availability(extract_single(driver, xpath))
+        elif field == 'fastest_delivery':
+            rec[field] = siel_log.parse_fastest_delivery(extract_single(driver, xpath))
         elif field == 'trade_in':
             rec[field] = siel_log.parse_trade_in(extract_single(driver, xpath))
         elif field == 'ldy_loading_type':
