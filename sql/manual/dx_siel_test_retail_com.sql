@@ -7,9 +7,8 @@
 
 \encoding UTF8
 
-DROP TABLE IF EXISTS dx_siel_test_retail_com;
-
-CREATE TABLE dx_siel_test_retail_com (
+-- 데이터 보존 — DROP 금지. schema 변경 시 사용자가 수동 DROP 후 재실행.
+CREATE TABLE IF NOT EXISTS dx_siel_test_retail_com (
   id                SERIAL PRIMARY KEY,
   -- 식별
   country           TEXT,                         -- 'siel'
@@ -68,5 +67,5 @@ CREATE TABLE dx_siel_test_retail_com (
   inserted_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_test_retail_com_lookup
+CREATE INDEX IF NOT EXISTS idx_test_retail_com_lookup
   ON dx_siel_test_retail_com (account_name, product, item);
