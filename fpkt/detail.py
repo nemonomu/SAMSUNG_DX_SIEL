@@ -157,11 +157,16 @@ def fsn_from_url(url: str):
     return m.group(1) if m else None
 
 
-def robust_click(driver, xpath: str) -> bool:
-    """Flipkart React click 좌표 이슈 회피."""
+def robust_click(driver, xpath: str, wait_s: float = 10.0) -> bool:
+    """Flipkart React click 좌표 이슈 회피 + element 등장까지 wait.
+
+    page lazy load 케이스 (4번째 카드 9초 후 click=False 사례) 대응 — element 등장
+    polling (0.3초). 등장 즉시 click 시도. wait_s 내 미등장 시 False.
+    """
     try:
-        el = driver.find_element(By.XPATH, xpath)
-    except (NoSuchElementException, WebDriverException):
+        el = WebDriverWait(driver, wait_s, poll_frequency=0.3).until(
+            lambda d: d.find_element(By.XPATH, xpath))
+    except (TimeoutException, WebDriverException):
         return False
     try:
         driver.execute_script('arguments[0].scrollIntoView({block: "center"});', el)
