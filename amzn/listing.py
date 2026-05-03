@@ -302,6 +302,13 @@ def crawl_main(driver, product: str, selectors: dict, batch_id: str,
     return rank
 
 
+def _bsr_load_pattern(driver) -> None:
+    """BSR scroll pattern (사용자 spec): scroll-bottom → sleep 2 → scroll-bottom."""
+    scroll_to_bottom(driver, pause=1.5, max_scrolls=30)
+    time.sleep(2)
+    scroll_to_bottom(driver, pause=1.5, max_scrolls=30)
+
+
 def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
               max_rank: int = 0) -> int:
     """max_rank=0 (default) → 무제한, >0 이면 cap."""
@@ -318,12 +325,33 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
             _logger.info('page=%d url=%s', page_no, url)
         driver.get(url)
         time.sleep(3)
-        scroll_to_bottom(driver, pause=1.5, max_scrolls=30)
+        _bsr_load_pattern(driver)
         if page_no == 1:
             maybe_save_html(driver)
         cards = driver.find_elements(By.XPATH, container_xpath)
         if _logger:
-            _logger.info('page=%d cards=%d', page_no, len(cards))
+            _logger.info('page=%d cards=%d (initial)', page_no, len(cards))
+        # 0 → refresh (page broken) / 0<n<50 → retry scroll (lazy load 부족)
+        if not cards:
+            if _logger:
+                _logger.info('page=%d cards=0 → refresh', page_no)
+            try:
+                driver.refresh()
+                time.sleep(3)
+                _bsr_load_pattern(driver)
+                cards = driver.find_elements(By.XPATH, container_xpath)
+                if _logger:
+                    _logger.info('page=%d cards=%d (after refresh)', page_no, len(cards))
+            except WebDriverException as e:
+                if _logger:
+                    _logger.warning('page=%d refresh failed: %s', page_no, e)
+        elif len(cards) < 50:
+            if _logger:
+                _logger.info('page=%d cards=%d<50 → retry scroll', page_no, len(cards))
+            _bsr_load_pattern(driver)
+            cards = driver.find_elements(By.XPATH, container_xpath)
+            if _logger:
+                _logger.info('page=%d cards=%d (after retry)', page_no, len(cards))
         for card in cards:
             if max_rank and rank >= max_rank:
                 break
