@@ -395,6 +395,46 @@ VALUES
       updated_at     = NOW();
 
 -- =============================================================================
+-- AMAZON × DETAIL — listing 컬럼 4개 (4 도메인 공통)
+-- bsr-only 카드의 listing 컬럼이 비어있을 때 detail page 에서 fallback 추출.
+-- insert_test_retail_com.merge 가 primary (main/bsr) 비어있으면 detail 으로 fallback.
+-- =============================================================================
+
+DO $$
+DECLARE
+  d TEXT;
+  domains TEXT[] := ARRAY['hhp','tv','ref','ldy'];
+BEGIN
+  FOREACH d IN ARRAY domains LOOP
+    INSERT INTO dx_siel_xpath_selectors
+      (site_account, page_type, domain, data_field, xpath_primary, fallback_xpath, notes)
+    VALUES
+      ('Amazon','detail',d,'retailer_sku_name',
+       '//*[@id="productTitle"]',
+       '//h1[@id="title"]//span[normalize-space(text())]',
+       'detail page 제품명 — bsr 카드 listing 컬럼 비어있을 때 fallback'),
+      ('Amazon','detail',d,'final_sku_price',
+       '(//div[@id="corePriceDisplay_desktop_feature_div"]//span[@class="a-price" and @data-a-color="base"]//span[@class="a-offscreen"])[1] | (//div[@id="centerCol"]//span[@class="a-price" and @data-a-color="base"]//span[@class="a-offscreen"])[1]',
+       '(//div[@id="centerCol"]//span[contains(@class,"a-price") and not(@data-a-strike)]//span[@class="a-offscreen"])[1]',
+       'corePriceDisplay 첫 매치 = main product 가격 (variant carousel 회피). centerCol union 으로 신/구 layout cover. extract_single 첫 매치라 [1] 명시'),
+      ('Amazon','detail',d,'original_sku_price',
+       '(//div[@id="corePriceDisplay_desktop_feature_div"]//span[@data-a-strike="true"]//span[@class="a-offscreen"])[1] | (//div[@id="centerCol"]//span[@data-a-strike="true"]//span[@class="a-offscreen"])[1]',
+       NULL,
+       'M.R.P. (strike-through) — corePrice 우선, centerCol fallback. 할인 없는 product 는 valid null'),
+      ('Amazon','detail',d,'discount_type',
+       '//*[contains(@id,"DEAL_") and contains(@id,"-label")]//span[contains(@class,"a-badge-text")] | //*[@id="dealBadge_feature_div"]//span[contains(@class,"a-badge-text")]',
+       '//*[@id="corePriceDisplay_desktop_feature_div"]//span[contains(@class,"savingsPercentage")]',
+       'Limited time deal / Coupon 배지 우선 (main 의 discount_type 과 동일 패턴). fallback: corePrice 의 savingsPercentage')
+    ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+      xpath_primary  = EXCLUDED.xpath_primary,
+      fallback_xpath = EXCLUDED.fallback_xpath,
+      notes          = EXCLUDED.notes,
+      is_active      = TRUE,
+      updated_at     = NOW();
+  END LOOP;
+END $$;
+
+-- =============================================================================
 -- FLIPKART × MAIN  (relevance 정렬 검색 결과)
 -- HHP 만 가격 미수집 (ERD: HHP 가격은 product page 에서)
 -- =============================================================================
