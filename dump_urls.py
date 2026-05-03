@@ -28,7 +28,9 @@ def main() -> int:
                 continue
             if r.get('stage') != args.stage:
                 continue
-            url = r.get('product_url')
+            # detail stage record 는 source_url 에 URL, product_url=None.
+            # main/bsr stage record 는 product_url 에 URL, source_url=상위 페이지 URL.
+            url = r.get('source_url') if args.stage == 'detail' else r.get('product_url')
             if not url or url in seen:
                 continue
             seen.add(url)
