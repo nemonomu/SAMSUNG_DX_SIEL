@@ -158,15 +158,18 @@ def fsn_from_url(url: str):
 
 
 def robust_click(driver, xpath: str, wait_s: float = 10.0) -> bool:
-    """Flipkart React click 좌표 이슈 회피 + element 등장까지 wait.
+    """Flipkart React click 좌표 이슈 회피 + element 등장까지 wait + step 별 fail log.
 
-    page lazy load 케이스 (4번째 카드 9초 후 click=False 사례) 대응 — element 등장
-    polling (0.3초). 등장 즉시 click 시도. wait_s 내 미등장 시 False.
+    chain: js → native → actions. step 별 exception type/message log → fail
+    mechanism 진단 (wait_timeout / element_intercepted / stale / etc).
     """
     try:
         el = WebDriverWait(driver, wait_s, poll_frequency=0.3).until(
             lambda d: d.find_element(By.XPATH, xpath))
-    except (TimeoutException, WebDriverException):
+    except (TimeoutException, WebDriverException) as e:
+        if _logger:
+            _logger.info('robust_click wait_timeout %s xpath=%.80s',
+                         type(e).__name__, xpath)
         return False
     try:
         driver.execute_script('arguments[0].scrollIntoView({block: "center"});', el)
@@ -177,21 +180,21 @@ def robust_click(driver, xpath: str, wait_s: float = 10.0) -> bool:
     # lazy load 시 image overlay 가 spec div 위로 잠깐 떠오르는 timing 에 wrong target
     # 클릭. JS arguments[0].click() 는 element direct (HTMLElement.click() native),
     # viewport overlay 무관 — 사용자 console 검증 ($x(...)[0].click() = 같은 메커니즘).
-    try:
-        driver.execute_script('arguments[0].click();', el)
-        return True
-    except WebDriverException:
-        pass
-    try:
-        el.click()
-        return True
-    except WebDriverException:
-        pass
-    try:
-        ActionChains(driver).move_to_element(el).pause(0.3).click(el).perform()
-        return True
-    except WebDriverException:
-        return False
+    chain = [
+        ('js',      lambda: driver.execute_script('arguments[0].click();', el)),
+        ('native',  lambda: el.click()),
+        ('actions', lambda: ActionChains(driver).move_to_element(el).pause(0.3).click(el).perform()),
+    ]
+    for method, fn in chain:
+        try:
+            fn()
+            return True
+        except WebDriverException as e:
+            if _logger:
+                _logger.info('robust_click %s_fail %s: %s',
+                             method, type(e).__name__, str(e)[:100])
+            continue
+    return False
 
 
 def extract_single(driver, xpath: str):
