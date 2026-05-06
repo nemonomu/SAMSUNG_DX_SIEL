@@ -422,9 +422,9 @@ BEGIN
        NULL,
        'M.R.P. (strike-through) — corePrice 우선, centerCol fallback. 할인 없는 product 는 valid null'),
       ('Amazon','detail',d,'discount_type',
-       '//*[@id="dealBadgeSupportingText"]/span | //*[@id="dealBadge_feature_div"]//span[contains(@class,"a-badge-text")] | //*[contains(@id,"DEAL_") and contains(@id,"-label")]//span[contains(@class,"a-badge-text")]',
+       '//*[@id="dealBadgeSupportingText"] | //*[@id="dealBadge_feature_div"]//span[contains(@class,"a-badge-text")] | //*[contains(@id,"DEAL_") and contains(@id,"-label")]//span[contains(@class,"a-badge-text")]',
        NULL,
-       '신 layout: dealBadgeSupportingText 안 inner span (visible "Limited time deal"). 위치: main product apex_desktop 영역 안 dealBadge_feature_div, 페이지당 1개 (4 deal+2 plain HTML 검증). 구 layout (a-badge-text) 와 union — 첫 매치. fallback NULL: corePrice savingsPercentage 는 위치 다른 영역 (할인%) 이므로 discount_type 으로 부적합')
+       '신 layout: dealBadgeSupportingText (outer) — Selenium .text 가 visible inner span 모두 concat. timer 미발동 deal: "Limited time deal" / timer active: "Ends in HH:MM:SS" (시간 포함). screen reader labels (aok-offscreen/aok-hidden) 은 dealBadgeSupportingText 외부 sibling 이라 noise 없음 검증. 위치: main product apex_desktop 영역, 페이지당 1개. 구 layout (a-badge-text) 와 union. fallback NULL: corePrice savingsPercentage 는 위치 다른 영역 (할인%) 부적합')
     ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
       xpath_primary  = EXCLUDED.xpath_primary,
       fallback_xpath = EXCLUDED.fallback_xpath,
