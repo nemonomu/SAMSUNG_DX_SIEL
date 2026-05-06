@@ -173,13 +173,17 @@ def robust_click(driver, xpath: str, wait_s: float = 10.0) -> bool:
         time.sleep(0.3)
     except WebDriverException:
         pass
+    # JS click 우선 — Selenium native el.click() 은 좌표 click (W3C WebDriver) 라
+    # lazy load 시 image overlay 가 spec div 위로 잠깐 떠오르는 timing 에 wrong target
+    # 클릭. JS arguments[0].click() 는 element direct (HTMLElement.click() native),
+    # viewport overlay 무관 — 사용자 console 검증 ($x(...)[0].click() = 같은 메커니즘).
     try:
-        el.click()
+        driver.execute_script('arguments[0].click();', el)
         return True
     except WebDriverException:
         pass
     try:
-        driver.execute_script('arguments[0].click();', el)
+        el.click()
         return True
     except WebDriverException:
         pass
