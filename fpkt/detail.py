@@ -253,6 +253,13 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
 
     maybe_save_html(driver)
 
+    # spec section lazy mount trigger — Flipkart React 의 일부 component (Specifications)
+    # 가 viewport scroll 없이 mount 안 되는 카드 발생. scroll_to_bottom 으로 lazy
+    # render 강제. 대부분 카드는 이미 mount → height 변화 없어 first iteration 후 break.
+    # 사례: 2026-05-06 vivo T5x 5G (MOBHH69NRE6PHFBH) — spec dom 30s 안에 미등장
+    # (WebDriverWait + sku wait 둘 다 timeout). 사용자 console 에선 spec 정상.
+    scroll_to_bottom(driver, pause=0.8, max_scrolls=5)
+
     # Specifications 클릭 (robust)
     spec_sel = selectors.get('expand_specifications')
     if spec_sel and spec_sel.get('xpath'):
