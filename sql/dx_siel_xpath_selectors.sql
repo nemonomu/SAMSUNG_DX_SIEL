@@ -422,9 +422,9 @@ BEGIN
        NULL,
        'M.R.P. (strike-through) — corePrice 우선, centerCol fallback. 할인 없는 product 는 valid null'),
       ('Amazon','detail',d,'discount_type',
-       '//*[contains(@id,"DEAL_") and contains(@id,"-label")]//span[contains(@class,"a-badge-text")] | //*[@id="dealBadge_feature_div"]//span[contains(@class,"a-badge-text")]',
-       '//*[@id="corePriceDisplay_desktop_feature_div"]//span[contains(@class,"savingsPercentage")]',
-       'Limited time deal / Coupon 배지 우선 (main 의 discount_type 과 동일 패턴). fallback: corePrice 의 savingsPercentage')
+       '//*[@id="dealBadgeSupportingText"]/span | //*[@id="dealBadge_feature_div"]//span[contains(@class,"a-badge-text")] | //*[contains(@id,"DEAL_") and contains(@id,"-label")]//span[contains(@class,"a-badge-text")]',
+       NULL,
+       '신 layout: dealBadgeSupportingText 안 inner span (visible "Limited time deal"). 위치: main product apex_desktop 영역 안 dealBadge_feature_div, 페이지당 1개 (4 deal+2 plain HTML 검증). 구 layout (a-badge-text) 와 union — 첫 매치. fallback NULL: corePrice savingsPercentage 는 위치 다른 영역 (할인%) 이므로 discount_type 으로 부적합')
     ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
       xpath_primary  = EXCLUDED.xpath_primary,
       fallback_xpath = EXCLUDED.fallback_xpath,
