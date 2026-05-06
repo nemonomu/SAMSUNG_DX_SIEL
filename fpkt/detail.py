@@ -34,8 +34,8 @@ if _ROOT not in sys.path:
 import psycopg2
 import psycopg2.extras
 import undetected_chromedriver as uc
-from selenium.common.exceptions import (NoSuchElementException, TimeoutException,
-                                         WebDriverException)
+from selenium.common.exceptions import (NoSuchElementException, StaleElementReferenceException,
+                                         TimeoutException, WebDriverException)
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -158,42 +158,53 @@ def fsn_from_url(url: str):
 
 
 def robust_click(driver, xpath: str, wait_s: float = 10.0) -> bool:
-    """Flipkart React click 좌표 이슈 회피 + element 등장까지 wait + step 별 fail log.
+    """Flipkart React click 좌표 이슈 회피 + element 등장까지 wait + stale retry.
 
-    chain: js → native → actions. step 별 exception type/message log → fail
-    mechanism 진단 (wait_timeout / element_intercepted / stale / etc).
+    chain: js → native → actions. JS click 우선 — Selenium native el.click() 은
+    좌표 click (W3C WebDriver) 이라 lazy load 시 image overlay 가 spec div 위로
+    잠깐 떠오르는 timing 에 wrong target. JS arguments[0].click() 는 element
+    direct (HTMLElement.click() native) — viewport overlay 무관.
+
+    StaleElementReferenceException 시 element 재 lookup 후 1회 retry — React
+    re-render 가 click chain 진행 중 발생하는 케이스 대응.
     """
-    try:
-        el = WebDriverWait(driver, wait_s, poll_frequency=0.3).until(
-            lambda d: d.find_element(By.XPATH, xpath))
-    except (TimeoutException, WebDriverException) as e:
-        if _logger:
-            _logger.info('robust_click wait_timeout %s xpath=%.80s',
-                         type(e).__name__, xpath)
-        return False
-    try:
-        driver.execute_script('arguments[0].scrollIntoView({block: "center"});', el)
-        time.sleep(0.3)
-    except WebDriverException:
-        pass
-    # JS click 우선 — Selenium native el.click() 은 좌표 click (W3C WebDriver) 라
-    # lazy load 시 image overlay 가 spec div 위로 잠깐 떠오르는 timing 에 wrong target
-    # 클릭. JS arguments[0].click() 는 element direct (HTMLElement.click() native),
-    # viewport overlay 무관 — 사용자 console 검증 ($x(...)[0].click() = 같은 메커니즘).
-    chain = [
-        ('js',      lambda: driver.execute_script('arguments[0].click();', el)),
-        ('native',  lambda: el.click()),
-        ('actions', lambda: ActionChains(driver).move_to_element(el).pause(0.3).click(el).perform()),
-    ]
-    for method, fn in chain:
+    for attempt in range(2):  # stale 시 1회 retry
         try:
-            fn()
-            return True
-        except WebDriverException as e:
+            el = WebDriverWait(driver, wait_s, poll_frequency=0.3).until(
+                lambda d: d.find_element(By.XPATH, xpath))
+        except (TimeoutException, WebDriverException) as e:
             if _logger:
-                _logger.info('robust_click %s_fail %s: %s',
-                             method, type(e).__name__, str(e)[:100])
-            continue
+                _logger.info('robust_click wait_timeout %s xpath=%.80s',
+                             type(e).__name__, xpath)
+            return False
+        try:
+            driver.execute_script('arguments[0].scrollIntoView({block: "center"});', el)
+            time.sleep(0.3)
+        except WebDriverException:
+            pass
+        chain = [
+            ('js',      lambda: driver.execute_script('arguments[0].click();', el)),
+            ('native',  lambda: el.click()),
+            ('actions', lambda: ActionChains(driver).move_to_element(el).pause(0.3).click(el).perform()),
+        ]
+        stale_retry = False
+        for method, fn in chain:
+            try:
+                fn()
+                return True
+            except StaleElementReferenceException:
+                if _logger:
+                    _logger.info('robust_click %s_stale attempt=%d: re-lookup',
+                                 method, attempt + 1)
+                stale_retry = True
+                break
+            except WebDriverException as e:
+                if _logger:
+                    _logger.info('robust_click %s_fail %s: %s',
+                                 method, type(e).__name__, str(e)[:100])
+                continue
+        if not stale_retry:
+            break  # stale 아닌 chain 전체 fail — retry 무의미
     return False
 
 
@@ -263,20 +274,28 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
     # (WebDriverWait + sku wait 둘 다 timeout). 사용자 console 에선 spec 정상.
     scroll_to_bottom(driver, pause=0.8, max_scrolls=5)
 
-    # Specifications 클릭 (robust)
+    # Specifications 클릭 (robust). wait_s 20s — stochastic page load 대비 (이전 10s 부족 사례).
     spec_sel = selectors.get('expand_specifications')
     if spec_sel and spec_sel.get('xpath'):
-        ok = robust_click(driver, spec_sel['xpath'])
+        ok = robust_click(driver, spec_sel['xpath'], wait_s=20.0)
         if _logger:
             _logger.info('expand_specifications clicked=%s', ok)
-        time.sleep(0.8)  # spec 영역 expand 트리거 — 짧게 (실제 wait 은 아래 WebDriverWait)
+        if ok:
+            # spec click 성공 시 React 비동기 expand animation 완료 + deep contents
+            # (See more 버튼) lazy mount trigger. 본 wait 부재 시 see_more 10s timeout
+            # 5건 발생 (2026-05-06 30 sample). 사용자 page 진단: spec click → 펼쳐지고
+            # See more 정상 등장. driver-only timing 결함이라 명시.
+            time.sleep(1.0)
+            scroll_to_bottom(driver, pause=0.5, max_scrolls=3)
+        else:
+            time.sleep(0.8)
 
-    # See more 클릭 — deep spec lazy load
+    # See more 클릭 — deep spec lazy load. wait_s 20s — 위 사례 대응.
     seemore_sel = selectors.get('expand_see_more')
     sku_sel = selectors.get('sku')
     sku_value_xpath = (sku_sel or {}).get('xpath') or '//div[normalize-space(text())="Model Name"]/following-sibling::div[1]'
     if seemore_sel and seemore_sel.get('xpath'):
-        ok = robust_click(driver, seemore_sel['xpath'])
+        ok = robust_click(driver, seemore_sel['xpath'], wait_s=20.0)
         if _logger:
             _logger.info('expand_see_more clicked=%s', ok)
         # WebDriverWait + custom condition — sku value 등장 시 즉시 break, timeout 시 exception.
