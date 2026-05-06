@@ -154,8 +154,8 @@ def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
             # 배송/재고
             'delivery_availability':           d.get('delivery_availability') or primary.get('delivery_availability'),
             'available_quantity_for_purchase': primary.get('available_quantity_for_purchase'),
-            # 마케팅
-            'sku_popularity': primary.get('sku_popularity'),
+            # 마케팅 — sku_popularity main NULL 시 detail fallback (Flipkart anti-bot 시 main 100% NULL 대응)
+            'sku_popularity': primary.get('sku_popularity') or d.get('sku_popularity'),
             'sku_status':     primary.get('sku_status'),
             # 순위 — main + bsr 둘 다 보존 (같은 SKU 가 양쪽에 있으면 함께 set)
             'main_rank': parse_int_safe(m.get('main_rank')) if m else None,

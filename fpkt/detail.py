@@ -350,6 +350,8 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec[field] = siel_log.parse_count_of_reviews(extract_single(driver, xpath))
         elif field == 'savings':
             rec[field] = siel_log.parse_savings(extract_single(driver, xpath))
+        elif field in ('final_sku_price', 'original_sku_price'):
+            rec[field] = siel_log.parse_price_value(extract_single(driver, xpath))
         elif field == 'hhp_storage':
             rec[field] = siel_log.parse_hhp_storage(extract_single(driver, xpath))
         elif field == 'delivery_availability':

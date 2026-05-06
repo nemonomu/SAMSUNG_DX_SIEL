@@ -657,7 +657,24 @@ BEGIN
       ('Flipkart','detail',d,'sku',
        '//div[normalize-space(text())="Model Name"]/following-sibling::div[1]',
        '//h1[1]',
-       'ERD: All details > Specifications > General > Model Name 바로 아래 텍스트. expand_specifications click 후 spec 영역에 노출 — fallback h1 전체 (post-process)')
+       'ERD: All details > Specifications > General > Model Name 바로 아래 텍스트. expand_specifications click 후 spec 영역에 노출 — fallback h1 전체 (post-process)'),
+      -- main page NULL 시 fallback 용 detail page selector (사용자 요청, 2026-05-06).
+      -- 5/6 anti-bot detection 으로 main listing 100% NULL → detail page 에서 회수.
+      -- 가격 dom 단정: cls "v1zwn20" + font="default-fk-font-m" 의 ₹ 시작 div = main 가격
+      -- (HHP/REF/LDY saved spec html 4 도메인 검증). banner/EMI/deal 영역 (cls v1zwn29/css-146c3p1)
+      -- 자동 회피.
+      ('Flipkart','detail',d,'final_sku_price',
+       '(//div[contains(@class,"v1zwn20") and starts-with(normalize-space(text()),"₹")])[1]',
+       '(//div[starts-with(normalize-space(text()),"₹") and not(starts-with(normalize-space(text()),"+₹"))])[1]',
+       'cls v1zwn20 매치가 main 가격 (banner/EMI 회피). fallback: 첫 ₹ 시작 div + Protect Fee 회피'),
+      ('Flipkart','detail',d,'discount_type',
+       '//*[contains(text(),"Hot deal") or contains(text(),"Hot Deal") or contains(text(),"Super Deals") or contains(text(),"Bank offer") or contains(text(),"Limited") or contains(text(),"Early bird")]',
+       NULL,
+       'main page selector + Early bird deal 추가 (사용자 5/6 직접 관찰: Hot deal 위치에 Early bird 도입)'),
+      ('Flipkart','detail',d,'sku_popularity',
+       '//*[contains(text(),"Bestseller") or contains(text(),"Flipkart''s Choice") or contains(text(),"Flipkart Choice")] | //img[contains(@src,"/fa_")]',
+       NULL,
+       'detail page Bestseller marker = div text node (HHP/REF/LDY saved html 일관 검증). main page 와 다름 (anchor href 아님). 단일 마커만 추출 — main page 의 union 합침 로직과 형식 일관')
     ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
       xpath_primary  = EXCLUDED.xpath_primary,
       fallback_xpath = EXCLUDED.fallback_xpath,
