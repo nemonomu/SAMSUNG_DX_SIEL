@@ -48,6 +48,11 @@ COLUMNS = [
 ]
 
 
+# final_sku_price 가 이 값이면 재고 부재 — OSP 도 None 강제 (사용자 룰)
+# Amazon main / detail 의 unavailable 표시 (selector union 의 outOfStock / fod-cx-message 결과)
+_UNAVAIL_FSP_LABELS = ('Currently unavailable.', 'No featured offers available')
+
+
 _ASIN_RE = re.compile(r'/(?:dp|gp/product)/([A-Z0-9]{10})')
 
 
@@ -176,6 +181,10 @@ def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
             'sku_assurance':                        d.get('sku_assurance'),
             'number_of_units_purchased_past_month': primary.get('number_of_units_purchased_past_month'),
         }
+        # FSP 가 재고 부재 표시 ('Currently unavailable.' / 'No featured offers available') 면
+        # OSP 도 None 강제 — unavailable 상태에서 M.R.P. 만 남는 noise 방지 (사용자 룰).
+        if row['final_sku_price'] in _UNAVAIL_FSP_LABELS:
+            row['original_sku_price'] = None
         rows.append(row)
     return rows
 

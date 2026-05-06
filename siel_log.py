@@ -214,15 +214,27 @@ _AMZN_RUPEE_PRICE_RE = re.compile(r'₹[\d,]+')
 
 
 def parse_amzn_apex_price(v):
-    """Amazon detail 의 apex-pricetopay-accessibility-label text 에서 ₹가격만 추출.
-    e.g. '₹11,990.00 with 52 percent savings' → '₹11,990'
+    """Amazon detail 의 final_sku_price 추출. 두 케이스 처리:
+      1) apex-pricetopay-accessibility-label text 또는 a-offscreen ₹가격 → ₹가격만 추출.
+         '₹11,990.00 with 52 percent savings' → '₹11,990'
          '₹13,999.00' → '₹13,999'
-         '₹24,999' → '₹24,999' (구 a-offscreen text fallback 도 호환)
-    [\\d,]+ 가 . 만나면 멈춰 .00 fraction 자동 strip."""
+         '₹24,999' → '₹24,999'
+         [\\d,]+ 가 . 만나면 멈춰 .00 fraction 자동 strip.
+      2) outOfStock / fod-cx-message text (재고 부재 표시) → 그대로 pass-through.
+         'Currently unavailable.' → 'Currently unavailable.' (main 형식 일관)
+         'No featured offers available' → 'No featured offers available'
+    """
     if not v:
         return None
-    m = _AMZN_RUPEE_PRICE_RE.search(str(v))
-    return m.group(0) if m else None
+    s = str(v).strip()
+    if not s:
+        return None
+    m = _AMZN_RUPEE_PRICE_RE.search(s)
+    if m:
+        return m.group(0)
+    if 'Currently unavailable' in s or 'No featured offers' in s:
+        return s
+    return None
 
 
 def parse_count_of_ratings(v):
