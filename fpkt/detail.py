@@ -39,6 +39,7 @@ from selenium.common.exceptions import (NoSuchElementException, StaleElementRefe
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
+from urllib3.exceptions import ReadTimeoutError as _Urllib3RT
 
 import config
 import siel_log
@@ -438,13 +439,25 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             if rev_href:
                 if _logger:
                     _logger.info('navigating to review page: %s (target=%d)', rev_href, target)
+                # A+C: 1회 retry (driver hang stochastic 대응) + 그래도 fail 시 부분 review
+                # 수용. urllib3 ReadTimeoutError 는 WebDriverException 자식 아니라 별도 catch.
                 try:
                     driver.get(rev_href)
                     time.sleep(3)
                     scroll_to_bottom(driver, pause=1.2, max_scrolls=15)
-                except WebDriverException as e:
+                except (WebDriverException, _Urllib3RT) as e:
                     if _logger:
-                        _logger.warning('review page navigation failed: %s', e)
+                        _logger.warning('review page navigate fail: %s — retry',
+                                        type(e).__name__)
+                    try:
+                        time.sleep(2)
+                        driver.get(rev_href)
+                        time.sleep(3)
+                        scroll_to_bottom(driver, pause=1.2, max_scrolls=15)
+                    except (WebDriverException, _Urllib3RT) as e2:
+                        if _logger:
+                            _logger.warning('review page navigate fail (after retry): %s',
+                                            type(e2).__name__)
                 # review page 진입 후 두 번째 HTML snapshot — review xpath 디버깅용
                 if _html_path:
                     review_html = _html_path.replace('.html', '_review.html')
@@ -468,14 +481,25 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             if _logger:
                 _logger.info('review page %d: %s (collected=%d/%d)',
                              page, page_url, len(all_parts), target)
+            # A+C: 1회 retry + 그래도 fail 시 collected so far 사용 + break
             try:
                 driver.get(page_url)
                 time.sleep(3)
                 scroll_to_bottom(driver, pause=1.0, max_scrolls=10)
-            except WebDriverException as e:
+            except (WebDriverException, _Urllib3RT) as e:
                 if _logger:
-                    _logger.warning('review page %d navigation failed: %s', page, e)
-                break
+                    _logger.warning('review page %d navigate fail: %s — retry',
+                                    page, type(e).__name__)
+                try:
+                    time.sleep(2)
+                    driver.get(page_url)
+                    time.sleep(3)
+                    scroll_to_bottom(driver, pause=1.0, max_scrolls=10)
+                except (WebDriverException, _Urllib3RT) as e2:
+                    if _logger:
+                        _logger.warning('review page %d navigate fail (after retry): %s',
+                                        page, type(e2).__name__)
+                    break
             new_count = 0
             for p in _extract_multi_raw(driver, review_xpath, max_n=None):
                 if p not in seen:
