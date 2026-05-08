@@ -139,8 +139,8 @@ def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
             'calendar_week':     calendar_week_iso(cdt),
             'crawl_datetime':    cdt,
             'batch_id':          primary.get('batch_id') or d.get('batch_id'),
-            # 평점/리뷰: detail 우선
-            'star_rating':               d.get('star_rating'),
+            # 평점/리뷰: detail 우선, main fallback (양방향 보강 5/8)
+            'star_rating':               d.get('star_rating') or primary.get('star_rating'),
             'count_of_star_ratings':     d.get('count_of_star_ratings') or primary.get('count_of_star_ratings'),
             'count_of_reviews':          d.get('count_of_reviews') or primary.get('count_of_reviews'),
             'detailed_review_content':   d.get('detailed_review_content'),
