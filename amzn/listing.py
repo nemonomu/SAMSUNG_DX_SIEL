@@ -278,9 +278,27 @@ def crawl_main(driver, product: str, selectors: dict, batch_id: str,
             maybe_save_html(driver)
         cards = driver.find_elements(By.XPATH, container_xpath)
         if _logger:
-            _logger.info('page=%d cards=%d', page, len(cards))
+            _logger.info('page=%d cards=%d (initial)', page, len(cards))
+        # cards=0 → refresh retry 3회 (anti-bot detection / timing 회복).
+        # bsr 의 refresh 패턴 차용 + 3회 확장 (사용자 5/8 spec).
         if not cards:
-            break
+            for attempt in range(1, 4):
+                if _logger:
+                    _logger.info('page=%d cards=0 → refresh attempt %d/3', page, attempt)
+                try:
+                    driver.refresh()
+                    time.sleep(3)
+                    scroll_to_bottom(driver, pause=1.0, max_scrolls=8)
+                    cards = driver.find_elements(By.XPATH, container_xpath)
+                    if _logger:
+                        _logger.info('page=%d cards=%d (after refresh %d)', page, len(cards), attempt)
+                    if cards:
+                        break
+                except WebDriverException as e:
+                    if _logger:
+                        _logger.warning('page=%d refresh %d failed: %s', page, attempt, e)
+            if not cards:
+                break
         for card in cards:
             if rank >= max_rank:
                 break
