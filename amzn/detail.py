@@ -368,7 +368,13 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
         elif field == 'count_of_star_ratings':
             rec[field] = siel_log.parse_count_of_ratings(extract_single(driver, xpath))
         elif field == 'sku':
-            rec[field] = extract_text_or_value(driver, xpath)
+            # primary: Manufacturer Part Number. fallback union: Model Number /
+            # Part Number / Item Model Number — 5/8 진단 발견 (REF Midea "Part Number",
+            # TV SANSUI "Model Number", Warranty plan technical details "Item Model Number")
+            v = extract_text_or_value(driver, xpath)
+            if v is None and sel.get('fallback'):
+                v = extract_text_or_value(driver, sel['fallback'])
+            rec[field] = v
         elif field == 'sku_assurance':
             rec[field] = siel_log.parse_sku_assurance(extract_single(driver, xpath))
         elif field == 'delivery_availability':
