@@ -678,7 +678,11 @@ BEGIN
       ('Flipkart','detail',d,'sku_popularity',
        '//*[contains(text(),"Bestseller") or contains(text(),"Flipkart''s Choice") or contains(text(),"Flipkart Choice")] | //img[contains(@src,"/fa_")]',
        NULL,
-       'detail page Bestseller marker = div text node (HHP/REF/LDY saved html 일관 검증). main page 와 다름 (anchor href 아님). 단일 마커만 추출 — main page 의 union 합침 로직과 형식 일관')
+       'detail page Bestseller marker = div text node (HHP/REF/LDY saved html 일관 검증). main page 와 다름 (anchor href 아님). 단일 마커만 추출 — main page 의 union 합침 로직과 형식 일관'),
+      ('Flipkart','detail',d,'savings',
+       '(//div[contains(text(),"%") and string-length(normalize-space(text()))<=5 and not(ancestor::a[contains(@href,"/p/")])])[1]',
+       '//div[contains(text(),"% off")]',
+       'detail page % deal 표기. saved html 4도메인 검증 (HHP/LDY/REF "27%/23%/18%" 등 매치). TV 도메인별 entry (sql:703) 와 같은 패턴 — 4도메인 공통 적용. ERD 외 LDY/REF 도 detail 에서 % 매치 시 fallback 회복. main NULL (HHP/TV 만 ERD) 시 detail 추출')
     ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
       xpath_primary  = EXCLUDED.xpath_primary,
       fallback_xpath = EXCLUDED.fallback_xpath,

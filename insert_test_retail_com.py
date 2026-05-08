@@ -149,7 +149,7 @@ def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
             # bsr-only 카드는 listing 컬럼 비어있는 경우 많음 → detail page 에서 회수
             'final_sku_price':    primary.get('final_sku_price') or d.get('final_sku_price'),
             'original_sku_price': primary.get('original_sku_price') or d.get('original_sku_price'),
-            'savings':            primary.get('savings'),
+            'savings':            primary.get('savings') or d.get('savings'),
             'discount_type':      primary.get('discount_type') or d.get('discount_type'),
             # 배송/재고
             'delivery_availability':           d.get('delivery_availability') or primary.get('delivery_availability'),
