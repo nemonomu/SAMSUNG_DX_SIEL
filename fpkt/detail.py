@@ -351,8 +351,15 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec[field] = siel_log.parse_count_of_reviews(extract_single(driver, xpath))
         elif field == 'savings':
             rec[field] = siel_log.parse_savings(extract_single(driver, xpath))
-        elif field in ('final_sku_price', 'original_sku_price'):
+        elif field == 'final_sku_price':
             rec[field] = siel_log.parse_price_value(extract_single(driver, xpath))
+        elif field == 'original_sku_price':
+            # detail page strikethrough div text = ₹ 없는 숫자만 ("10,999") — ₹ prefix 추가.
+            # main page original 은 ₹ 포함 ("₹39,900") — startswith 검사로 호환.
+            _t = extract_single(driver, xpath)
+            if _t and not _t.startswith('₹'):
+                _t = '₹' + _t
+            rec[field] = siel_log.parse_price_value(_t)
         elif field == 'hhp_storage':
             rec[field] = siel_log.parse_hhp_storage(extract_single(driver, xpath))
         elif field == 'delivery_availability':
