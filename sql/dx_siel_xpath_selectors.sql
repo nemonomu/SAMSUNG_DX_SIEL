@@ -668,7 +668,7 @@ BEGIN
        '(//div[starts-with(normalize-space(text()),"₹") and not(starts-with(normalize-space(text()),"+₹"))])[1]',
        'cls v1zwn20 매치가 main 가격 (banner/EMI 회피). fallback: 첫 ₹ 시작 div + Protect Fee 회피'),
       ('Flipkart','detail',d,'original_sku_price',
-       '(//div[contains(@class,"v1zwn21") and contains(@style,"line-through")])[1]',
+       '(//div[contains(concat(" ",@class," ")," v1zwn21 ") and contains(@style,"line-through")])[1]',
        NULL,
        'detail page strikethrough original price (사용자 5/8 직접 검증). cls v1zwn21 + line-through style. div text 가 ₹ 없는 숫자만 ("10,999") — detail.py 분기에서 ₹ prefix post-process. final_sku_price 의 cls v1zwn20 와 substring 차이 (21!=20) 라 매치 충돌 X. anti-bot main NULL 시 detail fallback 효과'),
       ('Flipkart','detail',d,'discount_type',
