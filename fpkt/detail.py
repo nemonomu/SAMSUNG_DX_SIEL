@@ -364,7 +364,7 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                     txt = (e.text or '').strip()
                 except WebDriverException:
                     continue
-                if not txt or len(txt) > 50:
+                if not txt or len(txt) > 80:
                     continue
                 if txt == 'Upto' or txt.startswith('₹') or 'on Exchange' in txt:
                     continue
