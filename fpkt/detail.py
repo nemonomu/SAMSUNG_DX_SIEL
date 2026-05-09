@@ -370,6 +370,9 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                     continue
                 if 'Bank Offer' in txt or 'Bank offer' in txt:
                     continue
+                if 'Only' in txt and 'left' in txt:
+                    # 재고 표지 — discount_type 아님
+                    continue
                 if txt not in seen:
                     seen.add(txt)
                     matched.append(txt)

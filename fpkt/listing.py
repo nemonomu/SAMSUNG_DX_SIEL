@@ -214,6 +214,9 @@ def extract_card(card, selectors: dict) -> dict:
                     continue
                 if 'Bank Offer' in txt or 'Bank offer' in txt:
                     continue
+                if 'Only' in txt and 'left' in txt:
+                    # 재고 표지 ("Only X left" / "Only few left") — discount_type 아님
+                    continue
                 if txt not in seen:
                     seen.add(txt)
                     matched.append(txt)
