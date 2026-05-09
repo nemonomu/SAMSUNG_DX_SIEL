@@ -205,9 +205,6 @@ def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
         # OSP 도 None 강제 — unavailable 상태에서 M.R.P. 만 남는 noise 방지 (사용자 룰).
         if row['final_sku_price'] in _UNAVAIL_FSP_LABELS:
             row['original_sku_price'] = None
-        # OSP == FSP 일 때 OSP None — M.R.P. == 판매가는 할인 없음 의미 (사용자 룰 5/9).
-        if row['original_sku_price'] is not None and row['original_sku_price'] == row['final_sku_price']:
-            row['original_sku_price'] = None
         rows.append(row)
     return rows
 
