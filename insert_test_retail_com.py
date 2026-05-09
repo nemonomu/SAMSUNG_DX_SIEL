@@ -55,6 +55,25 @@ _UNAVAIL_FSP_LABELS = ('Currently unavailable.', 'No featured offers available')
 
 _ASIN_RE = re.compile(r'/(?:dp|gp/product)/([A-Z0-9]{10})')
 
+# 인도식 콤마 (1,49,998) → 서양식 (149,998) 변환 — 사용자 룰 (5/9)
+# Amazon.in / Flipkart 모두 인도식 표기 사용 (마지막 3자리 + 그 앞 2자리씩).
+# raw jsonl 은 보존, DB INSERT 시점에만 정규화.
+_PRICE_RE = re.compile(r'^(₹)([\d,]+)(.*)$')
+
+
+def normalize_price(p):
+    """₹1,49,998 → ₹149,998 (인도식 → 서양식 천 단위 콤마)."""
+    if not p or '₹' not in str(p):
+        return p
+    m = _PRICE_RE.match(str(p))
+    if not m:
+        return p
+    prefix, digits, suffix = m.groups()
+    raw = digits.replace(',', '')
+    if not raw.isdigit():
+        return p
+    return f'{prefix}{int(raw):,}{suffix}'
+
 
 def url_path(url: str) -> str:
     """? 앞 path 만 — fallback 매칭용."""
@@ -147,8 +166,9 @@ def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
             'retailer_sku_name_similar': d.get('retailer_sku_name_similar'),
             # 가격: primary (main 우선, 없으면 bsr) → detail fallback
             # bsr-only 카드는 listing 컬럼 비어있는 경우 많음 → detail page 에서 회수
-            'final_sku_price':    primary.get('final_sku_price') or d.get('final_sku_price'),
-            'original_sku_price': primary.get('original_sku_price') or d.get('original_sku_price'),
+            # normalize_price: 인도식 콤마 → 서양식 (1,49,998 → 149,998)
+            'final_sku_price':    normalize_price(primary.get('final_sku_price') or d.get('final_sku_price')),
+            'original_sku_price': normalize_price(primary.get('original_sku_price') or d.get('original_sku_price')),
             'savings':            primary.get('savings') or d.get('savings'),
             'discount_type':      primary.get('discount_type') or d.get('discount_type'),
             # 배송/재고
@@ -184,6 +204,9 @@ def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
         # FSP 가 재고 부재 표시 ('Currently unavailable.' / 'No featured offers available') 면
         # OSP 도 None 강제 — unavailable 상태에서 M.R.P. 만 남는 noise 방지 (사용자 룰).
         if row['final_sku_price'] in _UNAVAIL_FSP_LABELS:
+            row['original_sku_price'] = None
+        # OSP == FSP 일 때 OSP None — M.R.P. == 판매가는 할인 없음 의미 (사용자 룰 5/9).
+        if row['original_sku_price'] is not None and row['original_sku_price'] == row['final_sku_price']:
             row['original_sku_price'] = None
         rows.append(row)
     return rows
