@@ -678,11 +678,7 @@ BEGIN
       ('Flipkart','detail',d,'sku_popularity',
        '//*[contains(text(),"Bestseller") or contains(text(),"Flipkart''s Choice") or contains(text(),"Flipkart Choice")] | //img[contains(@src,"/fa_")]',
        NULL,
-       'detail page Bestseller marker = div text node (HHP/REF/LDY saved html 일관 검증). main page 와 다름 (anchor href 아님). 단일 마커만 추출 — main page 의 union 합침 로직과 형식 일관'),
-      ('Flipkart','detail',d,'savings',
-       '(//div[contains(text(),"%") and string-length(normalize-space(text()))<=5 and not(ancestor::a[contains(@href,"/p/")])])[1]',
-       '//div[contains(text(),"% off")]',
-       'detail page % deal 표기. saved html 4도메인 검증 (HHP/LDY/REF "27%/23%/18%" 등 매치). TV 도메인별 entry (sql:703) 와 같은 패턴 — 4도메인 공통 적용. ERD 외 LDY/REF 도 detail 에서 % 매치 시 fallback 회복. main NULL (HHP/TV 만 ERD) 시 detail 추출')
+       'detail page Bestseller marker = div text node (HHP/REF/LDY saved html 일관 검증). main page 와 다름 (anchor href 아님). 단일 마커만 추출 — main page 의 union 합침 로직과 형식 일관')
     ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
       xpath_primary  = EXCLUDED.xpath_primary,
       fallback_xpath = EXCLUDED.fallback_xpath,
@@ -691,6 +687,30 @@ BEGIN
       updated_at     = NOW();
   END LOOP;
 END $$;
+
+-- 정정 (2026-05-09): savings 4도메인 공통 detail selector revert. 사용자 정책:
+-- LDY/REF savings 수집 대상 X (ERD HHP+TV main 만 정의). 5/8 commit 1d4404b 의
+-- 4도메인 공통 LOOP 적용은 정책 위반.
+-- 이미 db 에 INSERT 된 LDY/REF detail savings entry 비활성화 (UPDATE is_active=FALSE).
+-- HHP/TV detail savings 는 도메인별 INSERT 로 별도 등록 (TV 는 sql:703 기존, HHP 신규 추가).
+UPDATE dx_siel_xpath_selectors SET is_active = FALSE, updated_at = NOW()
+ WHERE site_account = 'Flipkart' AND page_type = 'detail'
+   AND domain IN ('ldy', 'ref') AND data_field = 'savings';
+
+-- HHP detail savings 도메인별 추가 (TV 와 같은 패턴 — sql:703 참조)
+INSERT INTO dx_siel_xpath_selectors
+  (site_account,page_type,domain,data_field,xpath_primary,fallback_xpath,notes)
+VALUES
+  ('Flipkart','detail','hhp','savings',
+   '(//div[contains(text(),"%") and string-length(normalize-space(text()))<=5 and not(ancestor::a[contains(@href,"/p/")])])[1]',
+   '//div[contains(text(),"% off")]',
+   'HHP detail % deal 표기. ERD: Main Page 정의 (HHP+TV). main NULL 시 detail fallback 회복. TV 와 같은 패턴 (sql:703)')
+ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
+  xpath_primary  = EXCLUDED.xpath_primary,
+  fallback_xpath = EXCLUDED.fallback_xpath,
+  notes          = EXCLUDED.notes,
+  is_active      = TRUE,
+  updated_at     = NOW();
 
 -- HHP 전용 (Flipkart) — ERD v1: 가격 3종 (final/original/savings) 은 Main Page 로 통합. detail 엔 trade_in/storage/color 만.
 -- 추가 (2026-05-03): HHP sku 만 Model Number override (공통 'Model Name' → HHP 는 시리즈명이라 dup 발생, Model Number 가 진짜 unique 코드).
