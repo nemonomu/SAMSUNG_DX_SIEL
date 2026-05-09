@@ -195,6 +195,29 @@ def extract_card(card, selectors: dict) -> dict:
             rec[field] = siel_log.parse_savings(safe_text(card, xpath))
         elif field in ('final_sku_price', 'original_sku_price'):
             rec[field] = siel_log.parse_price_value(safe_text(card, xpath))
+        elif field == 'discount_type':
+            # cls "HZ0E6r Rm9_cy" deal badge innermost div 매치. 신규 deal type 자동 수집.
+            # Bank Offer 제외 (bank 카드 결제 추가 할인). Exchange offer 영역 ("Upto" / "₹X" / "on Exchange") 제외.
+            matched, seen = [], set()
+            try:
+                els = card.find_elements(By.XPATH, xpath)
+            except WebDriverException:
+                els = []
+            for e in els:
+                try:
+                    txt = (e.text or '').strip()
+                except WebDriverException:
+                    continue
+                if not txt or len(txt) > 50:
+                    continue
+                if txt == 'Upto' or txt.startswith('₹') or 'on Exchange' in txt:
+                    continue
+                if 'Bank Offer' in txt or 'Bank offer' in txt:
+                    continue
+                if txt not in seen:
+                    seen.add(txt)
+                    matched.append(txt)
+            rec[field] = ', '.join(matched) if matched else None
         elif field == 'sku_popularity':
             # Bestseller (anchor href) + Flipkart Assured (img /fa_*.png) + Flipkart's Choice (text) — 3개 marker
             labels = []

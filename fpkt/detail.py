@@ -351,6 +351,29 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec[field] = siel_log.parse_count_of_reviews(extract_single(driver, xpath))
         elif field == 'savings':
             rec[field] = siel_log.parse_savings(extract_single(driver, xpath))
+        elif field == 'discount_type':
+            # cls "HZ0E6r Rm9_cy" deal badge innermost div 매치 (main 과 동일 cls — 사용자 5/9 console 검증).
+            # Bank Offer 제외. Exchange offer 영역 ("Upto" / "₹X" / "on Exchange") 제외. 길이 < 50.
+            matched, seen = [], set()
+            try:
+                els = driver.find_elements(By.XPATH, xpath)
+            except WebDriverException:
+                els = []
+            for e in els:
+                try:
+                    txt = (e.text or '').strip()
+                except WebDriverException:
+                    continue
+                if not txt or len(txt) > 50:
+                    continue
+                if txt == 'Upto' or txt.startswith('₹') or 'on Exchange' in txt:
+                    continue
+                if 'Bank Offer' in txt or 'Bank offer' in txt:
+                    continue
+                if txt not in seen:
+                    seen.add(txt)
+                    matched.append(txt)
+            rec[field] = ', '.join(matched) if matched else None
         elif field == 'final_sku_price':
             rec[field] = siel_log.parse_price_value(extract_single(driver, xpath))
         elif field == 'original_sku_price':
