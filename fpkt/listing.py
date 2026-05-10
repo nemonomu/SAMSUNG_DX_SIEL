@@ -222,7 +222,7 @@ def extract_card(card, selectors: dict) -> dict:
                     matched.append(txt)
             rec[field] = ', '.join(matched) if matched else None
         elif field == 'sku_popularity':
-            # Bestseller (anchor href) + Flipkart Assured (img /fa_*.png) + Flipkart's Choice (text) — 3개 marker
+            # Bestseller / Trending (anchor href spotlightTagId) + Flipkart Assured (img /fa_*.png) + Flipkart's Choice (text)
             labels = []
             try:
                 els = card.find_elements(By.XPATH, xpath)
@@ -237,6 +237,8 @@ def extract_card(card, selectors: dict) -> dict:
                     continue
                 if 'spotlightTagId=default_BestsellerId' in href and 'Bestseller' not in labels:
                     labels.append('Bestseller')
+                if 'spotlightTagId=default_TrendingId' in href and 'Trending' not in labels:
+                    labels.append('Trending')
                 if '/fa_' in src and 'Flipkart Assured' not in labels:
                     labels.append('Flipkart Assured')
                 if ("Flipkart's Choice" in text or 'Flipkart Choice' in text) \
