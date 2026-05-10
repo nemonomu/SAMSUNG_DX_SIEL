@@ -47,16 +47,18 @@ COLUMNS = [
     'sku_assurance', 'number_of_units_purchased_past_month',
 ]
 
-# product_list 테이블 컬럼 (detail 전용 + 의도적 미수집 제외 — 5/10 사용자 룰).
+# product_list 테이블 컬럼 (detail 전용 컬럼 제외 — 5/10 사용자 룰).
 # 제외: detail 전용 (star_rating / detailed_review_content / retailer_sku_name_similar /
 # delivery_availability / summarized_review_content / fastest_delivery / inventory_status /
 # sku_assurance / screen_size / model_year / electricity / hhp_*/ref_*/ldy_*).
-# + available_quantity_for_purchase (inventory_status 와 중복 정책, 의도적 미수집).
+# 보존: available_quantity_for_purchase (fpkt main "Only X left" — fpkt 유일 재고 정보,
+#       fpkt detail 에 inventory_status 미수집이므로 중복 X).
 COLUMNS_LIST = [
     'country', 'product', 'item', 'sku', 'account_name', 'page_type',
     'retailer_sku_name', 'product_url', 'calendar_week', 'crawl_datetime', 'batch_id',
     'count_of_star_ratings', 'count_of_reviews',
     'final_sku_price', 'original_sku_price', 'savings', 'discount_type',
+    'available_quantity_for_purchase',
     'sku_popularity', 'sku_status', 'main_rank', 'bsr_rank',
     'number_of_units_purchased_past_month',
 ]

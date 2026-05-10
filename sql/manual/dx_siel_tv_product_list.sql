@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS dx_siel_tv_product_list (
   original_sku_price TEXT,
   savings            TEXT,
   discount_type      TEXT,
+  available_quantity_for_purchase   TEXT,
   sku_popularity TEXT,
   sku_status     TEXT,
   main_rank INTEGER,
