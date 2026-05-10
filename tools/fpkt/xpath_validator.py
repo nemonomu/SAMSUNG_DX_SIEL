@@ -98,6 +98,9 @@ def main():
                     help='main/bsr 시 base_container N번째 카드 (default 0=첫 카드)')
     ap.add_argument('--site-account', default='Flipkart',
                     help='DB site_account (default Flipkart)')
+    ap.add_argument('--only', default=None,
+                    help='단일 schema 만 검증 (예: --only detailed_review_content). '
+                         'review URL 직접 검증 시 detailed_review_content 만 빠르게.')
     args = ap.parse_args()
 
     print(f'[info] loading selectors: {args.site_account} / {args.stage} / {args.product}',
@@ -141,6 +144,29 @@ def main():
         # 검증 순서: base_container 는 컨텍스트 잡았으니 step 에서 제외
         steps = [(f, xp, fb) for f, xp, fb in ordered if f != 'base_container']
         sel_dict = {f: {'xpath': xp, 'fallback': fb} for f, xp, fb in ordered}
+
+        # detail 시 step 순서 재배치 — detail.py crawl_detail 흐름 정합:
+        #   1. EXPAND control (expand_specifications / expand_see_more) — spec expand
+        #   2. 일반 schema — detail page 의 메인 product 매치
+        #   3. NAVIGATE control (click_show_all_reviews) — review page 이동
+        #   4. detailed_review_content — review page 매치 (가장 마지막)
+        # SQL id ASC 순서 ↔ detail.py 흐름 다름 (id ASC 면 click_review 가 step 3 으로
+        # 너무 일찍, 후속 일반 schema 가 review page 에서 매치 결함).
+        if args.stage == 'detail':
+            expand_steps = [s for s in steps if s[0] in CONTROL_EXPAND]
+            other_steps = [s for s in steps
+                           if s[0] not in CONTROL_FIELDS and s[0] != 'detailed_review_content']
+            navigate_steps = [s for s in steps if s[0] in CONTROL_NAVIGATE]
+            review_steps = [s for s in steps if s[0] == 'detailed_review_content']
+            steps = expand_steps + other_steps + navigate_steps + review_steps
+
+        # --only filter (단일 schema 만 검증)
+        if args.only:
+            steps = [s for s in steps if s[0] == args.only]
+            if not steps:
+                print(f'[error] --only "{args.only}" 매치 selector 없음', file=sys.stderr)
+                return 1
+            print(f'[info] --only mode: {args.only} 1 schema 만 검증', file=sys.stderr)
 
         def compute_final(card_ctx):
             """현재 컨텍스트 의 extract_card 결과 (main/bsr 시만)."""
