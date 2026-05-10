@@ -30,10 +30,33 @@ _ROOT = os.path.dirname(os.path.dirname(_HERE))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+import psycopg2.extras
+
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.by import By
 
-from fpkt.listing import db_connect, load_selectors, make_driver, scroll_to_bottom  # noqa: F401
+from fpkt.listing import db_connect, make_driver, scroll_to_bottom
+
+
+def load_selectors_ordered(site_account, stage, domain):
+    """id ASC 순서 — INSERT 순서 보장 (listing.py extract_card 의 dict iteration 과 같은 순서)."""
+    sql = """
+        SELECT data_field, xpath_primary, fallback_xpath
+          FROM dx_siel_xpath_selectors
+         WHERE site_account = %s
+           AND page_type    = %s
+           AND domain       = %s
+           AND is_active    = TRUE
+         ORDER BY id ASC
+    """
+    conn = db_connect()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute(sql, (site_account, stage, domain))
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    return [(r['data_field'], r['xpath_primary'], r['fallback_xpath']) for r in rows]
 
 
 def describe_element(e):
@@ -78,11 +101,14 @@ def main():
 
     print(f'[info] loading selectors: {args.site_account} / {args.stage} / {args.product}',
           file=sys.stderr)
-    selectors = load_selectors(args.site_account, args.stage, args.product)
-    print(f'[info] {len(selectors)} selectors loaded', file=sys.stderr)
-    if not selectors:
+    ordered = load_selectors_ordered(args.site_account, args.stage, args.product)
+    print(f'[info] {len(ordered)} selectors loaded (id ASC 순서 — 수집 순서)',
+          file=sys.stderr)
+    if not ordered:
         print(f'[error] no selectors. site_account/stage/product 확인.', file=sys.stderr)
         return 1
+
+    bc_entry = next(((f, xp, fb) for f, xp, fb in ordered if f == 'base_container'), None)
 
     print('[info] starting driver (headless=False)', file=sys.stderr)
     driver = make_driver(headless=False)
@@ -95,8 +121,8 @@ def main():
 
         ctx = driver
         ctx_label = 'driver (page 전체)'
-        if args.stage in ('main', 'bsr') and 'base_container' in selectors:
-            bc_xpath = selectors['base_container']['xpath']
+        if args.stage in ('main', 'bsr') and bc_entry:
+            bc_xpath = bc_entry[1]
             try:
                 cards = driver.find_elements(By.XPATH, bc_xpath)
                 if cards:
@@ -110,30 +136,73 @@ def main():
                 print(f'[warn] base_container 매치 fail: {type(e).__name__}',
                       file=sys.stderr)
 
-        print()
-        print('=' * 70)
-        print(f'AUTO 검증 — selector {len(selectors)}개 / 컨텍스트: {ctx_label}')
-        print('=' * 70)
-        for field in sorted(selectors.keys()):
-            sel = selectors[field]
-            xp = sel.get('xpath')
-            fb = sel.get('fallback')
-            print()
-            print(f'[{field}]')
-            print(f'  xpath: {xp}')
-            if not xp:
-                print('  (xpath 없음)')
-                continue
-            evaluate(ctx, xp)
-            if fb:
-                print(f'  fallback: {fb}')
-                evaluate(ctx, fb)
+        # 검증 순서: base_container 는 컨텍스트 잡았으니 step 에서 제외
+        steps = [(f, xp, fb) for f, xp, fb in ordered if f != 'base_container']
 
         print()
         print('=' * 70)
-        print('REPL — xpath 입력 (quit/exit/q/Ctrl+C 종료)')
-        print('컨텍스트:', ctx_label)
+        print(f'STEP-BY-STEP 검증 — schema {len(steps)}개 / 컨텍스트: {ctx_label}')
+        print('각 schema 마다:')
+        print('  enter         → 다음 schema')
+        print('  xpath 입력    → 추가 검증 (같은 schema 유지)')
+        print('  back / b      → 이전 schema')
+        print('  list / l      → 전체 schema 목록')
+        print('  jump <N>      → N번째 schema 로 이동')
+        print('  quit / q      → 종료')
         print('=' * 70)
+
+        i = 0
+        while i < len(steps):
+            field, xp, fb = steps[i]
+            print()
+            print(f'[{i+1}/{len(steps)}] {field}')
+            print(f'  xpath: {xp}')
+            if not xp:
+                print('  (xpath 없음)')
+            else:
+                evaluate(ctx, xp)
+                if fb:
+                    print(f'  fallback: {fb}')
+                    evaluate(ctx, fb)
+            # 같은 schema 안 prompt loop
+            advance = True
+            while True:
+                try:
+                    line = input(f'[{i+1}/{len(steps)}] {field}> ').strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    return 0
+                if not line:
+                    break  # enter — 다음
+                if line in ('quit', 'exit', 'q'):
+                    return 0
+                if line in ('back', 'b'):
+                    i = max(0, i - 1)
+                    advance = False
+                    break
+                if line in ('list', 'l'):
+                    for j, (f, _, _) in enumerate(steps):
+                        marker = ' →' if j == i else '  '
+                        print(f' {marker} [{j+1}] {f}')
+                    continue
+                if line.startswith('jump '):
+                    try:
+                        n = int(line[5:].strip())
+                        if 1 <= n <= len(steps):
+                            i = n - 1
+                            advance = False
+                            break
+                        print(f'  range 1..{len(steps)}')
+                    except ValueError:
+                        print('  usage: jump <N>')
+                    continue
+                # 추가 xpath 검증
+                evaluate(ctx, line, max_n=10)
+            if advance:
+                i += 1
+
+        print()
+        print('=== STEP 검증 끝 — free REPL (xpath 자유 / quit 종료) ===')
         while True:
             try:
                 line = input('xpath> ').strip()
