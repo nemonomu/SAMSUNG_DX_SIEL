@@ -639,9 +639,9 @@ BEGIN
        '리뷰 페이지 anchor — Buy now 회피'),
       -- count_of_star_ratings / count_of_reviews 는 Main Page (reference 시트 r51/r49). detail 정의 X.
       ('Flipkart','detail',d,'star_rating',
+       '(//*[@id="slot-list-container"]/div/div[2]//div[contains(@class,"css-146c3p1") and contains(@style,"inter_bold")])[1]',
        '(//*[starts-with(@id,"productRating_")] | //div[@dir="auto" and contains(@style,"inter_bold") and string-length(normalize-space(text()))=3 and substring(normalize-space(text()),2,1)="."])[1]',
-       '//*[starts-with(@id,"productRating_")]/div',
-       'union: (1) productRating_ ID prefix (옛 layout) + (2) inter_bold style 의 dir=auto div 텍스트 X.X 형식 (신 layout, 사용자 제공 element). DOM 첫 매치 = 메인 제품 별점 (Similar Products 카드 별점들보다 위)'),
+       '사용자 검수 (5/10 motorola TV detail) — 메인 product 별점 영역 = slot-list-container/div/div[2] 안 (사용자 evidence: //*[@id="slot-list-container"]/div/div[2]/.../a/div/div/div/div/div[1]). 정수 (4) / 소수 (4.2) 둘 다 cls "css-146c3p1" + inter_bold style. 이전 selector (length=3 만) 가 추천 카드 (slot-list-container/div/div[3]+) 의 별점 매치 결함. fallback: 옛 productRating_ ID prefix + 이전 신 layout (anti-bot 또는 layout 변형 호환). siel_log.parse_star_rating 후처리'),
       ('Flipkart','detail',d,'delivery_availability',
        '//div[normalize-space(text())="Delivery" or normalize-space(text())="Delivery by"]/parent::div',
        '//div[contains(text(),"Delivery by") or contains(text(),"FREE Delivery") or contains(text(),"Free Delivery")][1]',
