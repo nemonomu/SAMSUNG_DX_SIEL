@@ -282,6 +282,16 @@ def main():
                 print('  xpath: (없음)')
             else:
                 print(f'  xpath: {xp}')
+                # detail.py 와 동일 — sims carousel lazy trigger (7번째 SKU lazy load 보장)
+                if field == 'retailer_sku_name_similar' and args.stage == 'detail':
+                    try:
+                        driver.execute_script(
+                            "var c = document.querySelector('div[aria-labelledby=\"Customers who viewed this item also viewed\"]');"
+                            " if (c) c.scrollIntoView({block: 'center', behavior: 'instant'});"
+                        )
+                    except WebDriverException:
+                        pass
+                    time.sleep(1.5)
                 evaluate(ctx, xp, max_n=3, label='match')
                 if fb:
                     print(f'  fallback: {fb}')
