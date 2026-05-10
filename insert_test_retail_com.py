@@ -75,6 +75,20 @@ def normalize_price(p):
     return f'{prefix}{int(raw):,}{suffix}'
 
 
+def normalize_count(v):
+    """count_of_reviews / count_of_star_ratings 인도식 → 서양식 콤마.
+    예: '12,34,567' → '1,234,567'. 4자리 미만 ('6,759' 등) 은 인도식=서양식 동일."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    raw = s.replace(',', '')
+    if not raw.isdigit():
+        return v  # parse 실패 시 raw 보존
+    return f'{int(raw):,}'
+
+
 def url_path(url: str) -> str:
     """? 앞 path 만 — fallback 매칭용."""
     return (url or '').split('?', 1)[0].rstrip('/')
@@ -161,10 +175,10 @@ def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
             'calendar_week':     calendar_week_iso(cdt),
             'crawl_datetime':    cdt,
             'batch_id':          primary.get('batch_id') or d.get('batch_id'),
-            # 평점/리뷰: detail 우선, main fallback (양방향 보강 5/8)
+            # 평점/리뷰: detail 우선, main fallback (양방향 보강 5/8). count 는 서양식 콤마 정규화 (5/10).
             'star_rating':               d.get('star_rating') or primary.get('star_rating'),
-            'count_of_star_ratings':     d.get('count_of_star_ratings') or primary.get('count_of_star_ratings'),
-            'count_of_reviews':          d.get('count_of_reviews') or primary.get('count_of_reviews'),
+            'count_of_star_ratings':     normalize_count(d.get('count_of_star_ratings') or primary.get('count_of_star_ratings')),
+            'count_of_reviews':          normalize_count(d.get('count_of_reviews') or primary.get('count_of_reviews')),
             'detailed_review_content':   d.get('detailed_review_content'),
             'retailer_sku_name_similar': d.get('retailer_sku_name_similar'),
             # 가격: primary (main 우선, 없으면 bsr) → detail fallback

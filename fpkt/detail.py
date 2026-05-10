@@ -64,6 +64,7 @@ CONTROL_FIELDS = EXPAND_FIELDS | NAVIGATE_FIELDS | {'base_container'}
 _logger = None
 _html_path = None
 _html_saved = False
+_review_violation_saved = False  # batch 별 첫 violation (count_of_reviews>=1 + body=NULL) 만 saved
 
 
 def db_connect():
@@ -560,6 +561,16 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                 break
             page += 1
         rec['detailed_review_content'] = siel_log.format_review_content(all_parts)
+        # logic violation 검사 — count_of_reviews>=1 인데 review body 0 → batch 첫 1건 만 saved
+        global _review_violation_saved
+        if not _review_violation_saved and count_reviews and count_reviews >= 1 and not all_parts:
+            if _html_path:
+                violation_html = _html_path.replace('.html', '_review_violation.html')
+                if siel_log.save_html(driver, violation_html):
+                    _review_violation_saved = True
+                    if _logger:
+                        _logger.warning('logic violation saved (count=%s, body=0): %s',
+                                        count_reviews, violation_html)
     else:
         rec['detailed_review_content'] = None
         if review_xpath and _logger:
