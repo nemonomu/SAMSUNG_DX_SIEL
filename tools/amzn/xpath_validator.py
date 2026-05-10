@@ -120,6 +120,21 @@ def evaluate(ctx, xpath, max_n=50, label='match', show_wrapper=True):
             print(f'    [{i:02d}] {text!r}')
     if len(els) > max_n:
         print(f'    ... (+{len(els) - max_n} more)')
+    # detail.py 의 _extract_multi_raw 와 동일 dedup — DB 저장 unique count 표시
+    if len(els) > 1:
+        full_texts = []
+        for e in els:
+            try:
+                visible = (e.text or '').strip()
+                tc = (e.get_attribute('textContent') or '').strip()
+                t = visible or tc
+                if t:
+                    full_texts.append(t)
+            except WebDriverException:
+                continue
+        unique_count = len(dict.fromkeys(full_texts))
+        if unique_count != len(els):
+            print(f'    → DB 저장: {unique_count}건 unique (raw {len(els)} → nonempty {len(full_texts)} → dedup)')
 
 
 def try_click_expand(driver, xpath: str) -> bool:

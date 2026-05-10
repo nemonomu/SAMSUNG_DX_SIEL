@@ -254,9 +254,11 @@ def _extract_multi_raw(driver, xpath: str, max_n=None) -> list:
                 parts.append(t)
         except WebDriverException:
             continue
+    nonempty = len(parts)
+    parts = list(dict.fromkeys(parts))  # 순서 보존 dedup — review-collapsed/body 같은 hidden state 의 같은 text 중복 차단 (textContent fallback 으로 둘 다 잡혀 DB 중복 사례 방지)
     if _logger is not None:
-        _logger.info('multi_raw xpath=%s els=%d nonempty=%d samples=%r',
-                     xpath[:120], len(els), len(parts), raw_samples)
+        _logger.info('multi_raw xpath=%s els=%d nonempty=%d unique=%d samples=%r',
+                     xpath[:120], len(els), nonempty, len(parts), raw_samples)
     return parts
 
 
