@@ -457,9 +457,9 @@ BEGIN
        NULL,
        'href attr (코드 자동)'),
       ('Flipkart','main',d,'retailer_sku_name',
-       './/a[contains(@href,"/p/")]//div[string-length(normalize-space(text()))>10 and not(contains(text(),"Choice")) and not(contains(text(),"Bestseller")) and not(contains(text(),"Flipkart Assured"))][1]',
+       './/a[contains(@href,"/p/")]//div[string-length(normalize-space(text()))>10 and not(contains(text(),"Choice")) and not(contains(text(),"Bestseller")) and not(contains(text(),"Flipkart Assured")) and not(contains(@class,"HZ0E6r"))][1]',
        './/a[contains(@href,"/p/")]/@title',
-       '제품명 — 길이 10 이상 div, badge text ("Flipkart''s Choice" / "Bestseller" / "Flipkart Assured") 제외'),
+       '제품명 — 길이 10 이상 div, badge text 제외 + cls "HZ0E6r" (Exchange offer / deal badge innermost) 제외 (5/10 사용자 검수 — "Off on Exchange" noise 매치 회피)'),
       ('Flipkart','main',d,'discount_type',
        './/div[contains(@class,"HZ0E6r")]',
        NULL,
@@ -485,9 +485,9 @@ BEGIN
        NULL,
        'ERD: Main Page. 카드 안 "1,573 Reviews" — siel_log.parse_count_of_reviews 가 "Reviews" 앞 숫자만'),
       ('Flipkart','main',d,'star_rating',
+       './/div[contains(@class,"MKiFS6")][1]',
        './/div[(string-length(normalize-space(text()))=3) and (substring(normalize-space(text()),2,1)=".") and (number(text())=number(text()))][1]',
-       NULL,
-       'ERD reference R56: Main Page 별점. 카드 안 "X.X" 패턴 (length=3, 가운데 dot, 유효 숫자). siel_log.parse_star_rating 후처리')
+       'ERD reference R56: Main Page 별점. 사용자 검수 (5/10) — 정수 평점 ("4" / "3" / "2" / "1") 도 매치 필요. cls "MKiFS6" 가 정수/소수 둘 다 잡음 (사용자 evidence: <div class="MKiFS6">4<img class="PZfbSE">). fallback 이전 length=3 selector (소수 X.X 만). siel_log.parse_star_rating 후처리')
     ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
       xpath_primary  = EXCLUDED.xpath_primary,
       fallback_xpath = EXCLUDED.fallback_xpath,
@@ -508,9 +508,9 @@ BEGIN
       (site_account,page_type,domain,data_field,xpath_primary,fallback_xpath,notes)
     VALUES
       ('Flipkart','main',d,'final_sku_price',
-       './/div[starts-with(normalize-space(text()),"₹")][1]',
+       './/div[starts-with(normalize-space(text()),"₹") and not(contains(@class,"HZ0E6r"))][1]',
        NULL,
-       'modern Flipkart 카드 안 첫 ₹ div = 최종 판매가'),
+       'modern Flipkart 카드 안 첫 ₹ div = 최종 판매가. cls "HZ0E6r" (Exchange offer 가격 ₹2,090 등) 제외 (5/10 사용자 검수)'),
       ('Flipkart','main',d,'original_sku_price',
        './/div[starts-with(normalize-space(text()),"₹")][1]/following-sibling::div[1][starts-with(normalize-space(text()),"₹")]',
        NULL,
