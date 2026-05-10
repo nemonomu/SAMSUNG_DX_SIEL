@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -34,6 +35,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 import config
 import siel_log
+
+# Flipkart product URL 의 pid query param = fsn (Flipkart Standard Number).
+# main rec 에 fsn 채워 detail rec.fsn 와 listing_key 매칭.
+_FPKT_PID_RE = re.compile(r'[?&]pid=([A-Z0-9]+)')
 
 # uc.Chrome.__del__ 가 GC 시점에 quit() 한 번 더 시도 → Windows OSError [WinError 6].
 # finally 에서 driver.quit() 명시 호출하므로 __del__ 은 불필요.
@@ -178,7 +183,13 @@ def extract_card(card, selectors: dict) -> dict:
         if not xpath:
             continue
         if field == 'product_url':
-            rec[field] = safe_attr(card, xpath, 'href')
+            href = safe_attr(card, xpath, 'href')
+            rec[field] = href
+            # fsn 추출 (Flipkart pid query param) — main+detail merge key 통일
+            if href:
+                m = _FPKT_PID_RE.search(href)
+                if m:
+                    rec['fsn'] = m.group(1)
         elif field == 'sku_status':
             # Sponsored marker (SVG path 안 raster 텍스트 — element 존재로만 검출)
             try:

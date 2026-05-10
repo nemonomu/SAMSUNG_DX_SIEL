@@ -49,6 +49,11 @@ COLUMNS = [
 
 
 _ASIN_RE = re.compile(r'/(?:dp|gp/product)/([A-Z0-9]{10})')
+# Flipkart product URL 의 pid query param = fsn (Flipkart Standard Number).
+# main/bsr selector 가 fsn 을 직접 추출하지 않아 main rec.fsn = None.
+# detail rec 는 fsn 직접 수집 → key mismatch (main url-path vs detail fsn). 본 regex 가
+# main url 에서 pid 를 fsn 로 사용 — main+detail merge 매칭 회복.
+_FPKT_PID_RE = re.compile(r'[?&]pid=([A-Z0-9]+)')
 
 # 인도식 콤마 (1,49,998) → 서양식 (149,998) 변환 — 사용자 룰 (5/9)
 # Amazon.in / Flipkart 모두 인도식 표기 사용 (마지막 3자리 + 그 앞 2자리씩).
@@ -83,6 +88,9 @@ def listing_key(rec: dict) -> str:
         return asin
     url = rec.get('product_url') or rec.get('source_url') or ''
     m = _ASIN_RE.search(url)
+    if m:
+        return m.group(1)
+    m = _FPKT_PID_RE.search(url)
     if m:
         return m.group(1)
     return url_path(url)
