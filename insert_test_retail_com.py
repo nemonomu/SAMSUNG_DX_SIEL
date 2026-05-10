@@ -152,10 +152,18 @@ def parse_int_safe(v):
 
 
 def make_row(main_rec, bsr_rec, detail_rec):
-    """단일 main + bsr + detail record → 1 row dict (None 가능). streaming insert 용 helper."""
+    """단일 main + bsr + detail record → 1 row dict (None 가능). retail_com (full) 용."""
     listing_one = {'_': {'main': main_rec, 'bsr': bsr_rec}}
     detail_one = {'_': detail_rec or {}}
     rows = merge(listing_one, detail_one, max_n=1)
+    return rows[0] if rows else None
+
+
+def make_row_listing(main_rec, bsr_rec):
+    """단일 main + bsr only → 1 row dict (detail 출처 컬럼은 NULL). product_list 용.
+    사용자 룰 (5/10): product_list = main + bsr 단계 raw 데이터만, detail 출처 X."""
+    listing_one = {'_': {'main': main_rec, 'bsr': bsr_rec}}
+    rows = merge(listing_one, {}, max_n=1)  # detail dict empty → detail 출처 컬럼 NULL
     return rows[0] if rows else None
 
 
@@ -286,11 +294,15 @@ def main() -> int:
     print(f'[insert_test] read main={n_main} bsr={n_bsr} detail={n_detail} other={n_other} unique_listing={len(listing_by_url)}',
           file=sys.stderr)
 
-    rows = merge(listing_by_url, detail_by_url, max_n=max_n)
-    print(f'[insert_test] merging top {len(rows)} rows', file=sys.stderr)
+    # retail_com 용 — main + bsr + detail merge (full)
+    rows_full = merge(listing_by_url, detail_by_url, max_n=max_n)
+    # product_list 용 — main + bsr only (detail 출처 컬럼 NULL, 사용자 룰 5/10)
+    rows_listing = merge(listing_by_url, {}, max_n=max_n)
+    print(f'[insert] merge: {len(rows_full)} rows (full) / {len(rows_listing)} rows (listing-only)',
+          file=sys.stderr)
 
-    if not rows:
-        print('[insert_test] no rows to insert', file=sys.stderr)
+    if not rows_full and not rows_listing:
+        print('[insert] no rows to insert', file=sys.stderr)
         return 1
 
     cfg = dict(config.DB_CONFIG)
@@ -304,22 +316,24 @@ def main() -> int:
     cols_list = ', '.join(COLUMNS_LIST)
     placeholders_list = ', '.join(f'%({c})s' for c in COLUMNS_LIST)
     total_inserted = 0
-    failed = []
     try:
         for prod_lower in PRODUCT_LOWERS:
-            rows_prod = [r for r in rows if (r.get('product') or '').lower() == prod_lower]
-            if not rows_prod:
+            rows_full_prod = [r for r in rows_full if (r.get('product') or '').lower() == prod_lower]
+            rows_listing_prod = [r for r in rows_listing if (r.get('product') or '').lower() == prod_lower]
+            if not rows_full_prod and not rows_listing_prod:
                 continue
             table_retail = f'dx_siel_{prod_lower}_retail_com'
             table_list = f'dx_siel_{prod_lower}_product_list'
             sql_retail = f'INSERT INTO {table_retail} ({cols_full}) VALUES ({placeholders_full})'
             sql_list = f'INSERT INTO {table_list} ({cols_list}) VALUES ({placeholders_list})'
             with conn.cursor() as cur:
-                psycopg2.extras.execute_batch(cur, sql_retail, rows_prod, page_size=50)
-                psycopg2.extras.execute_batch(cur, sql_list, rows_prod, page_size=50)
+                if rows_full_prod:
+                    psycopg2.extras.execute_batch(cur, sql_retail, rows_full_prod, page_size=50)
+                if rows_listing_prod:
+                    psycopg2.extras.execute_batch(cur, sql_list, rows_listing_prod, page_size=50)
             conn.commit()
-            total_inserted += len(rows_prod)
-            print(f'[insert] OK: {len(rows_prod)} rows → {table_retail} + {table_list}',
+            total_inserted += len(rows_full_prod) + len(rows_listing_prod)
+            print(f'[insert] OK: {prod_lower} retail={len(rows_full_prod)} list={len(rows_listing_prod)}',
                   file=sys.stderr)
         print(f'[insert] DONE: total {total_inserted} rows inserted across 8 tables',
               file=sys.stderr)

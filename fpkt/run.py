@@ -101,15 +101,20 @@ def _stream_insert(detail_rec: dict) -> None:
     key = _url_key(src)
     main_rec = _main_cache.get(key)
     bsr_rec = _bsr_cache.get(key)
-    row = ITR.make_row(main_rec, bsr_rec, detail_rec)
-    if not row:
+    # retail_com — full merge (main + bsr + detail)
+    row_full = ITR.make_row(main_rec, bsr_rec, detail_rec)
+    # product_list — main + bsr only (사용자 룰 5/10: detail 출처 컬럼 NULL)
+    row_listing = ITR.make_row_listing(main_rec, bsr_rec)
+    if not row_full and not row_listing:
         return
-    prod_lower = (row.get('product') or '').lower()
+    prod_lower = (row_full or row_listing or {}).get('product', '').lower()
     if prod_lower not in _retail_sqls:
         return
     try:
-        _db_cursor.execute(_retail_sqls[prod_lower], row)
-        _db_cursor.execute(_list_sqls[prod_lower], row)
+        if row_full:
+            _db_cursor.execute(_retail_sqls[prod_lower], row_full)
+        if row_listing:
+            _db_cursor.execute(_list_sqls[prod_lower], row_listing)
         _db_conn.commit()
     except Exception as e:
         try:
