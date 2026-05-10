@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS dx_siel_hhp_product_list (
   calendar_week     TEXT,
   crawl_datetime    TIMESTAMPTZ,
   batch_id          TEXT,
-  -- 평점 (Flipkart main 에서만)
+  -- 평점 (Flipkart main 에서만 — amzn main 미수집)
+  star_rating               TEXT,
   count_of_star_ratings     TEXT,
   count_of_reviews          TEXT,
   -- 가격 (공통)

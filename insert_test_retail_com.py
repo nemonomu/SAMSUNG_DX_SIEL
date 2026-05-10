@@ -56,7 +56,7 @@ COLUMNS = [
 COLUMNS_LIST = [
     'country', 'product', 'item', 'sku', 'account_name', 'page_type',
     'retailer_sku_name', 'product_url', 'calendar_week', 'crawl_datetime', 'batch_id',
-    'count_of_star_ratings', 'count_of_reviews',
+    'star_rating', 'count_of_star_ratings', 'count_of_reviews',
     'final_sku_price', 'original_sku_price', 'savings', 'discount_type',
     'available_quantity_for_purchase',
     'sku_popularity', 'sku_status', 'main_rank', 'bsr_rank',

@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS dx_siel_tv_product_list (
   calendar_week     TEXT,
   crawl_datetime    TIMESTAMPTZ,
   batch_id          TEXT,
+  star_rating               TEXT,
   count_of_star_ratings     TEXT,
   count_of_reviews          TEXT,
   final_sku_price    TEXT,
