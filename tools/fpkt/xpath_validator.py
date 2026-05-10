@@ -115,16 +115,17 @@ def main():
         if args.scroll > 0:
             scroll_to_bottom(driver, pause=1.2, max_scrolls=args.scroll)
 
+        # 카드 list 보관 (main/bsr 시 — base_container 매치)
+        cards_list = []
+        card_idx = 0
         ctx = driver
-        ctx_label = 'driver (page 전체)'
         if args.stage in ('main', 'bsr') and bc_entry:
             bc_xpath = bc_entry[1]
             try:
-                cards = driver.find_elements(By.XPATH, bc_xpath)
-                if cards:
-                    idx = max(0, min(args.card_index, len(cards) - 1))
-                    ctx = cards[idx]
-                    ctx_label = f'base_container[{idx}] (총 {len(cards)} 카드)'
+                cards_list = driver.find_elements(By.XPATH, bc_xpath)
+                if cards_list:
+                    card_idx = max(0, min(args.card_index, len(cards_list) - 1))
+                    ctx = cards_list[card_idx]
                 else:
                     print('[warn] base_container 매치 0 — driver 컨텍스트 사용',
                           file=sys.stderr)
@@ -134,36 +135,66 @@ def main():
 
         # 검증 순서: base_container 는 컨텍스트 잡았으니 step 에서 제외
         steps = [(f, xp, fb) for f, xp, fb in ordered if f != 'base_container']
+        sel_dict = {f: {'xpath': xp, 'fallback': fb} for f, xp, fb in ordered}
 
-        # main/bsr 시 final saved value 미리 계산 (extract_card — listing.py 와 같은 처리)
-        final_rec = {}
-        if args.stage in ('main', 'bsr'):
-            sel_dict = {f: {'xpath': xp, 'fallback': fb} for f, xp, fb in ordered}
-            try:
-                final_rec = extract_card(ctx, sel_dict)
-            except Exception as e:
-                print(f'[warn] extract_card fail: {type(e).__name__}: {e}', file=sys.stderr)
+        def compute_final(card_ctx):
+            """현재 컨텍스트 의 extract_card 결과 (main/bsr 시만)."""
+            if args.stage in ('main', 'bsr'):
+                try:
+                    return extract_card(card_ctx, sel_dict)
+                except Exception as e:
+                    print(f'[warn] extract_card fail: {type(e).__name__}: {e}',
+                          file=sys.stderr)
+            return {}
+
+        final_rec = compute_final(ctx)
+
+        def card_label():
+            if cards_list:
+                return f'card {card_idx+1}/{len(cards_list)}'
+            return 'page'
 
         print()
         print('=' * 70)
-        print(f'STEP-BY-STEP 검증 — schema {len(steps)}개 / 컨텍스트: {ctx_label}')
-        print('각 schema 마다:')
+        print(f'STEP-BY-STEP 검증 — schema {len(steps)}개')
+        if cards_list:
+            print(f'카드 {len(cards_list)}개 — 시작: card {card_idx+1}')
+        print('명령:')
         print('  enter         → 다음 schema')
         print('  xpath 입력    → 추가 검증 (같은 schema 유지)')
         print('  back / b      → 이전 schema')
-        print('  list / l      → 전체 schema 목록')
         print('  jump <N>      → N번째 schema 로 이동')
+        print('  list / l      → schema 목록')
+        if cards_list:
+            print('  cn            → 다음 카드 (같은 schema 다시)')
+            print('  cp            → 이전 카드')
+            print('  c<N>          → N번째 카드 (예 c5)')
+            print('  cards / cl    → 카드 목록 (retailer_sku_name)')
         print('  quit / q      → 종료')
         print('=' * 70)
 
+        # 마지막 schema enter 시 자동 다음 카드 진행 (cards_list 있을 때).
         i = 0
-        while i < len(steps):
+        while True:
+            if i >= len(steps):
+                # schema loop 끝 — 다음 카드 자동 진행
+                if cards_list and card_idx + 1 < len(cards_list):
+                    card_idx += 1
+                    ctx = cards_list[card_idx]
+                    final_rec = compute_final(ctx)
+                    i = 0
+                    print()
+                    print('▼' * 70)
+                    print(f'다음 카드 진입 — {card_label()}')
+                    print('▼' * 70)
+                    continue
+                break  # 마지막 카드 의 마지막 schema
+
             field, xp, fb = steps[i]
             print()
             print('─' * 70)
-            print(f'[{i+1}/{len(steps)}] {field}')
+            print(f'[{card_label()}] [{i+1}/{len(steps)}] {field}')
             print('─' * 70)
-            # final saved value (★) — main/bsr 시 listing.py extract_card 와 같은 결과
             if args.stage in ('main', 'bsr'):
                 v = final_rec.get(field, '<not_extracted>')
                 print(f'  ★ saved: {v!r}')
@@ -175,16 +206,16 @@ def main():
                 if fb:
                     print(f'  fallback: {fb}')
                     evaluate(ctx, fb, max_n=3, label='fb')
-            # 같은 schema 안 prompt loop
+
             advance = True
             while True:
                 try:
-                    line = input(f'[{i+1}/{len(steps)}] {field}> ').strip()
+                    line = input(f'[{card_label()}] [{i+1}/{len(steps)}] {field}> ').strip()
                 except (EOFError, KeyboardInterrupt):
                     print()
                     return 0
                 if not line:
-                    break  # enter — 다음
+                    break  # enter — 다음 schema (또는 다음 카드 — outer loop 처리)
                 if line in ('quit', 'exit', 'q'):
                     return 0
                 if line in ('back', 'b'):
@@ -207,6 +238,53 @@ def main():
                     except ValueError:
                         print('  usage: jump <N>')
                     continue
+                # 카드 변경 명령
+                if cards_list and line == 'cn':
+                    if card_idx + 1 < len(cards_list):
+                        card_idx += 1
+                        ctx = cards_list[card_idx]
+                        final_rec = compute_final(ctx)
+                        advance = False  # 같은 schema 다시
+                        break
+                    print(f'  마지막 카드 (총 {len(cards_list)})')
+                    continue
+                if cards_list and line == 'cp':
+                    if card_idx > 0:
+                        card_idx -= 1
+                        ctx = cards_list[card_idx]
+                        final_rec = compute_final(ctx)
+                        advance = False
+                        break
+                    print('  첫 카드')
+                    continue
+                if cards_list and len(line) > 1 and line[0] == 'c' and line[1:].isdigit():
+                    n = int(line[1:])
+                    if 1 <= n <= len(cards_list):
+                        card_idx = n - 1
+                        ctx = cards_list[card_idx]
+                        final_rec = compute_final(ctx)
+                        advance = False
+                        break
+                    print(f'  card range 1..{len(cards_list)}')
+                    continue
+                if cards_list and line in ('cards', 'cl'):
+                    print(f'  총 {len(cards_list)} 카드:')
+                    for j, c in enumerate(cards_list):
+                        marker = ' →' if j == card_idx else '  '
+                        # 카드 별 retailer_sku_name 매치 — listing.py 의 selector
+                        rsku = ''
+                        try:
+                            r_sel = sel_dict.get('retailer_sku_name', {}).get('xpath')
+                            if r_sel:
+                                els = c.find_elements(By.XPATH, r_sel)
+                                if els:
+                                    rsku = (els[0].text or '').strip().replace('\n', ' / ')[:60]
+                        except Exception:
+                            pass
+                        print(f' {marker} [c{j+1}] {rsku}')
+                    continue
+                # 추가 xpath 검증
+                evaluate(ctx, line, max_n=10)
                 # 추가 xpath 검증
                 evaluate(ctx, line, max_n=10)
             if advance:
