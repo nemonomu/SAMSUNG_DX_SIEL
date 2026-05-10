@@ -307,8 +307,8 @@ VALUES
    '리뷰 AI 요약 — overall-summary (신 testid) | cr-insights-widget | reviewsMedley union'),
   ('Amazon','detail','ref','detailed_review_content',
    '//*[@data-hook="reviewText"] | //div[@data-hook="review-collapsed" or @data-hook="review-body"]//span[not(@class) or contains(@class,"cr-original-review-content")]',
-   '//*[@data-hook="reviewTextContainer"]//span',
-   'REF 전용 — Amazon refrigerator page DOM 3 variant: A) data-hook=reviewText (camelCase), B) review-collapsed/review-body 안 span no-class (HHP-style India reviews), C) review-collapsed 안 span class=cr-original-review-content (international reviews — Bosch B08F9CDP8M 같은 글로벌 SKU). 메모: feedback_domain_branching_pattern.md'),
+   NULL,
+   'REF 전용 — Amazon refrigerator page DOM 3 variant: A) data-hook=reviewText (camelCase), B) review-collapsed/review-body 안 span no-class (HHP-style India reviews), C) review-collapsed 안 span class=cr-original-review-content (international reviews — Bosch B08F9CDP8M 같은 글로벌 SKU). 5/10 fallback 제거: 옛 reviewTextContainer//span 이 "Read moreRead less"/빈 span/control text noise 매치 (Haier 190L 검증 raw 60 → unique 18, 실제 review 8). primary 3-variant 가 superset 이라 fallback 무용. primary 0 시 NULL 저장 (noise 대신). 메모: feedback_domain_branching_pattern.md'),
   ('Amazon','detail','ref','sku',
    '//table//tr[.//th[contains(text(),"Manufacturer") and contains(text(),"Part Number")]]/td',
    '//table//tr[.//th[normalize-space()="Model Number" or normalize-space()="Part Number" or normalize-space()="Item Model Number" or normalize-space()="Item model number" or normalize-space()="Item Part Number" or normalize-space()="Item part number"]]/td',
@@ -322,9 +322,9 @@ VALUES
    '//table//tr[.//th[contains(text(),"Style")]]/td',
    'e.g. Side-by-Side, French Door, Top Mount'),
   ('Amazon','detail','ref','ref_capacity',
+   '//table//tr[.//th[normalize-space()="Total Capacity" or normalize-space()="Capacity" or normalize-space()="Capacity (Litres)" or normalize-space()="Refrigerator Capacity" or normalize-space()="Net Capacity"]]/td',
    '//table//tr[.//th[contains(text(),"Capacity")]]/td',
-   '//table//tr[.//th[contains(text(),"Total Capacity") or contains(text(),"Capacity (Litres)")]]/td',
-   'e.g. "300L"')
+   'e.g. "300L". 5/10 정정: 옛 primary broad "contains(Capacity)" 가 Freezer Capacity / Internal Capacity 등 모두 매치 → 첫 매치 row 순서 의존 risk (Haier 190L 검증 4 매치 — 14 Litres freezer 등 noise 포함). primary = exact label union (Total Capacity / Capacity / Capacity (Litres) / Refrigerator Capacity / Net Capacity). fallback = broad 백업 (primary 0 시).')
     ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
       xpath_primary  = EXCLUDED.xpath_primary,
       fallback_xpath = EXCLUDED.fallback_xpath,
