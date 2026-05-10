@@ -1,4 +1,4 @@
-"""
+r"""
 Flipkart xpath 검증 REPL — main/bsr/detail page 별 selector 자동 검증 + 사용자
 입력 xpath 매치 확인.
 
