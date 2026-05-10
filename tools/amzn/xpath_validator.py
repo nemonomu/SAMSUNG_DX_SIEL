@@ -67,8 +67,11 @@ def load_selectors_ordered(site_account, stage, domain):
 
 
 def short_text(e, n=60):
+    """element text 한 줄 요약. .text (visible) 빈값이면 textContent (hidden 포함) fallback —
+    apex-pricetopay-accessibility-label 같은 aok-offscreen element 도 노출 (운영 detail.py 와 일치)."""
     try:
-        t = (e.text or '').strip().replace('\n', ' / ').replace('\r', '')
+        t = (e.text or e.get_attribute('textContent') or '').strip()
+        t = t.replace('\n', ' / ').replace('\r', '')
     except Exception:
         return '<err>'
     if len(t) > n:
