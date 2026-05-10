@@ -36,6 +36,11 @@ from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.by import By
 
 from fpkt.listing import db_connect, extract_card, make_driver, scroll_to_bottom
+from fpkt.detail import robust_click as _fpkt_robust_click
+
+CONTROL_EXPAND = {'expand_specifications', 'expand_see_more'}
+CONTROL_NAVIGATE = {'click_show_all_reviews'}
+CONTROL_FIELDS = CONTROL_EXPAND | CONTROL_NAVIGATE
 
 
 def load_selectors_ordered(site_account, stage, domain):
@@ -191,10 +196,14 @@ def main():
                 break  # 마지막 카드 의 마지막 schema
 
             field, xp, fb = steps[i]
+            is_control = field in CONTROL_FIELDS
             print()
             print('─' * 70)
             print(f'[{card_label()}] [{i+1}/{len(steps)}] {field}')
             print('─' * 70)
+            if is_control:
+                action = 'navigate' if field in CONTROL_NAVIGATE else 'click'
+                print(f'  ⚙ control action ({action}) — enter 시 자동 수행')
             if args.stage in ('main', 'bsr'):
                 v = final_rec.get(field, '<not_extracted>')
                 print(f'  ★ saved: {v!r}')
@@ -215,7 +224,39 @@ def main():
                     print()
                     return 0
                 if not line:
-                    break  # enter — 다음 schema (또는 다음 카드 — outer loop 처리)
+                    # enter — control field 시 action 수행 후 다음 schema
+                    if is_control and xp:
+                        if field in CONTROL_NAVIGATE:
+                            # click_show_all_reviews — anchor href 추출 후 driver.get
+                            try:
+                                els = driver.find_elements(By.XPATH, xp)
+                                rev_href = None
+                                for e in els:
+                                    href = e.get_attribute('href') or ''
+                                    if '/product-reviews/' in href:
+                                        rev_href = href
+                                        break
+                                if rev_href:
+                                    print(f'  ⚙ navigating: {rev_href[:80]}…')
+                                    driver.get(rev_href)
+                                    time.sleep(3)
+                                    scroll_to_bottom(driver, pause=1.2, max_scrolls=10)
+                                    print('  ⚙ navigate 완료')
+                                else:
+                                    print('  ⚙ anchor href 미매치 — navigate skip')
+                            except WebDriverException as e:
+                                print(f'  ⚙ navigate fail: {type(e).__name__}')
+                        else:
+                            # expand_specifications / expand_see_more — robust_click
+                            try:
+                                ok = _fpkt_robust_click(driver, xp, wait_s=20.0)
+                                print(f'  ⚙ click {"성공" if ok else "실패"}')
+                                if ok:
+                                    time.sleep(1.5)
+                                    scroll_to_bottom(driver, pause=1.0, max_scrolls=5)
+                            except Exception as e:
+                                print(f'  ⚙ click fail: {type(e).__name__}: {e}')
+                    break  # 다음 schema (또는 다음 카드 — outer loop 처리)
                 if line in ('quit', 'exit', 'q'):
                     return 0
                 if line in ('back', 'b'):
