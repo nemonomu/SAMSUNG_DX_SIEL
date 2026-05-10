@@ -44,20 +44,10 @@ CREATE TABLE IF NOT EXISTS dx_siel_hhp_retail_com (
   -- 순위
   main_rank INTEGER,
   bsr_rank  INTEGER,
-  -- TV 전용 (HHP 는 NULL — schema 일관 위해 보존)
-  screen_size                       TEXT,
-  model_year                        TEXT,
-  estimated_annual_electricity_use  TEXT,
-  -- HHP 전용
+  -- HHP 전용 (다른 product 전용 컬럼은 제외 — TV/REF/LDY 전용은 각 retail_com 만)
   hhp_storage TEXT,
   hhp_color   TEXT,
   trade_in    TEXT,
-  -- REF 전용 (HHP 는 NULL)
-  ref_refrigerator_type TEXT,
-  ref_capacity          TEXT,
-  -- LDY 전용 (HHP 는 NULL)
-  ldy_loading_type TEXT,
-  ldy_capacity     TEXT,
   -- Amazon 전용
   summarized_review_content             TEXT,
   fastest_delivery                      TEXT,

@@ -12,7 +12,6 @@ CREATE TABLE IF NOT EXISTS dx_siel_tv_product_list (
   country           TEXT,
   product           TEXT,
   item              TEXT,
-  sku               TEXT,
   account_name      TEXT,
   page_type         TEXT,
   retailer_sku_name TEXT,

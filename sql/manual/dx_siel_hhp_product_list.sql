@@ -20,7 +20,6 @@ CREATE TABLE IF NOT EXISTS dx_siel_hhp_product_list (
   country           TEXT,                         -- 'siel'
   product           TEXT,                         -- 'HHP'
   item              TEXT,                         -- Flipkart fsn / Amazon asin
-  sku               TEXT,                         -- 대부분 NULL (HHP × Amazon 만 코드 분기로 ASIN), product_list 의 sku 는 보통 detail 단계에서 채워짐
   account_name      TEXT,                         -- 'Flipkart' / 'Amazon'
   page_type         TEXT,                         -- 'main' / 'bsr' (병합 후 'main' 우선)
   -- 메타

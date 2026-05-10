@@ -55,12 +55,16 @@ def _setup_db():
         cfg.setdefault('client_encoding', 'utf8')
         _db_conn = psycopg2.connect(**cfg)
         _db_cursor = _db_conn.cursor()
-        cols_full = ', '.join(ITR.COLUMNS)
-        placeholders_full = ', '.join(f'%({c})s' for c in ITR.COLUMNS)
+        # retail_com — product 별 컬럼 분기 (5/10 사용자 룰)
+        _retail_sqls = {}
+        for p in ITR.PRODUCT_LOWERS:
+            cols_p = ITR.COLUMNS_BY_PRODUCT[p]
+            cols_join = ', '.join(cols_p)
+            placeholders_join = ', '.join(f'%({c})s' for c in cols_p)
+            _retail_sqls[p] = f'INSERT INTO dx_siel_{p}_retail_com ({cols_join}) VALUES ({placeholders_join})'
+        # product_list — 4 product 동일 컬럼
         cols_list = ', '.join(ITR.COLUMNS_LIST)
         placeholders_list = ', '.join(f'%({c})s' for c in ITR.COLUMNS_LIST)
-        _retail_sqls = {p: f'INSERT INTO dx_siel_{p}_retail_com ({cols_full}) VALUES ({placeholders_full})'
-                        for p in ITR.PRODUCT_LOWERS}
         _list_sqls = {p: f'INSERT INTO dx_siel_{p}_product_list ({cols_list}) VALUES ({placeholders_list})'
                       for p in ITR.PRODUCT_LOWERS}
         _streaming_enabled = True

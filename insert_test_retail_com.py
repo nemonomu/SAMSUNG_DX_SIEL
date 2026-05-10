@@ -30,31 +30,50 @@ import config
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# retail_com 테이블에 INSERT 할 컬럼 (id, inserted_at 제외 — auto). 4 retail_com 동일.
-COLUMNS = [
+# retail_com 컬럼 분류 — 5/10 사용자 룰: 제품별 retail_com 에 다른 product 의 전용 컬럼 제외.
+# 공통 (양 account 모두 채움) + amzn 전용 + fpkt 전용 + 해당 제품 전용.
+_COMMON_COLS = [
     'country', 'product', 'item', 'sku', 'account_name', 'page_type',
     'retailer_sku_name', 'product_url', 'calendar_week', 'crawl_datetime', 'batch_id',
-    'star_rating', 'count_of_star_ratings', 'count_of_reviews',
+    'star_rating', 'count_of_star_ratings',
     'detailed_review_content', 'retailer_sku_name_similar',
-    'final_sku_price', 'original_sku_price', 'savings', 'discount_type',
-    'delivery_availability', 'available_quantity_for_purchase',
+    'final_sku_price', 'original_sku_price', 'discount_type',
+    'delivery_availability',
     'sku_popularity', 'sku_status', 'main_rank', 'bsr_rank',
-    'screen_size', 'model_year', 'estimated_annual_electricity_use',
-    'hhp_storage', 'hhp_color', 'trade_in',
-    'ref_refrigerator_type', 'ref_capacity',
-    'ldy_loading_type', 'ldy_capacity',
+]
+_AMZN_ONLY_COLS = [
     'summarized_review_content', 'fastest_delivery', 'inventory_status',
     'sku_assurance', 'number_of_units_purchased_past_month',
 ]
+_FPKT_ONLY_COLS = [
+    'count_of_reviews', 'available_quantity_for_purchase', 'savings',
+]
+_PRODUCT_SPECIFIC = {
+    'hhp': ['hhp_storage', 'hhp_color', 'trade_in'],
+    'tv':  ['screen_size', 'model_year', 'estimated_annual_electricity_use'],
+    'ref': ['ref_refrigerator_type', 'ref_capacity'],
+    'ldy': ['ldy_loading_type', 'ldy_capacity'],
+}
 
-# product_list 테이블 컬럼 (detail 전용 컬럼 제외 — 5/10 사용자 룰).
-# 제외: detail 전용 (star_rating / detailed_review_content / retailer_sku_name_similar /
-# delivery_availability / summarized_review_content / fastest_delivery / inventory_status /
-# sku_assurance / screen_size / model_year / electricity / hhp_*/ref_*/ldy_*).
-# 보존: available_quantity_for_purchase (fpkt main "Only X left" — fpkt 유일 재고 정보,
-#       fpkt detail 에 inventory_status 미수집이므로 중복 X).
+# 8 운영 테이블 (4 retail_com + 4 product_list). product 별 분기.
+PRODUCT_LOWERS = ('hhp', 'tv', 'ref', 'ldy')
+
+# retail_com — product 별 컬럼 분기
+COLUMNS_BY_PRODUCT = {
+    p: _COMMON_COLS + _AMZN_ONLY_COLS + _FPKT_ONLY_COLS + _PRODUCT_SPECIFIC[p]
+    for p in PRODUCT_LOWERS
+}
+
+# 호환용 alias (전체 컬럼 union — main() 의 row 검증용, INSERT 안 함)
+COLUMNS = (_COMMON_COLS + _AMZN_ONLY_COLS + _FPKT_ONLY_COLS
+           + _PRODUCT_SPECIFIC['hhp'] + _PRODUCT_SPECIFIC['tv']
+           + _PRODUCT_SPECIFIC['ref'] + _PRODUCT_SPECIFIC['ldy'])
+
+# product_list 컬럼 — main + bsr 단계 raw 만 (detail 출처 + sku 제외).
+# 사용자 룰 5/10: sku 는 detail 의 spec 또는 코드 분기 (HHP detail.py:303) 채움 → main/bsr 단계 미수집.
+# 보존: available_quantity_for_purchase (fpkt main "Only X left", fpkt 유일 재고).
 COLUMNS_LIST = [
-    'country', 'product', 'item', 'sku', 'account_name', 'page_type',
+    'country', 'product', 'item', 'account_name', 'page_type',
     'retailer_sku_name', 'product_url', 'calendar_week', 'crawl_datetime', 'batch_id',
     'star_rating', 'count_of_star_ratings', 'count_of_reviews',
     'final_sku_price', 'original_sku_price', 'savings', 'discount_type',
@@ -62,9 +81,6 @@ COLUMNS_LIST = [
     'sku_popularity', 'sku_status', 'main_rank', 'bsr_rank',
     'number_of_units_purchased_past_month',
 ]
-
-# 8 운영 테이블 (4 retail_com + 4 product_list). product 별 분기.
-PRODUCT_LOWERS = ('hhp', 'tv', 'ref', 'ldy')
 
 
 _ASIN_RE = re.compile(r'/(?:dp|gp/product)/([A-Z0-9]{10})')
@@ -310,9 +326,7 @@ def main() -> int:
     cfg.setdefault('client_encoding', 'utf8')
     conn = psycopg2.connect(**cfg)
     # 본 운영 8 테이블 (4 retail_com + 4 product_list) — product 별 분기 INSERT.
-    # 5/10 사용자 룰: test 테이블 INSERT 제거, 본 테이블만.
-    cols_full = ', '.join(COLUMNS)
-    placeholders_full = ', '.join(f'%({c})s' for c in COLUMNS)
+    # 5/10 사용자 룰: 제품별 retail_com 은 해당 제품 전용 컬럼만 (다른 product 전용 X).
     cols_list = ', '.join(COLUMNS_LIST)
     placeholders_list = ', '.join(f'%({c})s' for c in COLUMNS_LIST)
     total_inserted = 0
@@ -324,7 +338,10 @@ def main() -> int:
                 continue
             table_retail = f'dx_siel_{prod_lower}_retail_com'
             table_list = f'dx_siel_{prod_lower}_product_list'
-            sql_retail = f'INSERT INTO {table_retail} ({cols_full}) VALUES ({placeholders_full})'
+            cols_prod = COLUMNS_BY_PRODUCT[prod_lower]
+            cols_retail = ', '.join(cols_prod)
+            placeholders_retail = ', '.join(f'%({c})s' for c in cols_prod)
+            sql_retail = f'INSERT INTO {table_retail} ({cols_retail}) VALUES ({placeholders_retail})'
             sql_list = f'INSERT INTO {table_list} ({cols_list}) VALUES ({placeholders_list})'
             with conn.cursor() as cur:
                 if rows_full_prod:
