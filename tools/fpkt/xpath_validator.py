@@ -315,21 +315,31 @@ def main():
                                     print(f'  ⚙ navigating: {rev_href[:80]}…')
                                     driver.get(rev_href)
                                     time.sleep(3)
-                                    scroll_to_bottom(driver, pause=1.2, max_scrolls=10)
-                                    # review body lazy load wait — length>50 element 등장 까지 15s
-                                    try:
-                                        from selenium.webdriver.support.ui import WebDriverWait
-                                        from selenium.common.exceptions import TimeoutException
-                                        WebDriverWait(driver, 15, poll_frequency=0.5).until(
-                                            lambda d: any(
-                                                len((e.text or '').strip()) > 50
-                                                for e in d.find_elements(By.XPATH,
-                                                    '//span[@class="css-1jxf684"]')
-                                            )
-                                        )
-                                        print('  ⚙ review body lazy load 완료')
-                                    except TimeoutException:
-                                        print('  ⚙ review body lazy 15s 미완 — 진행 (자연 NULL 가능)')
+                                    # review body count-based scroll — height-based 결함 회피
+                                    _rxp = sel_dict.get('detailed_review_content', {}).get('xpath')
+                                    if _rxp:
+                                        _target, _last, _stuck = 20, -1, 0
+                                        for _ in range(40):
+                                            try:
+                                                _n = len(driver.find_elements(By.XPATH, _rxp))
+                                            except WebDriverException:
+                                                _n = 0
+                                            if _n >= _target:
+                                                break
+                                            if _n == _last:
+                                                _stuck += 1
+                                                if _stuck >= 3:
+                                                    break
+                                            else:
+                                                _stuck = 0
+                                            _last = _n
+                                            try:
+                                                driver.execute_script(
+                                                    'window.scrollTo(0, document.body.scrollHeight);')
+                                            except WebDriverException:
+                                                break
+                                            time.sleep(1.2)
+                                        print(f'  ⚙ review body scroll: collected={_last if _last >= 0 else 0}')
                                     print('  ⚙ navigate 완료')
                                 else:
                                     print('  ⚙ anchor href 미매치 — navigate skip')

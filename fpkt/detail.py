@@ -478,22 +478,37 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                 try:
                     driver.get(rev_href)
                     time.sleep(3)
-                    scroll_to_bottom(driver, pause=1.2, max_scrolls=15)
-                    # review body lazy load 완료 까지 wait — length>50 review body element 등장
-                    # 5/10 #3 사용자 진단: 이전 length>5 조건 가 'Positive feedback' (sentiment
-                    # summary, 17 chars) 매치 → wait 통과 단 실제 review body 미렌더링 결함.
-                    # 본 wait 조건 강화 — length>50 (실제 review body 는 보통 50+ chars).
-                    try:
-                        WebDriverWait(driver, 15, poll_frequency=0.5).until(
-                            lambda d: any(
-                                len((e.text or '').strip()) > 50
-                                for e in d.find_elements(By.XPATH,
-                                    '//span[@class="css-1jxf684"]')
-                            )
-                        )
-                    except TimeoutException:
-                        if _logger:
-                            _logger.info('review body lazy 15s 미완 — 진행 (자연 NULL 가능)')
+                    # review body count 기반 scroll loop — height-based 정지 조건 결함 회피
+                    # (Flipkart React virtual scroll 시 첫 iteration height 안 변하 break 결함).
+                    # target = min(count_of_reviews, REVIEW_MAX) review body element 등장
+                    # 또는 추가 scroll 무효 (3회 stuck) 시 stop. 5/10 #4 사용자 evidence —
+                    # 첫 navigate 직후 14-17건 (lazy 일부) → scroll 후 44-47건 (page 의 모든
+                    # review body) 가 검증.
+                    _scroll_target = min(target, REVIEW_MAX)
+                    _last_n, _stuck = -1, 0
+                    for _ in range(40):
+                        try:
+                            _now_n = len(driver.find_elements(By.XPATH, review_xpath))
+                        except WebDriverException:
+                            _now_n = 0
+                        if _now_n >= _scroll_target:
+                            break
+                        if _now_n == _last_n:
+                            _stuck += 1
+                            if _stuck >= 3:
+                                break
+                        else:
+                            _stuck = 0
+                        _last_n = _now_n
+                        try:
+                            driver.execute_script(
+                                'window.scrollTo(0, document.body.scrollHeight);')
+                        except WebDriverException:
+                            break
+                        time.sleep(1.2)
+                    if _logger:
+                        _logger.info('review body count-based scroll: target=%d collected=%d',
+                                     _scroll_target, _last_n if _last_n >= 0 else 0)
                 except (WebDriverException, _Urllib3RT) as e:
                     if _logger:
                         _logger.warning('review page navigate fail: %s — retry',
