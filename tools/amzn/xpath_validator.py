@@ -94,15 +94,32 @@ def short_text(e, n=60):
     return t
 
 
-def evaluate(ctx, xpath, max_n=3, label='match'):
+def wrapper_id(e):
+    """가장 가까운 id 있는 부모 element 의 id. 어디 영역에서 매치됐는지 디버그용."""
+    try:
+        anc = e.find_element(By.XPATH, 'ancestor::*[@id][1]')
+        return anc.get_attribute('id') or '<empty-id>'
+    except WebDriverException:
+        return '<no-id>'
+
+
+def evaluate(ctx, xpath, max_n=50, label='match', show_wrapper=True):
+    """매치 element 모두 출력 (default max_n=50). 각 element 의 부모 wrapper id 같이 — 어디 영역인지 식별."""
     try:
         els = ctx.find_elements(By.XPATH, xpath)
     except WebDriverException as e:
         print(f'  {label}: error {type(e).__name__}')
         return
     print(f'  {label}: {len(els)}건')
-    for e in els[:max_n]:
-        print(f'    └─ {short_text(e)!r}')
+    for i, e in enumerate(els[:max_n], start=1):
+        text = short_text(e)
+        if show_wrapper:
+            wid = wrapper_id(e)
+            print(f'    [{i:02d}] {wid[:35]:<35} | {text!r}')
+        else:
+            print(f'    [{i:02d}] {text!r}')
+    if len(els) > max_n:
+        print(f'    ... (+{len(els) - max_n} more)')
 
 
 def try_click_expand(driver, xpath: str) -> bool:
