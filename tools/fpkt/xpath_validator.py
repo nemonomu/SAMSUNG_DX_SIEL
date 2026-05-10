@@ -35,7 +35,7 @@ import psycopg2.extras
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.by import By
 
-from fpkt.listing import db_connect, make_driver, scroll_to_bottom
+from fpkt.listing import db_connect, extract_card, make_driver, scroll_to_bottom
 
 
 def load_selectors_ordered(site_account, stage, domain):
@@ -59,31 +59,27 @@ def load_selectors_ordered(site_account, stage, domain):
     return [(r['data_field'], r['xpath_primary'], r['fallback_xpath']) for r in rows]
 
 
-def describe_element(e):
+def short_text(e, n=60):
+    """element text 한 줄 요약 — newline 제거 + n자 cut."""
     try:
-        txt = (e.text or '').strip()[:120]
+        t = (e.text or '').strip().replace('\n', ' / ').replace('\r', '')
     except Exception:
-        txt = '<err>'
-    parts = [f'text={txt!r}']
-    for attr in ('href', 'src', 'class'):
-        try:
-            v = e.get_attribute(attr)
-            if v:
-                parts.append(f'{attr}={v[:80]!r}')
-        except Exception:
-            pass
-    return '  ' + ' '.join(parts)
+        return '<err>'
+    if len(t) > n:
+        t = t[:n] + '…'
+    return t
 
 
-def evaluate(ctx, xpath, max_n=5):
+def evaluate(ctx, xpath, max_n=3, label='match'):
+    """단순 매치 — REPL / fallback 검증용."""
     try:
         els = ctx.find_elements(By.XPATH, xpath)
     except WebDriverException as e:
-        print(f'  [error] {type(e).__name__}: {e}')
+        print(f'  {label}: error {type(e).__name__}')
         return
-    print(f'  count: {len(els)}')
+    print(f'  {label}: {len(els)}건')
     for e in els[:max_n]:
-        print(describe_element(e))
+        print(f'    └─ {short_text(e)!r}')
 
 
 def main():
@@ -139,6 +135,15 @@ def main():
         # 검증 순서: base_container 는 컨텍스트 잡았으니 step 에서 제외
         steps = [(f, xp, fb) for f, xp, fb in ordered if f != 'base_container']
 
+        # main/bsr 시 final saved value 미리 계산 (extract_card — listing.py 와 같은 처리)
+        final_rec = {}
+        if args.stage in ('main', 'bsr'):
+            sel_dict = {f: {'xpath': xp, 'fallback': fb} for f, xp, fb in ordered}
+            try:
+                final_rec = extract_card(ctx, sel_dict)
+            except Exception as e:
+                print(f'[warn] extract_card fail: {type(e).__name__}: {e}', file=sys.stderr)
+
         print()
         print('=' * 70)
         print(f'STEP-BY-STEP 검증 — schema {len(steps)}개 / 컨텍스트: {ctx_label}')
@@ -155,15 +160,21 @@ def main():
         while i < len(steps):
             field, xp, fb = steps[i]
             print()
+            print('─' * 70)
             print(f'[{i+1}/{len(steps)}] {field}')
-            print(f'  xpath: {xp}')
+            print('─' * 70)
+            # final saved value (★) — main/bsr 시 listing.py extract_card 와 같은 결과
+            if args.stage in ('main', 'bsr'):
+                v = final_rec.get(field, '<not_extracted>')
+                print(f'  ★ saved: {v!r}')
             if not xp:
-                print('  (xpath 없음)')
+                print('  xpath: (없음)')
             else:
-                evaluate(ctx, xp)
+                print(f'  xpath: {xp}')
+                evaluate(ctx, xp, max_n=3, label='match')
                 if fb:
                     print(f'  fallback: {fb}')
-                    evaluate(ctx, fb)
+                    evaluate(ctx, fb, max_n=3, label='fb')
             # 같은 schema 안 prompt loop
             advance = True
             while True:
