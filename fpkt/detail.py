@@ -479,20 +479,21 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                     driver.get(rev_href)
                     time.sleep(3)
                     scroll_to_bottom(driver, pause=1.2, max_scrolls=15)
-                    # review body lazy load 완료 까지 wait (length>5 review body element 등장)
-                    # 5/10 사용자 진단: detail page → expand → expand_see_more → review navigate
-                    # 흐름 시 driver state 누적 + React lazy 미완 → review body 매치 0 결함.
+                    # review body lazy load 완료 까지 wait — length>50 review body element 등장
+                    # 5/10 #3 사용자 진단: 이전 length>5 조건 가 'Positive feedback' (sentiment
+                    # summary, 17 chars) 매치 → wait 통과 단 실제 review body 미렌더링 결함.
+                    # 본 wait 조건 강화 — length>50 (실제 review body 는 보통 50+ chars).
                     try:
-                        WebDriverWait(driver, 10, poll_frequency=0.5).until(
+                        WebDriverWait(driver, 15, poll_frequency=0.5).until(
                             lambda d: any(
-                                len((e.text or '').strip()) > 5
+                                len((e.text or '').strip()) > 50
                                 for e in d.find_elements(By.XPATH,
                                     '//span[@class="css-1jxf684"]')
                             )
                         )
                     except TimeoutException:
                         if _logger:
-                            _logger.info('review body lazy 10s 미완 — 진행')
+                            _logger.info('review body lazy 15s 미완 — 진행 (자연 NULL 가능)')
                 except (WebDriverException, _Urllib3RT) as e:
                     if _logger:
                         _logger.warning('review page navigate fail: %s — retry',

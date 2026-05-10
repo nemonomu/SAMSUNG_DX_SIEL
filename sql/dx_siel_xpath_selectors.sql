@@ -639,25 +639,25 @@ BEGIN
        '리뷰 페이지 anchor — Buy now 회피. 사용자 검수 (5/10 #2) — 메인 product 영역 (slot-list-container/div/div[2] 안) 의 첫 anchor [1] 만 매치. 이전 selector 가 page 의 모든 review anchor (15건 — 추천 카드 의 anchor 도) 매치. fallback: 메인 영역 매치 X 시 page 전체 첫 anchor (옛 layout 호환)'),
       -- count_of_star_ratings / count_of_reviews 는 Main Page (reference 시트 r51/r49). detail 정의 X.
       ('Flipkart','detail',d,'star_rating',
-       '(//*[@id="slot-list-container"]/div/div[2]//div[contains(@class,"css-146c3p1") and contains(@style,"inter_bold")])[1]',
+       '(//*[@id="slot-list-container"]/div/div[2]//div[contains(@class,"css-146c3p1") and contains(@style,"inter_bold") and (string-length(normalize-space(text()))=1 or (string-length(normalize-space(text()))=3 and substring(normalize-space(text()),2,1)=".")) and number(normalize-space(text()))=number(normalize-space(text()))])[1]',
        NULL,
-       '사용자 검수 (5/10 #2) — 메인 product 별점 영역 = slot-list-container/div/div[2] 안 (정수/소수 둘 다 cls "css-146c3p1" + inter_bold). 사용자 검수 (5/10 TCL V4C detail) — fallback (productRating_ + length=3) 가 추천 카드 별점 ("4.2") 매치 결함 → 제거. primary 매치 X 시 NULL (잘못된 별점 보다 NULL 안전). siel_log.parse_star_rating 후처리'),
+       '사용자 검수 (5/10 #3) — 메인 product 별점 영역 = slot-list-container/div/div[2] 안. cls + inter_bold 만 으로는 "BESTSELLER" 같은 텍스트 매치 결함 → numeric 조건 추가: length=1 (정수 "4") 또는 length=3 (소수 "4.2") + numeric (number()=number() NaN 검사). primary 매치 X 시 NULL'),
       ('Flipkart','detail',d,'delivery_availability',
        '//div[normalize-space(text())="Delivery" or normalize-space(text())="Delivery by"]/parent::div',
-       '//div[contains(text(),"Delivery by") or contains(text(),"FREE Delivery") or contains(text(),"Free Delivery")][1]',
-       'parent div 의 .text — product 따라 라벨 다름: HHP "Delivery"+sibling "by ..." / TV/REF "Delivery by"+sibling "Tuesday, ...". 둘 다 합쳐 "Delivery by ..." 형식'),
+       NULL,
+       'parent div 의 .text — product 따라 라벨 다름: HHP "Delivery"+sibling "by ..." / TV/REF "Delivery by"+sibling "Tuesday, ...". 5/10 #3 사용자 검수: fallback "//div[contains(...,Delivery by)]" 가 라벨 만 ("Delivery by") 매치 결함 → 제거. primary 매치 X 시 NULL'),
       ('Flipkart','detail',d,'detailed_review_content',
        '//span[@class="css-1jxf684" and not(normalize-space(text())="more") and string-length(normalize-space(text()))>0]',
        '//div[@dir="auto"]/span[string-length(normalize-space(text()))>0 and not(normalize-space(text())="more")]',
        '리뷰 페이지 navigate 후. body 는 div[dir=auto] > span.css-1jxf684. "more" expand 버튼 제외. 5/10 사용자 검수: length>5 조건 으로 짧은 review ("Great"/"Good"/"Bad" 등) 누락 결함 — length>0 으로 완화 (실제 짧은 review 통과 + "more" 단어 만 별 조건 제외). primary 도 빈 text 매치 noise 회피 위해 length>0 추가. count_of_reviews 만큼 수집 (최대 20) — fpkt/detail.py 가 &page=2,3 누적'),
       ('Flipkart','detail',d,'retailer_sku_name_similar',
        '//a[contains(@href,"hl_lid=") and contains(@href,"cHJvZHVjdFJlY29tbWVuZGF0aW9uL3NpbWlsYXI")]//div[contains(@style,"text-overflow: ellipsis") and string-length(normalize-space(text()))>10 and not(contains(text(),"₹"))]',
-       '//a[contains(@href,"hl_lid=")]//div[contains(@style,"text-overflow: ellipsis") and string-length(normalize-space(text()))>10 and not(contains(text(),"₹"))]',
-       'Similar Products 카드. base64 marker cHJvZHVjdFJlY29tbWVuZGF0aW9uL3NpbWlsYXI = "productRecommendation/similar" — Similar 컨테이너에만 존재 (Frequently bought / Sponsored 등 다른 reco 캐러셀 제외). 제품명 div = ellipsis + 길이>10 + ₹제외 (가격/할인/Hot Deal 제외). fallback: hl_lid= 만 (base64 변경 시).'),
+       NULL,
+       'Similar Products 카드. base64 marker cHJvZHVjdFJlY29tbWVuZGF0aW9uL3NpbWlsYXI = "productRecommendation/similar" — Similar 컨테이너에만 존재. 5/10 #3 사용자 검수: fallback (hl_lid= 만) 이 다른 reco 캐러셀 (Frequently bought / Sponsored) 도 매치 → 29건 noise 결함 → 제거. primary 매치 X 시 NULL.'),
       ('Flipkart','detail',d,'sku',
        '//div[normalize-space(text())="Model Name"]/following-sibling::div[1]',
-       '//h1[1]',
-       'ERD: All details > Specifications > General > Model Name 바로 아래 텍스트. expand_specifications click 후 spec 영역에 노출 — fallback h1 전체 (post-process)'),
+       NULL,
+       'ERD: All details > Specifications > General > Model Name 바로 아래 텍스트. expand_specifications click 후 spec 영역에 노출. 5/10 #3 사용자 검수: fallback h1 (제품명 전체) 가 sku 가 아닌 retailer_sku_name 와 같은 값 → 제거. primary 매치 X 시 NULL'),
       -- main page NULL 시 fallback 용 detail page selector (사용자 요청, 2026-05-06).
       -- 5/6 anti-bot detection 으로 main listing 100% NULL → detail page 에서 회수.
       -- 가격 dom 단정: cls "v1zwn20" + font="default-fk-font-m" 의 ₹ 시작 div = main 가격
@@ -665,8 +665,8 @@ BEGIN
       -- 자동 회피.
       ('Flipkart','detail',d,'final_sku_price',
        '(//div[contains(@class,"v1zwn20") and starts-with(normalize-space(text()),"₹")])[1]',
-       '(//div[starts-with(normalize-space(text()),"₹") and not(starts-with(normalize-space(text()),"+₹"))])[1]',
-       'cls v1zwn20 매치가 main 가격 (banner/EMI 회피). fallback: 첫 ₹ 시작 div + Protect Fee 회피'),
+       NULL,
+       'cls v1zwn20 매치가 main 가격 (banner/EMI 회피). 5/10 #3 사용자 검수: fallback (첫 ₹ div) 가 빈 text 매치 결함 → 제거. primary 매치 X 시 NULL.'),
       ('Flipkart','detail',d,'original_sku_price',
        '(//div[contains(concat(" ",@class," ")," v1zwn21 ") and contains(@style,"line-through")])[1]',
        NULL,
@@ -676,9 +676,9 @@ BEGIN
        NULL,
        '사용자 검수 (5/10 #2): detail page 단어 list. Bank Offer/Bank offer 제외 + Saver Deal/SALE PE SALE/Lowest Price Live/Lowest price since launch 추가 (REF main rank 234 Godrej 183L 사례 — deal type 인정). "Trending" 제거 — recently viewed/similar products section noise. detail page 의 popularity Trending 미존재 (사용자 검수 — main 만). detail.py 분기에서 multi-match 합침 + Bank Offer/재고/Exchange 영역 필터.'),
       ('Flipkart','detail',d,'sku_popularity',
-       '//*[contains(text(),"Bestseller") or contains(text(),"Flipkart''s Choice") or contains(text(),"Flipkart Choice")] | //img[contains(@src,"/fa_")]',
+       '//*[contains(text(),"Bestseller") or contains(text(),"BESTSELLER") or contains(text(),"Flipkart''s Choice") or contains(text(),"Flipkart Choice")] | //img[contains(@src,"/fa_")]',
        NULL,
-       'detail page Bestseller marker = div text node (HHP/REF/LDY saved html 일관 검증). main page 와 다름 (anchor href 아님). 단일 마커만 추출 — main page 의 union 합침 로직과 형식 일관')
+       'detail page Bestseller marker = div text node. 5/10 #3 사용자 evidence: <div class="css-146c3p1 r-1udbk01 r-1iln25a" style="...inter_bold...">BESTSELLER</div> (대문자) — 본 page 의 메인 product popularity. 이전 selector 가 case-sensitive ("Bestseller" 만) 라 매치 X 결함 → "BESTSELLER" 추가. 단일 마커만 추출.')
     ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
       xpath_primary  = EXCLUDED.xpath_primary,
       fallback_xpath = EXCLUDED.fallback_xpath,
@@ -759,8 +759,8 @@ VALUES
    'ERD: Specifications > Display Size 라벨 다음 div = "109 cm (43 inch)". fallback 1: deep spec colon 라벨 (See more 후 표기 — 값 "43" 만 추출). fallback 2: 30자 이하 inch+cm 패턴 (제품명 매치 회피)'),
   ('Flipkart','detail','tv','estimated_annual_electricity_use',
    '//div[normalize-space(text())="Power Consumption" or normalize-space(text())="Annual Energy Consumption" or normalize-space(text())="Energy Consumption" or normalize-space(text())="Power Consumption:" or normalize-space(text())="Annual Energy Consumption:"]/following-sibling::div[1]',
-   '//td[normalize-space(text())="Power Consumption"]/following-sibling::td[1]',
-   'deep spec (Power Features 그룹 — See more 후 lazy load). 라벨 콜론 없음 (highlights 와 다름). value 단위 (Standby W vs kWh/Year) 사이트별 의미 mismatch 가능 — raw 그대로 저장 후 분석 단계 분기')
+   NULL,
+   'deep spec (Power Features 그룹 — See more 후 lazy load). 라벨 콜론 없음 (highlights 와 다름). 5/10 #3 사용자 검수: fallback (td/tr 옛 layout) 가 신 layout 페이지 에서 0건 매치 — 의미 X → 제거. value 단위 (Standby W vs kWh/Year) raw 보존')
     ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
       xpath_primary  = EXCLUDED.xpath_primary,
       fallback_xpath = EXCLUDED.fallback_xpath,

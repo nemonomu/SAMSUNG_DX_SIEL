@@ -267,20 +267,20 @@ def main():
                                     driver.get(rev_href)
                                     time.sleep(3)
                                     scroll_to_bottom(driver, pause=1.2, max_scrolls=10)
-                                    # review body lazy load wait — length>5 element 등장 까지 10s
+                                    # review body lazy load wait — length>50 element 등장 까지 15s
                                     try:
                                         from selenium.webdriver.support.ui import WebDriverWait
                                         from selenium.common.exceptions import TimeoutException
-                                        WebDriverWait(driver, 10, poll_frequency=0.5).until(
+                                        WebDriverWait(driver, 15, poll_frequency=0.5).until(
                                             lambda d: any(
-                                                len((e.text or '').strip()) > 5
+                                                len((e.text or '').strip()) > 50
                                                 for e in d.find_elements(By.XPATH,
                                                     '//span[@class="css-1jxf684"]')
                                             )
                                         )
                                         print('  ⚙ review body lazy load 완료')
                                     except TimeoutException:
-                                        print('  ⚙ review body lazy 10s 미완 — 진행')
+                                        print('  ⚙ review body lazy 15s 미완 — 진행 (자연 NULL 가능)')
                                     print('  ⚙ navigate 완료')
                                 else:
                                     print('  ⚙ anchor href 미매치 — navigate skip')
