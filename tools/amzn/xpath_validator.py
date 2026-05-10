@@ -39,10 +39,25 @@ from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.by import By
 
 from amzn.listing import db_connect, extract_card, make_driver, scroll_to_bottom
+import siel_log
 
 # Amazon detail control fields — 클릭 트리거 (expand spec section)
 CONTROL_EXPAND = {'expand_additional_details', 'expand_item_details'}
 CONTROL_FIELDS = CONTROL_EXPAND
+
+# detail page schema 별 post-process — 운영 amzn/detail.py 의 분기 미러.
+# raw match text → 실제 DB 저장 값. 사용자 검증 시 운영 결과 비교용.
+POST_PROCESS_DETAIL = {
+    'star_rating': siel_log.parse_star_rating,
+    'count_of_star_ratings': siel_log.parse_count_of_ratings,
+    'sku_assurance': siel_log.parse_sku_assurance,
+    'delivery_availability': siel_log.parse_delivery_availability,
+    'fastest_delivery': siel_log.parse_fastest_delivery,
+    'trade_in': siel_log.parse_trade_in,
+    'ldy_loading_type': siel_log.parse_ldy_loading_type,
+    'ldy_capacity': siel_log.parse_ldy_capacity,
+    'final_sku_price': siel_log.parse_amzn_apex_price,
+}
 
 
 def load_selectors_ordered(site_account, stage, domain):
@@ -239,6 +254,16 @@ def main():
                 if fb:
                     print(f'  fallback: {fb}')
                     evaluate(ctx, fb, max_n=3, label='fb')
+                # detail stage 의 post-process 결과 (운영 detail.py 미러)
+                if args.stage == 'detail' and field in POST_PROCESS_DETAIL:
+                    try:
+                        els = ctx.find_elements(By.XPATH, xp)
+                        if els:
+                            raw = (els[0].text or els[0].get_attribute('textContent') or '').strip()
+                            saved = POST_PROCESS_DETAIL[field](raw)
+                            print(f'  ★ saved: {saved!r}')
+                    except Exception as e:
+                        print(f'  ★ saved fail: {type(e).__name__}: {e}')
 
             advance = True
             while True:
