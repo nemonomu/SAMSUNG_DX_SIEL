@@ -634,14 +634,14 @@ BEGIN
        '(//div[normalize-space(text())="See more"])[1]',
        'Specifications 클릭 후 deep spec 영역 (Power Features 등) lazy load 트리거. Specifications 헤더 다음 첫 See more div'),
       ('Flipkart','detail',d,'click_show_all_reviews',
-       '//a[contains(@href,"/product-reviews/") and not(contains(@href,"buynow"))]',
-       NULL,
-       '리뷰 페이지 anchor — Buy now 회피'),
+       '(//*[@id="slot-list-container"]/div/div[2]//a[contains(@href,"/product-reviews/") and not(contains(@href,"buynow"))])[1]',
+       '(//a[contains(@href,"/product-reviews/") and not(contains(@href,"buynow"))])[1]',
+       '리뷰 페이지 anchor — Buy now 회피. 사용자 검수 (5/10 #2) — 메인 product 영역 (slot-list-container/div/div[2] 안) 의 첫 anchor [1] 만 매치. 이전 selector 가 page 의 모든 review anchor (15건 — 추천 카드 의 anchor 도) 매치. fallback: 메인 영역 매치 X 시 page 전체 첫 anchor (옛 layout 호환)'),
       -- count_of_star_ratings / count_of_reviews 는 Main Page (reference 시트 r51/r49). detail 정의 X.
       ('Flipkart','detail',d,'star_rating',
        '(//*[@id="slot-list-container"]/div/div[2]//div[contains(@class,"css-146c3p1") and contains(@style,"inter_bold")])[1]',
-       '(//*[starts-with(@id,"productRating_")] | //div[@dir="auto" and contains(@style,"inter_bold") and string-length(normalize-space(text()))=3 and substring(normalize-space(text()),2,1)="."])[1]',
-       '사용자 검수 (5/10 motorola TV detail) — 메인 product 별점 영역 = slot-list-container/div/div[2] 안 (사용자 evidence: //*[@id="slot-list-container"]/div/div[2]/.../a/div/div/div/div/div[1]). 정수 (4) / 소수 (4.2) 둘 다 cls "css-146c3p1" + inter_bold style. 이전 selector (length=3 만) 가 추천 카드 (slot-list-container/div/div[3]+) 의 별점 매치 결함. fallback: 옛 productRating_ ID prefix + 이전 신 layout (anti-bot 또는 layout 변형 호환). siel_log.parse_star_rating 후처리'),
+       NULL,
+       '사용자 검수 (5/10 #2) — 메인 product 별점 영역 = slot-list-container/div/div[2] 안 (정수/소수 둘 다 cls "css-146c3p1" + inter_bold). 사용자 검수 (5/10 TCL V4C detail) — fallback (productRating_ + length=3) 가 추천 카드 별점 ("4.2") 매치 결함 → 제거. primary 매치 X 시 NULL (잘못된 별점 보다 NULL 안전). siel_log.parse_star_rating 후처리'),
       ('Flipkart','detail',d,'delivery_availability',
        '//div[normalize-space(text())="Delivery" or normalize-space(text())="Delivery by"]/parent::div',
        '//div[contains(text(),"Delivery by") or contains(text(),"FREE Delivery") or contains(text(),"Free Delivery")][1]',
@@ -703,8 +703,8 @@ INSERT INTO dx_siel_xpath_selectors
 VALUES
   ('Flipkart','detail','hhp','savings',
    '(//div[contains(text(),"%") and string-length(normalize-space(text()))<=5 and not(ancestor::a[contains(@href,"/p/")])])[1]',
-   '//div[contains(text(),"% off")]',
-   'HHP detail % deal 표기. ERD: Main Page 정의 (HHP+TV). main NULL 시 detail fallback 회복. TV 와 같은 패턴 (sql:703)')
+   NULL,
+   'HHP detail % deal 표기. ERD: Main Page 정의 (HHP+TV). main NULL 시 detail fallback 회복. 사용자 검수 (5/10 #2) — fallback "//div[contains(text(),"% off")]" 가 coupon noise ("Unlock Soundbar coupon • 10% off") 매치 결함 → 제거. primary 매치 X 시 NULL.')
 ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
   xpath_primary  = EXCLUDED.xpath_primary,
   fallback_xpath = EXCLUDED.fallback_xpath,
@@ -747,8 +747,8 @@ INSERT INTO dx_siel_xpath_selectors
 VALUES
   ('Flipkart','detail','tv','savings',
    '(//div[contains(text(),"%") and string-length(normalize-space(text()))<=5 and not(ancestor::a[contains(@href,"/p/")])])[1]',
-   '//div[contains(text(),"% off")]',
-   'modern Flipkart detail: "X%" (off 없음). HHP 패턴 동일. siel_log.parse_savings 가 trailing off 제거'),
+   NULL,
+   'modern Flipkart detail: "X%" (off 없음). HHP 패턴 동일. 사용자 검수 (5/10 #2) — fallback coupon noise 매치 결함 → 제거. primary 매치 X 시 NULL'),
   ('Flipkart','detail','tv','model_year',
    '//div[normalize-space(text())="Launch Year:" or normalize-space(text())="Launch Year"]/following-sibling::div[1]',
    '//td[normalize-space(text())="Launch Year"]/following-sibling::td[1]',
