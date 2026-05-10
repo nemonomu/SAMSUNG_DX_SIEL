@@ -117,11 +117,60 @@ def main():
     print('[info] starting driver (headless=False)', file=sys.stderr)
     driver = make_driver(headless=False)
     try:
+        # review URL 직접 navigate 시 production 흐름 재현:
+        # production (detail.py) 흐름 = detail page navigate → click_show_all_reviews
+        # navigate. 본 흐름 시 driver state (cookie/session/referer) 가 review page 의
+        # nested span layout 응답 trigger. 직접 navigate 시 fresh driver → single span
+        # layout (또는 minimal) 응답 — selector mismatch 결함.
+        # 본 도구 가 review URL 입력 시 detail URL 먼저 navigate (referer 부여) 후 review.
+        is_review_url = '/product-reviews/' in args.url
+        if is_review_url:
+            detail_url = args.url.replace('/product-reviews/', '/p/', 1)
+            print(f'[info] review URL detected — detail URL 먼저 navigate (referer 부여)',
+                  file=sys.stderr)
+            try:
+                driver.get(detail_url)
+                time.sleep(3)
+                scroll_to_bottom(driver, pause=1.0, max_scrolls=5)
+            except WebDriverException as e:
+                print(f'[warn] detail URL navigate fail: {type(e).__name__}',
+                      file=sys.stderr)
+
         print(f'[info] navigating: {args.url}', file=sys.stderr)
         driver.get(args.url)
         time.sleep(3)
         if args.scroll > 0:
             scroll_to_bottom(driver, pause=1.2, max_scrolls=args.scroll)
+
+        # review URL 시 추가 — review body count 기반 scroll (height-based 정지 조건 결함
+        # 회피). target 20 reviews 또는 추가 scroll 무효 시 stop.
+        if is_review_url:
+            _rxp = next((xp for f, xp, fb in ordered if f == 'detailed_review_content'),
+                        None)
+            if _rxp:
+                _target, _last, _stuck = 20, -1, 0
+                for _ in range(40):
+                    try:
+                        _n = len(driver.find_elements(By.XPATH, _rxp))
+                    except WebDriverException:
+                        _n = 0
+                    if _n >= _target:
+                        break
+                    if _n == _last:
+                        _stuck += 1
+                        if _stuck >= 3:
+                            break
+                    else:
+                        _stuck = 0
+                    _last = _n
+                    try:
+                        driver.execute_script(
+                            'window.scrollTo(0, document.body.scrollHeight);')
+                    except WebDriverException:
+                        break
+                    time.sleep(1.2)
+                print(f'[info] review body scroll: collected={_last if _last > 0 else 0}',
+                      file=sys.stderr)
 
         # 카드 list 보관 (main/bsr 시 — base_container 매치)
         cards_list = []
