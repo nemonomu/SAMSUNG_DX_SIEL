@@ -475,6 +475,20 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                     _logger.info('navigating to review page: %s (target=%d)', rev_href, target)
                 # A+C: 1회 retry (driver hang stochastic 대응) + 그래도 fail 시 부분 review
                 # 수용. urllib3 ReadTimeoutError 는 WebDriverException 자식 아니라 별도 catch.
+                # 5/10 #8 사용자 진단 — production 의 expand_specifications + expand_see_more
+                # click 흐름 후 review URL navigate 시 driver state 가 review page 의 lazy
+                # 미발동 trigger (count >= 1 단 review body 매치 0 결함 — Haier M80 evidence).
+                # 처치: review URL navigate 전 detail URL re-navigate (driver state refresh).
+                # 본 도구 의 review URL detection 흐름 (review URL 직접 검증 시 매치 OK)
+                # 와 같은 driver state.
+                try:
+                    _detail_url_refresh = rev_href.replace('/product-reviews/', '/p/', 1)
+                    driver.get(_detail_url_refresh)
+                    time.sleep(1.5)
+                except (WebDriverException, _Urllib3RT) as e:
+                    if _logger:
+                        _logger.info('detail URL re-navigate fail (전 review): %s',
+                                     type(e).__name__)
                 try:
                     driver.get(rev_href)
                     time.sleep(3)
