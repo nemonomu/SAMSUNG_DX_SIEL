@@ -354,6 +354,15 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                     parts = _extract_multi_raw(driver, xpath)
             rec[field] = siel_log.format_review_content(parts)
         elif field == 'retailer_sku_name_similar':
+            # sims carousel lazy load — 7번째 SKU 가 lazy. carousel viewport center scrollIntoView + 짧은 wait
+            try:
+                driver.execute_script(
+                    "var c = document.querySelector('div[aria-labelledby=\"Customers who viewed this item also viewed\"]');"
+                    " if (c) c.scrollIntoView({block: 'center', behavior: 'instant'});"
+                )
+            except WebDriverException:
+                pass
+            time.sleep(1.5)
             parts = _extract_multi_raw(driver, xpath)
             if product == 'ref':
                 parts = siel_log.filter_similar_noise_ref(parts)
