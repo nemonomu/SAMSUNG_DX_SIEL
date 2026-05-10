@@ -634,9 +634,9 @@ BEGIN
        '(//div[normalize-space(text())="See more"])[1]',
        'Specifications 클릭 후 deep spec 영역 (Power Features 등) lazy load 트리거. Specifications 헤더 다음 첫 See more div'),
       ('Flipkart','detail',d,'click_show_all_reviews',
+       '(//*[@id="slot-list-container"]/div/div[2]//a[contains(@href,"/product-reviews/") and not(contains(@href,"buynow")) and not(contains(@href,"&an="))])[1]',
        '(//*[@id="slot-list-container"]/div/div[2]//a[contains(@href,"/product-reviews/") and not(contains(@href,"buynow"))])[1]',
-       '(//a[contains(@href,"/product-reviews/") and not(contains(@href,"buynow"))])[1]',
-       '리뷰 페이지 anchor — Buy now 회피. 사용자 검수 (5/10 #2) — 메인 product 영역 (slot-list-container/div/div[2] 안) 의 첫 anchor [1] 만 매치. 이전 selector 가 page 의 모든 review anchor (15건 — 추천 카드 의 anchor 도) 매치. fallback: 메인 영역 매치 X 시 page 전체 첫 anchor (옛 layout 호환)'),
+       '리뷰 페이지 anchor. 5/10 #9 사용자 진단 (Haier M80): 이전 selector 의 첫 매치 가 rating breakdown 의 aspect-filtered anchor ("Picture/4.1" → href 에 &an=Picture) → review URL navigate 시 Picture aspect 별 review 만 표시 → 본 product 의 Picture aspect review 0 → 매치 결함. 신 primary: "&an=" query param 미포함 anchor 만 매치 (All reviews button). fallback: aspect 포함 anchor 도 OK (All reviews button 미존재 layout 호환).'),
       -- count_of_star_ratings / count_of_reviews 는 Main Page (reference 시트 r51/r49). detail 정의 X.
       ('Flipkart','detail',d,'star_rating',
        '(//*[@id="slot-list-container"]/div/div[2]//div[contains(@class,"css-146c3p1") and contains(@style,"inter_bold") and (string-length(normalize-space(text()))=1 or (string-length(normalize-space(text()))=3 and substring(normalize-space(text()),2,1)=".")) and number(normalize-space(text()))=number(normalize-space(text()))])[1]',
