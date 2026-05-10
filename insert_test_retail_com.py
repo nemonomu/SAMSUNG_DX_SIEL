@@ -30,7 +30,7 @@ import config
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# retail_com 테이블에 INSERT 할 컬럼 (id, inserted_at 제외 — auto)
+# retail_com 테이블에 INSERT 할 컬럼 (id, inserted_at 제외 — auto). 4 retail_com 동일.
 COLUMNS = [
     'country', 'product', 'item', 'sku', 'account_name', 'page_type',
     'retailer_sku_name', 'product_url', 'calendar_week', 'crawl_datetime', 'batch_id',
@@ -46,6 +46,23 @@ COLUMNS = [
     'summarized_review_content', 'fastest_delivery', 'inventory_status',
     'sku_assurance', 'number_of_units_purchased_past_month',
 ]
+
+# product_list 테이블 컬럼 (detail 전용 + 의도적 미수집 제외 — 5/10 사용자 룰).
+# 제외: detail 전용 (star_rating / detailed_review_content / retailer_sku_name_similar /
+# delivery_availability / summarized_review_content / fastest_delivery / inventory_status /
+# sku_assurance / screen_size / model_year / electricity / hhp_*/ref_*/ldy_*).
+# + available_quantity_for_purchase (inventory_status 와 중복 정책, 의도적 미수집).
+COLUMNS_LIST = [
+    'country', 'product', 'item', 'sku', 'account_name', 'page_type',
+    'retailer_sku_name', 'product_url', 'calendar_week', 'crawl_datetime', 'batch_id',
+    'count_of_star_ratings', 'count_of_reviews',
+    'final_sku_price', 'original_sku_price', 'savings', 'discount_type',
+    'sku_popularity', 'sku_status', 'main_rank', 'bsr_rank',
+    'number_of_units_purchased_past_month',
+]
+
+# 8 운영 테이블 (4 retail_com + 4 product_list). product 별 분기.
+PRODUCT_LOWERS = ('hhp', 'tv', 'ref', 'ldy')
 
 
 _ASIN_RE = re.compile(r'/(?:dp|gp/product)/([A-Z0-9]{10})')
@@ -278,19 +295,36 @@ def main() -> int:
     cfg.setdefault('database', 'postgres')
     cfg.setdefault('client_encoding', 'utf8')
     conn = psycopg2.connect(**cfg)
-    placeholders = ', '.join(f'%({c})s' for c in COLUMNS)
-    cols = ', '.join(COLUMNS)
-    sql = f'INSERT INTO dx_siel_test_retail_com ({cols}) VALUES ({placeholders})'
+    # 본 운영 8 테이블 (4 retail_com + 4 product_list) — product 별 분기 INSERT.
+    # 5/10 사용자 룰: test 테이블 INSERT 제거, 본 테이블만.
+    cols_full = ', '.join(COLUMNS)
+    placeholders_full = ', '.join(f'%({c})s' for c in COLUMNS)
+    cols_list = ', '.join(COLUMNS_LIST)
+    placeholders_list = ', '.join(f'%({c})s' for c in COLUMNS_LIST)
+    total_inserted = 0
+    failed = []
     try:
-        with conn.cursor() as cur:
-            psycopg2.extras.execute_batch(cur, sql, rows, page_size=50)
-        conn.commit()
-        print(f'[insert_test] OK: inserted {len(rows)} rows into dx_siel_test_retail_com',
+        for prod_lower in PRODUCT_LOWERS:
+            rows_prod = [r for r in rows if (r.get('product') or '').lower() == prod_lower]
+            if not rows_prod:
+                continue
+            table_retail = f'dx_siel_{prod_lower}_retail_com'
+            table_list = f'dx_siel_{prod_lower}_product_list'
+            sql_retail = f'INSERT INTO {table_retail} ({cols_full}) VALUES ({placeholders_full})'
+            sql_list = f'INSERT INTO {table_list} ({cols_list}) VALUES ({placeholders_list})'
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_batch(cur, sql_retail, rows_prod, page_size=50)
+                psycopg2.extras.execute_batch(cur, sql_list, rows_prod, page_size=50)
+            conn.commit()
+            total_inserted += len(rows_prod)
+            print(f'[insert] OK: {len(rows_prod)} rows → {table_retail} + {table_list}',
+                  file=sys.stderr)
+        print(f'[insert] DONE: total {total_inserted} rows inserted across 8 tables',
               file=sys.stderr)
         return 0
     except Exception as e:
         conn.rollback()
-        print(f'[insert_test] FAIL: {type(e).__name__}: {e}', file=sys.stderr)
+        print(f'[insert] FAIL: {type(e).__name__}: {e}', file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         return 1
     finally:

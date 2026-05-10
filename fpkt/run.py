@@ -32,7 +32,9 @@ _bsr_cache: dict = {}
 _db_conn = None
 _db_cursor = None
 _streaming_enabled = False
-_insert_sql = None
+# 8 운영 테이블 SQL (5/10 사용자 룰) — product 별 retail_com + product_list
+_retail_sqls: dict = {}
+_list_sqls: dict = {}
 
 
 def _url_key(url: str) -> str:
@@ -40,8 +42,9 @@ def _url_key(url: str) -> str:
 
 
 def _setup_db():
-    """run 시작 시 DB connection long-lived. detail emit 마다 INSERT."""
-    global _db_conn, _db_cursor, _streaming_enabled, _insert_sql
+    """run 시작 시 DB connection long-lived. detail emit 마다 INSERT.
+    5/10 사용자 룰: 본 운영 8 테이블 (4 retail_com + 4 product_list) 만 INSERT, test 제거."""
+    global _db_conn, _db_cursor, _streaming_enabled, _retail_sqls, _list_sqls
     try:
         import psycopg2
         sys.path.insert(0, _ROOT)
@@ -52,11 +55,17 @@ def _setup_db():
         cfg.setdefault('client_encoding', 'utf8')
         _db_conn = psycopg2.connect(**cfg)
         _db_cursor = _db_conn.cursor()
-        cols = ', '.join(ITR.COLUMNS)
-        placeholders = ', '.join(f'%({c})s' for c in ITR.COLUMNS)
-        _insert_sql = f'INSERT INTO dx_siel_test_retail_com ({cols}) VALUES ({placeholders})'
+        cols_full = ', '.join(ITR.COLUMNS)
+        placeholders_full = ', '.join(f'%({c})s' for c in ITR.COLUMNS)
+        cols_list = ', '.join(ITR.COLUMNS_LIST)
+        placeholders_list = ', '.join(f'%({c})s' for c in ITR.COLUMNS_LIST)
+        _retail_sqls = {p: f'INSERT INTO dx_siel_{p}_retail_com ({cols_full}) VALUES ({placeholders_full})'
+                        for p in ITR.PRODUCT_LOWERS}
+        _list_sqls = {p: f'INSERT INTO dx_siel_{p}_product_list ({cols_list}) VALUES ({placeholders_list})'
+                      for p in ITR.PRODUCT_LOWERS}
         _streaming_enabled = True
-        print(f'[run.py] streaming INSERT enabled — detail emit 마다 즉시 INSERT', file=sys.stderr)
+        print('[run.py] streaming INSERT enabled — 8 운영 테이블 (4 retail_com + 4 product_list)',
+              file=sys.stderr)
     except Exception as e:
         print(f'[run.py] streaming INSERT setup failed: {type(e).__name__}: {e}', file=sys.stderr)
         _streaming_enabled = False
@@ -80,7 +89,8 @@ def _close_db():
 
 
 def _stream_insert(detail_rec: dict) -> None:
-    """detail record 도착 즉시 main/bsr cache 와 merge → 1 row INSERT."""
+    """detail record 도착 즉시 main/bsr cache 와 merge → 8 운영 테이블 INSERT.
+    product 별 retail_com (full columns) + product_list (detail 제외 columns) 둘 다."""
     if not _streaming_enabled or _db_cursor is None:
         return
     try:
@@ -94,8 +104,12 @@ def _stream_insert(detail_rec: dict) -> None:
     row = ITR.make_row(main_rec, bsr_rec, detail_rec)
     if not row:
         return
+    prod_lower = (row.get('product') or '').lower()
+    if prod_lower not in _retail_sqls:
+        return
     try:
-        _db_cursor.execute(_insert_sql, row)
+        _db_cursor.execute(_retail_sqls[prod_lower], row)
+        _db_cursor.execute(_list_sqls[prod_lower], row)
         _db_conn.commit()
     except Exception as e:
         try:
