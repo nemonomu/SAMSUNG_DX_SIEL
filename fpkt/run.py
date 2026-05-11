@@ -352,7 +352,26 @@ def run_detail(driver, product: str, urls: list, sleep_s: float,
                   file=sys.stderr)
             _hard_kill_driver(driver)
             driver = _make_driver_tracked(headless)
-        rec = D.crawl_detail(driver, product, u, sels, batch_id)
+        # per-card try/except — driver 가 죽었을 때 (urllib3 ReadTimeout 등 uncaught) 한 카드
+        # skip 하고 새 driver 로 다음 카드 계속. single-product run 도 self-heal.
+        # 5/12 사용자 evidence — REF 단독 run 4 카드 직후 driver.get silent crash → 다음
+        # product 없어서 batch 종료. per-card recovery 없으면 단독 run = 1 카드 fail = batch 죽음.
+        try:
+            rec = D.crawl_detail(driver, product, u, sels, batch_id)
+        except Exception as e:
+            err = f'{type(e).__name__}: {str(e)[:200]}'
+            print(f'[run] product={product} crawl_detail uncaught at card {i+1}/{len(urls)} — driver 재생성: {err}',
+                  file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            D.emit({'_error': f'crawl_detail_uncaught: {err}',
+                    'product_url': u, 'product': product,
+                    'stage': D.STAGE, 'batch_id': batch_id})
+            _hard_kill_driver(driver)
+            driver = _make_driver_tracked(headless)
+            n += 1
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+            continue
         D.emit(rec)
         n += 1
         if sleep_s > 0:
