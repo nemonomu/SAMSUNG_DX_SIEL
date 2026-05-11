@@ -369,6 +369,19 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                 pass
             time.sleep(1.5)
             parts = _extract_multi_raw(driver, xpath)
+            # race retry — LDY 인기 product (csr 1k+) 의 carousel lazy 가 1.5s 부족
+            # 5/11 batch 검증: B0DGLPJ1MB (csr 13,145) / B0GCNSBMR3 (csr 2,128) 운영 batch 에서 els=0,
+            # validator 단독 실행 (page wait 충분) 으로는 7건 정상 매치 — race 확정. NULL 률 LDY 48.9% (HHP/TV 3-9%)
+            if not parts:
+                try:
+                    driver.execute_script(
+                        "var c = document.querySelector('div[aria-labelledby=\"Customers who viewed this item also viewed\"]');"
+                        " if (c) c.scrollIntoView({block: 'center', behavior: 'instant'});"
+                    )
+                except WebDriverException:
+                    pass
+                time.sleep(2.0)
+                parts = _extract_multi_raw(driver, xpath)
             if product == 'ref':
                 parts = siel_log.filter_similar_noise_ref(parts)
             elif product == 'ldy':
