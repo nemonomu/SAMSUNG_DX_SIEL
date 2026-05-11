@@ -112,7 +112,14 @@ def make_driver(headless: bool = False) -> uc.Chrome:
     major = siel_log.detect_chrome_major()
     if major:
         kwargs['version_main'] = major
-    return uc.Chrome(**kwargs)
+    drv = uc.Chrome(**kwargs)
+    # 5/11 — driver.get / navigate 무한 hang 방지. chrome load 60s 초과 시 selenium
+    # TimeoutException (WebDriverException subclass) raise — 기존 except clause 가 catch.
+    # 미설정 시 urllib3 read_timeout (120s) 가 먼저 트립 → ReadTimeoutError (WebDriverException
+    # 아님) 가 uncaught 로 process 사망. evidence: 2026-05-11 TV detail 75 카드 직후
+    # driver.get 에서 ReadTimeoutError uncaught 로 batch 종료.
+    drv.set_page_load_timeout(60)
+    return drv
 
 
 def scroll_to_bottom(driver, pause: float = 1.5, max_scrolls: int = 30) -> None:

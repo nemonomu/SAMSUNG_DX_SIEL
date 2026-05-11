@@ -350,7 +350,17 @@ def main() -> int:
                 _run_one_product(driver, product, args)
             except Exception as e:
                 traceback.print_exc(file=sys.stderr)
-                print(f'[run] product={product} failed — 다음 product 진행', file=sys.stderr)
+                # 5/11 — driver 가 죽었을 가능성 (urllib3 ReadTimeoutError 류 uncaught). quit 후
+                # 새 driver 재생성 — 같은 driver 로 다음 product 진행 시 첫 카드부터 cascade 사망.
+                # evidence: 2026-05-11 TV --product tv 단독 run 시 75 카드에서 driver.get
+                # urllib3 ReadTimeout (120s) → 다음 product 없어서 batch 종료. multi-product
+                # run 시엔 이 driver 그대로 dead 상태로 다음 product 진입 → 즉시 fail.
+                print(f'[run] product={product} failed — driver 재시작 + 다음 product 진행', file=sys.stderr)
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                driver = L.make_driver(headless=args.headless)
         return 0
     finally:
         try:
