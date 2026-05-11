@@ -13,6 +13,7 @@ run_*.bat
 !run_hhp.bat
 !run_tv.bat
 !run_ref.bat
+!run_ldy.bat
 
 # Local tool config (per-user, do not commit)
 .claude/
