@@ -256,36 +256,66 @@ def run_listing_capture(driver, product: str, stage: str,
     return captured
 
 
+def _list_chrome_pids() -> set:
+    """현재 OS 의 chrome.exe PID set. tasklist CSV 출력 파싱."""
+    try:
+        out = subprocess.run(
+            ['tasklist', '/FI', 'IMAGENAME eq chrome.exe', '/FO', 'CSV', '/NH'],
+            capture_output=True, text=True, timeout=10)
+        pids = set()
+        for line in out.stdout.splitlines():
+            parts = [p.strip('"') for p in line.split('","')]
+            if len(parts) >= 2:
+                pid_s = parts[1].strip('"').strip()
+                if pid_s.isdigit():
+                    pids.add(int(pid_s))
+        return pids
+    except Exception:
+        return set()
+
+
+def _make_driver_tracked(headless: bool):
+    """L.make_driver 래퍼 — make_driver 전후 의 chrome.exe PID 스냅샷 diff 로 본 driver
+    의 chrome PID 들 추적. driver._fpkt_chrome_pids 에 저장 — _hard_kill_driver 가 사용."""
+    before = _list_chrome_pids()
+    drv = L.make_driver(headless=headless)
+    # chrome 부팅 (browser + gpu + utility + crashpad) 안정화 대기
+    time.sleep(3)
+    after = _list_chrome_pids()
+    drv._fpkt_chrome_pids = after - before
+    print(f'[run] new driver chrome.exe PIDs tracked={sorted(drv._fpkt_chrome_pids)}',
+          file=sys.stderr)
+    return drv
+
+
 def _hard_kill_driver(driver) -> None:
     """driver.quit() + process tree 강제 정리.
-    5/12 사용자 evidence — undetected_chromedriver 의 driver.quit() 가 chrome 자식
-    (renderer / gpu / utility) 다 안 죽이는 케이스 다수 (배치 종료 후 chrome 창 다수
-    잔존, Error code 39 등). 30카드 restart 누적 시 chrome 좀비 → 메모리 누적 → 8GB
-    도 결국 부족. 본 driver 의 PID 트리 만 taskkill /T 로 강제 정리 — 다른 도메인 의
-    chrome 프로세스 안 건드림."""
+    5/12 사용자 evidence #1 (commit f2bf00e) — driver.quit() 만 으로 chrome 자식 안 죽는
+    케이스 다수. PID 트리 kill 추가. 그러나 evidence #2 (5/12 실측) — chromedriver service
+    PID 의 /T 트리 kill 이 chrome 안 잡음. undetected_chromedriver 는 chrome 을
+    chromedriver 자식 이 아닌 sibling 으로 분리 띄움 → service.process /T 가 안 닿음.
+
+    fix — make_driver 호출 전/후 의 chrome.exe PID 스냅샷 diff 로 정확한 chrome PID 추적
+    (driver._fpkt_chrome_pids). 병렬 4 도메인 케이스 에서도 다른 도메인 chrome 안 건드림
+    (diff 가 우리 새 chrome 만 잡음)."""
     pids = set()
-    # chromedriver process pid
+    # 우리 의 chrome.exe PIDs (snapshot diff 로 추적 됨)
+    try:
+        pids.update(getattr(driver, '_fpkt_chrome_pids', set()) or set())
+    except Exception:
+        pass
+    # chromedriver service process — chrome sibling 이지만 어쨌든 같이 정리
     try:
         sp = getattr(getattr(driver, 'service', None), 'process', None)
         if sp is not None and hasattr(sp, 'pid'):
             pids.add(sp.pid)
     except Exception:
         pass
-    # chrome browser pid (uc 3.x+)
+    # uc browser_pid (혹시 노출 되면)
     try:
         bpid = getattr(driver, 'browser_pid', None)
         if bpid is not None:
             pids.add(bpid)
-    except Exception:
-        pass
-    # uc.Chrome legacy .process
-    try:
-        p = getattr(driver, 'process', None)
-        if p is not None:
-            if isinstance(p, int):
-                pids.add(p)
-            elif hasattr(p, 'pid'):
-                pids.add(p.pid)
     except Exception:
         pass
     try:
@@ -321,7 +351,7 @@ def run_detail(driver, product: str, urls: list, sleep_s: float,
             print(f'[run] product={product} driver 재시작 at card {i}/{len(urls)} (메모리 release)',
                   file=sys.stderr)
             _hard_kill_driver(driver)
-            driver = L.make_driver(headless=headless)
+            driver = _make_driver_tracked(headless)
         rec = D.crawl_detail(driver, product, u, sels, batch_id)
         D.emit(rec)
         n += 1
@@ -400,7 +430,7 @@ def main() -> int:
     if not args.no_auto_insert:
         _setup_db()
 
-    driver = L.make_driver(headless=args.headless)
+    driver = _make_driver_tracked(args.headless)
     try:
         for product in args.product:
             print(f'\n=== [run] starting product={product} ===\n', file=sys.stderr)
@@ -415,7 +445,7 @@ def main() -> int:
                 # run 시엔 이 driver 그대로 dead 상태로 다음 product 진입 → 즉시 fail.
                 print(f'[run] product={product} failed — driver 재시작 + 다음 product 진행', file=sys.stderr)
                 _hard_kill_driver(driver)
-                driver = L.make_driver(headless=args.headless)
+                driver = _make_driver_tracked(args.headless)
         return 0
     finally:
         _hard_kill_driver(driver)
