@@ -33,8 +33,9 @@ if _ROOT not in sys.path:
 import psycopg2
 import psycopg2.extras
 import undetected_chromedriver as uc
-from selenium.common.exceptions import NoSuchElementException, WebDriverException
+from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
 
 import config
 import siel_log
@@ -369,10 +370,12 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                 pass
             time.sleep(1.5)
             parts = _extract_multi_raw(driver, xpath)
-            # race retry — LDY 인기 product (csr 1k+) 의 carousel lazy 가 1.5s 부족
-            # 5/11 batch 검증: B0DGLPJ1MB (csr 13,145) / B0GCNSBMR3 (csr 2,128) 운영 batch 에서 els=0,
-            # validator 단독 실행 (page wait 충분) 으로는 7건 정상 매치 — race 확정. NULL 률 LDY 48.9% (HHP/TV 3-9%)
+            # race retry — LDY 인기 product (csr have row sim NULL 51.9% — TV 0% 대비 race 확정)
+            # carousel placeholder DOM 미추가 함정: querySelector null 시 scrollIntoView JS no-op → 단순 sleep 만
+            # 3 단계 보강: (1) scroll_to_bottom 재호출 lazy trigger, (2) scrollIntoView center,
+            # (3) WebDriverWait until 3+ 카드 carousel anchor present (6s timeout) — race 회복 시 즉시, sparse 시 timeout
             if not parts:
+                scroll_to_bottom(driver, pause=0.7, max_scrolls=5)
                 try:
                     driver.execute_script(
                         "var c = document.querySelector('div[aria-labelledby=\"Customers who viewed this item also viewed\"]');"
@@ -380,7 +383,17 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                     )
                 except WebDriverException:
                     pass
-                time.sleep(2.0)
+                try:
+                    WebDriverWait(driver, 6).until(
+                        lambda d: len(d.find_elements(
+                            By.XPATH,
+                            "//div[@aria-labelledby='Customers who viewed this item also viewed']"
+                            "//li[not(contains(@class,'a-carousel-card-empty'))]"
+                            "/a[contains(@href,'/dp/')]"
+                        )) >= 3
+                    )
+                except TimeoutException:
+                    pass
                 parts = _extract_multi_raw(driver, xpath)
             if product == 'ref':
                 parts = siel_log.filter_similar_noise_ref(parts)
