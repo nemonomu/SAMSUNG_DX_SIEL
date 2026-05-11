@@ -256,7 +256,13 @@ def run_listing_capture(driver, product: str, stage: str,
     return captured
 
 
-def run_detail(driver, product: str, urls: list, sleep_s: float) -> int:
+def run_detail(driver, product: str, urls: list, sleep_s: float,
+               headless: bool, restart_every: int = 30):
+    """detail loop — restart_every 카드 마다 driver quit + recreate (chrome 누적 메모리 release).
+    5/11 사용자 evidence — long-run 중 chrome page "Out of memory" 노출. driver 자체 reset
+    없이 driver.get N번 누적 시 chrome renderer 메모리 GB 단위 누적 → OOM. 30 카드 마다
+    restart 가 가장 단순 대응. 반환: (record 수, 마지막 driver 인스턴스) — caller 가 새 driver
+    참조 받아서 후속 호출 에 사용."""
     D.init_logging(product)
     sels = D.load_selectors(D.SITE_ACCOUNT, D.STAGE, product)
     batch_id = D.make_batch_id(product)
@@ -264,19 +270,28 @@ def run_detail(driver, product: str, urls: list, sleep_s: float) -> int:
         D.emit({'_error': 'no selectors loaded',
                 'site': D.SITE_ACCOUNT, 'stage': D.STAGE,
                 'product': product, 'batch_id': batch_id})
-        return 0
+        return 0, driver
     n = 0
-    for u in urls:
+    for i, u in enumerate(urls):
+        if i > 0 and i % restart_every == 0:
+            print(f'[run] product={product} driver 재시작 at card {i}/{len(urls)} (메모리 release)',
+                  file=sys.stderr)
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            driver = L.make_driver(headless=headless)
         rec = D.crawl_detail(driver, product, u, sels, batch_id)
         D.emit(rec)
         n += 1
         if sleep_s > 0:
             time.sleep(sleep_s)
-    return n
+    return n, driver
 
 
-def _run_one_product(driver, product: str, args) -> None:
-    """단일 product 의 main/bsr/detail 처리 — driver 공유, cache reset, jsonl/INSERT 별개."""
+def _run_one_product(driver, product: str, args):
+    """단일 product 의 main/bsr/detail 처리 — driver 공유, cache reset, jsonl/INSERT 별개.
+    detail loop 가 주기 적 driver 재시작 시 새 driver 인스턴스 반환 — main 이 받아 다음 product 에 사용."""
     _reset_caches()
     _setup_results(product)
     captured: list = []
@@ -308,9 +323,11 @@ def _run_one_product(driver, product: str, args) -> None:
                     continue
                 print(f'[run] product={product} stage=detail processing={len(use_urls)} (dedupe 후)',
                       file=sys.stderr)
-                run_detail(driver, product, use_urls, args.detail_sleep)
+                _n, driver = run_detail(driver, product, use_urls, args.detail_sleep,
+                                        args.headless, restart_every=30)
     finally:
         _close_results()
+    return driver
 
 
 def main() -> int:
@@ -347,7 +364,7 @@ def main() -> int:
         for product in args.product:
             print(f'\n=== [run] starting product={product} ===\n', file=sys.stderr)
             try:
-                _run_one_product(driver, product, args)
+                driver = _run_one_product(driver, product, args)
             except Exception as e:
                 traceback.print_exc(file=sys.stderr)
                 # 5/11 — driver 가 죽었을 가능성 (urllib3 ReadTimeoutError 류 uncaught). quit 후
