@@ -256,6 +256,50 @@ def run_listing_capture(driver, product: str, stage: str,
     return captured
 
 
+def _hard_kill_driver(driver) -> None:
+    """driver.quit() + process tree 강제 정리.
+    5/12 사용자 evidence — undetected_chromedriver 의 driver.quit() 가 chrome 자식
+    (renderer / gpu / utility) 다 안 죽이는 케이스 다수 (배치 종료 후 chrome 창 다수
+    잔존, Error code 39 등). 30카드 restart 누적 시 chrome 좀비 → 메모리 누적 → 8GB
+    도 결국 부족. 본 driver 의 PID 트리 만 taskkill /T 로 강제 정리 — 다른 도메인 의
+    chrome 프로세스 안 건드림."""
+    pids = set()
+    # chromedriver process pid
+    try:
+        sp = getattr(getattr(driver, 'service', None), 'process', None)
+        if sp is not None and hasattr(sp, 'pid'):
+            pids.add(sp.pid)
+    except Exception:
+        pass
+    # chrome browser pid (uc 3.x+)
+    try:
+        bpid = getattr(driver, 'browser_pid', None)
+        if bpid is not None:
+            pids.add(bpid)
+    except Exception:
+        pass
+    # uc.Chrome legacy .process
+    try:
+        p = getattr(driver, 'process', None)
+        if p is not None:
+            if isinstance(p, int):
+                pids.add(p)
+            elif hasattr(p, 'pid'):
+                pids.add(p.pid)
+    except Exception:
+        pass
+    try:
+        driver.quit()
+    except Exception:
+        pass
+    for pid in pids:
+        try:
+            subprocess.run(['taskkill', '/F', '/PID', str(pid), '/T'],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+
 def run_detail(driver, product: str, urls: list, sleep_s: float,
                headless: bool, restart_every: int = 30):
     """detail loop — restart_every 카드 마다 driver quit + recreate (chrome 누적 메모리 release).
@@ -276,10 +320,7 @@ def run_detail(driver, product: str, urls: list, sleep_s: float,
         if i > 0 and i % restart_every == 0:
             print(f'[run] product={product} driver 재시작 at card {i}/{len(urls)} (메모리 release)',
                   file=sys.stderr)
-            try:
-                driver.quit()
-            except Exception:
-                pass
+            _hard_kill_driver(driver)
             driver = L.make_driver(headless=headless)
         rec = D.crawl_detail(driver, product, u, sels, batch_id)
         D.emit(rec)
@@ -373,17 +414,11 @@ def main() -> int:
                 # urllib3 ReadTimeout (120s) → 다음 product 없어서 batch 종료. multi-product
                 # run 시엔 이 driver 그대로 dead 상태로 다음 product 진입 → 즉시 fail.
                 print(f'[run] product={product} failed — driver 재시작 + 다음 product 진행', file=sys.stderr)
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
+                _hard_kill_driver(driver)
                 driver = L.make_driver(headless=args.headless)
         return 0
     finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
+        _hard_kill_driver(driver)
         _close_results()
         _close_db()
 
