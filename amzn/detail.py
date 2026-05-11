@@ -250,6 +250,11 @@ def _extract_multi_raw(driver, xpath: str, max_n=None) -> list:
             t = visible or tc
             if len(raw_samples) < 2:
                 raw_samples.append((len(visible), len(tc), tc[:100]))
+            # media-only review (image/video 만, 본문 텍스트 0) — Amazon a11y collapsed-state wrapper text
+            # LDY 5/10 batch 8/205 (3.9%) 검증. HHP/TV/REF 는 다른 selector 라 noise 0
+            if t.startswith('Brief content visible, double tap to read full content'):
+                parts.append('[media-only review]')
+                continue
             if t:
                 parts.append(t)
         except WebDriverException:
