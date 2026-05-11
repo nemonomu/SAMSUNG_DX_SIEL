@@ -536,19 +536,6 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                         if _logger:
                             _logger.warning('review page navigate fail (after retry): %s',
                                             type(e2).__name__)
-                # review page 진입 후 review body 매치 검사 — 0건 시 refresh + retry
-                # (HHP/REF lazy load 미발생 또는 anti-bot 일부 차단 회피).
-                _initial_parts = list(_extract_multi_raw(driver, review_xpath, max_n=None))
-                if not _initial_parts:
-                    if _logger:
-                        _logger.info('review body 0 매치 — refresh + retry')
-                    try:
-                        driver.refresh()
-                        time.sleep(4)
-                        scroll_to_bottom(driver, pause=1.2, max_scrolls=15)
-                    except (WebDriverException, _Urllib3RT) as e:
-                        if _logger:
-                            _logger.warning('review refresh fail: %s', type(e).__name__)
                 # review page 진입 후 두 번째 HTML snapshot — review xpath 디버깅용
                 if _html_path:
                     review_html = _html_path.replace('.html', '_review.html')
