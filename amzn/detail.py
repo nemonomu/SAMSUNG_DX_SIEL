@@ -389,7 +389,7 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                             By.XPATH,
                             "//div[@aria-labelledby='Customers who viewed this item also viewed']"
                             "//li[not(contains(@class,'a-carousel-card-empty'))]"
-                            "/a[contains(@href,'/dp/')]"
+                            "//a[contains(@href,'/dp/')]"
                         )) >= 3
                     )
                 except TimeoutException:
