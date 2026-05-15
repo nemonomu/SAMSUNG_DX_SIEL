@@ -274,6 +274,69 @@ def run_listing_capture(driver, product: str, stage: str,
     return captured
 
 
+def _list_chrome_pids() -> set:
+    """Return current chrome.exe PIDs."""
+    try:
+        out = subprocess.run(
+            ['tasklist', '/FI', 'IMAGENAME eq chrome.exe', '/FO', 'CSV', '/NH'],
+            capture_output=True, text=True, timeout=10)
+        pids = set()
+        for line in out.stdout.splitlines():
+            parts = [p.strip('"') for p in line.split('","')]
+            if len(parts) >= 2:
+                pid_s = parts[1].strip('"').strip()
+                if pid_s.isdigit():
+                    pids.add(int(pid_s))
+        return pids
+    except Exception:
+        return set()
+
+
+def _make_driver_tracked(headless: bool):
+    """Track chrome.exe PIDs created by this crawler run."""
+    before = _list_chrome_pids()
+    drv = L.make_driver(headless=headless)
+    time.sleep(3)
+    after = _list_chrome_pids()
+    drv._amzn_chrome_pids = after - before
+    print(f'[run] new driver chrome.exe PIDs tracked={sorted(drv._amzn_chrome_pids)}',
+          file=sys.stderr)
+    return drv
+
+
+def _hard_kill_driver(driver) -> None:
+    """Close Selenium and force-kill Chrome processes that this driver started."""
+    if driver is None:
+        return
+    pids = set()
+    try:
+        pids.update(getattr(driver, '_amzn_chrome_pids', set()) or set())
+    except Exception:
+        pass
+    try:
+        sp = getattr(getattr(driver, 'service', None), 'process', None)
+        if sp is not None and hasattr(sp, 'pid'):
+            pids.add(sp.pid)
+    except Exception:
+        pass
+    try:
+        bpid = getattr(driver, 'browser_pid', None)
+        if bpid is not None:
+            pids.add(bpid)
+    except Exception:
+        pass
+    try:
+        driver.quit()
+    except Exception:
+        pass
+    for pid in pids:
+        try:
+            subprocess.run(['taskkill', '/F', '/PID', str(pid), '/T'],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+
 def run_detail(driver, product: str, urls: list, sleep_s: float) -> int:
     D.init_logging(product)
     D.init_progress(len(urls))
@@ -357,7 +420,7 @@ def main() -> int:
     if not args.no_auto_insert:
         _setup_db()
 
-    driver = L.make_driver(headless=args.headless)
+    driver = _make_driver_tracked(args.headless)
     try:
         for product in args.product:
             print(f'\n=== [run] starting product={product} ===\n', file=sys.stderr)
@@ -365,13 +428,12 @@ def main() -> int:
                 _run_one_product(driver, product, args)
             except Exception:
                 traceback.print_exc(file=sys.stderr)
+                _hard_kill_driver(driver)
+                driver = _make_driver_tracked(args.headless)
                 print(f'[run] product={product} failed — 다음 product 진행', file=sys.stderr)
         return 0
     finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
+        _hard_kill_driver(driver)
         _close_results()
         _close_db()
         _sync_logs_to_retail_com()
