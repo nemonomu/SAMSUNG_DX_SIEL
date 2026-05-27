@@ -26,6 +26,10 @@ from urllib.parse import urljoin, urlparse
 
 from lxml import html
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from main_probe import extract_products, request_headers
 from phase_probe import (
     default_api_dir,
@@ -38,6 +42,7 @@ from phase_probe import (
     product_ld,
     review_rows_from_response,
 )
+from siel_batch import next_batch_id
 
 
 PRODUCT_QUERY = {
@@ -164,6 +169,12 @@ def calendar_week(dt: datetime) -> str:
 
 def test_batch_id(dt: datetime) -> str:
     return f"f_{dt.strftime('%Y%m%d')}_000000"
+
+
+def schema_batch_id(dt: datetime, real_batch_id: bool) -> str:
+    if real_batch_id:
+        return next_batch_id("f", str(ROOT), dt)
+    return test_batch_id(dt)
 
 
 def output_dir(product: str) -> Path:
@@ -360,13 +371,14 @@ def review_for_product(
 def detail_targets(main_rows: list[dict[str, Any]], bsr_rows: list[dict[str, Any]], max_detail: int) -> list[dict[str, Any]]:
     targets: list[dict[str, Any]] = []
     seen: set[str] = set()
+    limit = None if max_detail == 0 else max_detail
     for row in main_rows + bsr_rows:
         key = row.get("product_id") or row.get("product_url")
         if not key or key in seen or not row.get("product_url"):
             continue
         seen.add(key)
         targets.append(row)
-        if len(targets) >= max_detail:
+        if limit is not None and len(targets) >= limit:
             break
     return targets
 
@@ -586,7 +598,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
     out_dir.mkdir(parents=True, exist_ok=True)
     run_dt = now_ist()
     crawl_dt = run_dt.isoformat(timespec="seconds")
-    batch_id = test_batch_id(run_dt)
+    batch_id = schema_batch_id(run_dt, args.real_batch_id)
 
     lines: list[str] = [
         "db_insert=false",
@@ -615,7 +627,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
     details: list[dict[str, Any]] = []
     reviews: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-    if args.max_detail > 0:
+    if args.max_detail >= 0:
         headers = html_headers(args.api_dir)
         targets = detail_targets(main_final, bsr_final, args.max_detail)
         for idx, target in enumerate(targets, 1):
@@ -657,6 +669,8 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
         )
         write_csv_fields(out_dir / "tv_retail_com_preview.csv", retail_rows, TV_RETAIL_COM_COLS)
         write_csv_fields(out_dir / "tv_product_list_preview.csv", product_list_rows, TV_PRODUCT_LIST_COLS)
+        write_csv_fields(out_dir / "out_tv_retail_com.csv", retail_rows, TV_RETAIL_COM_COLS)
+        write_csv_fields(out_dir / "out_tv_product_list.csv", product_list_rows, TV_PRODUCT_LIST_COLS)
         write_jsonl(out_dir / "api_run.jsonl", jsonl_rows)
         lines.append(
             f"[schema:tv_retail_com] rows={len(retail_rows)} "
@@ -688,7 +702,13 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
     lines.append("files:")
     file_names = ["main_final.csv", "bsr_final.csv", "detail.csv", "review.csv", "errors.csv"]
     if args.product == "tv":
-        file_names += ["tv_retail_com_preview.csv", "tv_product_list_preview.csv", "api_run.jsonl"]
+        file_names += [
+            "tv_retail_com_preview.csv",
+            "tv_product_list_preview.csv",
+            "out_tv_retail_com.csv",
+            "out_tv_product_list.csv",
+            "api_run.jsonl",
+        ]
     for name in file_names:
         lines.append(f"- {out_dir / name}")
     lines.append("")
@@ -722,11 +742,12 @@ def main() -> int:
     parser.add_argument("--bsr-target", type=int, default=100)
     parser.add_argument("--max-pages-main", type=int, default=30)
     parser.add_argument("--max-pages-bsr", type=int, default=15)
-    parser.add_argument("--max-detail", type=int, default=10)
+    parser.add_argument("--max-detail", type=int, default=10, help="detail target count; 0=all unique, -1=skip detail")
     parser.add_argument("--review-pages", type=int, default=2)
     parser.add_argument("--max-reviews-per-product", type=int, default=20)
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--insecure", action="store_true")
+    parser.add_argument("--real-batch-id", action="store_true", help="Use the normal f_YYYYMMDD_NNNNNN batch counter")
     args = parser.parse_args()
 
     out_dir, lines = run(args)
