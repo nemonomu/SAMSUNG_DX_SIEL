@@ -40,6 +40,10 @@ def _url_key(url: str) -> str:
     return (url or '').split('?', 1)[0].rstrip('/')
 
 
+def _canonical_url_from_asin(asin: str) -> str:
+    return f'https://www.amazon.in/dp/{asin}' if asin else ''
+
+
 def _rec_key(rec: dict) -> str:
     """ASIN 우선, fallback url path. main / bsr / detail 공통 매칭 key."""
     asin = rec.get('asin')
@@ -248,13 +252,34 @@ def run_listing_capture(driver, product: str, stage: str,
     L.init_logging(product, stage)
     L.init_progress(max_rank)
     captured: list = []
+    seen_keys: set = set()
+    stats = {'emitted': 0, 'with_id': 0, 'with_url': 0}
+    missing_url_ranks: list = []
+    duplicate_ranks: list = []
+    rank_field = 'bsr_rank' if stage == 'bsr' else 'main_rank'
     original_emit = L.emit
 
     def capturing(rec):
         original_emit(rec)
-        u = rec.get('product_url')
+        stats['emitted'] += 1
+        rank = rec.get(rank_field)
+        u = rec.get('product_url') or ''
+        asin = rec.get('asin') or D.asin_from_url(u)
+        if asin:
+            stats['with_id'] += 1
+        if not u and asin:
+            u = _canonical_url_from_asin(asin)
         if u:
+            stats['with_url'] += 1
             captured.append(u)
+        else:
+            missing_url_ranks.append(rank)
+        key = asin or _url_key(u)
+        if key:
+            if key in seen_keys:
+                duplicate_ranks.append(rank)
+            else:
+                seen_keys.add(key)
 
     L.emit = capturing
     try:
@@ -271,6 +296,13 @@ def run_listing_capture(driver, product: str, stage: str,
             L.crawl_bsr(driver, product, sels, batch_id, max_rank=max_rank)
     finally:
         L.emit = original_emit
+        print(
+            f'[run] product={product} stage={stage} raw_summary '
+            f'emitted={stats["emitted"]} id={stats["with_id"]} '
+            f'url={stats["with_url"]} unique_keys={len(seen_keys)} '
+            f'missing_url_ranks={missing_url_ranks[:20]} '
+            f'duplicate_ranks={duplicate_ranks[:20]}',
+            file=sys.stderr)
     return captured
 
 

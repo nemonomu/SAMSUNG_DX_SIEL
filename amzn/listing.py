@@ -20,8 +20,12 @@ import sys
 import time
 import traceback
 from datetime import datetime, timezone, timedelta
+from urllib.parse import unquote
 
 _ASIN_RE = re.compile(r'/(?:dp|gp/product)/([A-Z0-9]{10})')
+_ASIN_TOKEN_RE = re.compile(r'(?:/|%2F)(?:dp|gp/product)(?:/|%2F)([A-Z0-9]{10})',
+                            re.IGNORECASE)
+_CANONICAL_HOST = 'https://www.amazon.in'
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -192,6 +196,56 @@ def safe_attr(card, xpath: str, attr: str):
         return None
 
 
+def first_text(card, primary: str, fallback: str = None):
+    for xpath in (primary, fallback):
+        if not xpath:
+            continue
+        val = safe_text(card, xpath)
+        if val:
+            return val
+    return None
+
+
+def first_attr(card, primary: str, fallback: str = None, attr: str = 'href'):
+    for xpath in (primary, fallback):
+        if not xpath:
+            continue
+        val = safe_attr(card, xpath, attr)
+        if val:
+            return val
+    return None
+
+
+def asin_from_text(value: str):
+    if not value:
+        return None
+    for candidate in (value, unquote(value)):
+        m = _ASIN_TOKEN_RE.search(candidate)
+        if m:
+            return m.group(1).upper()
+    return None
+
+
+def canonical_product_url(asin: str):
+    return f'{_CANONICAL_HOST}/dp/{asin}' if asin else None
+
+
+def scan_card_asin(card):
+    try:
+        links = card.find_elements(By.XPATH, './/a[@href]')
+    except WebDriverException:
+        return None
+    for link in links:
+        try:
+            href = link.get_attribute('href') or ''
+        except WebDriverException:
+            continue
+        asin = asin_from_text(href)
+        if asin:
+            return asin
+    return None
+
+
 def emit(rec: dict) -> None:
     sys.stdout.write(json.dumps(rec, ensure_ascii=False) + '\n')
     sys.stdout.flush()
@@ -238,21 +292,26 @@ def extract_card(card, selectors: dict) -> dict:
         if field == 'base_container':
             continue
         xpath = sel.get('xpath')
-        if not xpath:
+        fallback = sel.get('fallback')
+        if not xpath and not fallback:
             continue
         if field == 'product_url':
-            rec[field] = safe_attr(card, xpath, 'href')
+            rec[field] = first_attr(card, xpath, fallback, 'href')
         else:
-            rec[field] = safe_text(card, xpath)
+            rec[field] = first_text(card, xpath, fallback)
     # 2) asin URL fallback — /dp/{ASIN}/ 패턴 (data-asin 없을 때, 예: BSR)
     if 'asin' not in rec and rec.get('product_url'):
-        m = _ASIN_RE.search(rec['product_url'])
-        if m:
-            rec['asin'] = m.group(1)
+        asin = asin_from_text(rec['product_url'])
+        if asin:
+            rec['asin'] = asin
+    if 'asin' not in rec:
+        asin = scan_card_asin(card)
+        if asin:
+            rec['asin'] = asin
     # 3) Sponsored 카드 fallback — selector 가 ad redirect URL 못 잡으면
     # data-asin 으로 canonical /dp/<ASIN> URL 생성 (retail_com 분석 일관성)
-    if rec.get('asin') and not rec.get('product_url'):
-        rec['product_url'] = f'https://www.amazon.in/dp/{rec["asin"]}'
+    if rec.get('asin'):
+        rec['product_url'] = canonical_product_url(rec['asin'])
     return rec
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -23,6 +24,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 _IST = timezone(timedelta(hours=5, minutes=30))
+_FPKT_PID_RE = re.compile(r'[?&]pid=([A-Z0-9]+)')
 _results_path = None
 _results_file = None
 
@@ -39,6 +41,20 @@ _list_sqls: dict = {}
 
 def _url_key(url: str) -> str:
     return (url or '').split('?', 1)[0].rstrip('/')
+
+
+def _fsn_from_url(url: str) -> str:
+    m = _FPKT_PID_RE.search(url or '')
+    return m.group(1) if m else ''
+
+
+def _listing_key_from_url(url: str) -> str:
+    return _fsn_from_url(url) or _url_key(url)
+
+
+def _listing_key_from_rec(rec: dict) -> str:
+    url = rec.get('product_url') or rec.get('source_url') or ''
+    return rec.get('fsn') or _listing_key_from_url(url)
 
 
 def _setup_db():
@@ -101,8 +117,7 @@ def _stream_insert(detail_rec: dict) -> None:
         import insert_test_retail_com as ITR
     except Exception:
         return
-    src = detail_rec.get('source_url') or detail_rec.get('product_url') or ''
-    key = _url_key(src)
+    key = _listing_key_from_rec(detail_rec)
     main_rec = _main_cache.get(key)
     bsr_rec = _bsr_cache.get(key)
     # retail_com — full merge (main + bsr + detail)
@@ -167,8 +182,7 @@ def _make_dual(orig_emit):
         if not _streaming_enabled:
             return
         stage = rec.get('stage')
-        url = rec.get('product_url') or rec.get('source_url') or ''
-        key = _url_key(url)
+        key = _listing_key_from_rec(rec)
         if not key:
             return
         if stage == 'main':
@@ -223,13 +237,31 @@ from fpkt import detail as D
 def run_listing_capture(driver, product: str, stage: str,
                         max_rank: int, max_pages: int) -> list:
     captured: list = []
+    seen_keys: set = set()
+    stats = {'emitted': 0, 'with_id': 0, 'with_url': 0}
+    missing_url_ranks: list = []
+    duplicate_ranks: list = []
+    rank_field = 'bsr_rank' if stage == 'bsr' else 'main_rank'
     original_emit = L.emit
 
     def capturing(rec):
         original_emit(rec)
+        stats['emitted'] += 1
+        rank = rec.get(rank_field)
         u = rec.get('product_url')
+        key = _listing_key_from_rec(rec)
+        if rec.get('fsn') or _fsn_from_url(u or ''):
+            stats['with_id'] += 1
         if u:
+            stats['with_url'] += 1
             captured.append(u)
+        else:
+            missing_url_ranks.append(rank)
+        if key:
+            if key in seen_keys:
+                duplicate_ranks.append(rank)
+            else:
+                seen_keys.add(key)
 
     L.emit = capturing
     try:
@@ -253,6 +285,13 @@ def run_listing_capture(driver, product: str, stage: str,
                       mr, max_pages, rank_field)
     finally:
         L.emit = original_emit
+        print(
+            f'[run] product={product} stage={stage} raw_summary '
+            f'emitted={stats["emitted"]} fsn={stats["with_id"]} '
+            f'url={stats["with_url"]} unique_keys={len(seen_keys)} '
+            f'missing_url_ranks={missing_url_ranks[:20]} '
+            f'duplicate_ranks={duplicate_ranks[:20]}',
+            file=sys.stderr)
     return captured
 
 
@@ -397,7 +436,7 @@ def _run_one_product(driver, product: str, args):
                                            mr, args.max_pages)
                 added = 0
                 for u in urls:
-                    key = (u or '').split('?', 1)[0].rstrip('/')
+                    key = _listing_key_from_url(u)
                     if not key or key in seen:
                         continue
                     seen.add(key)
