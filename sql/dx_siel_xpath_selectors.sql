@@ -32,9 +32,25 @@ CREATE TABLE IF NOT EXISTS dx_siel_xpath_selectors (
   UNIQUE (site_account, page_type, domain, data_field)
 );
 
--- HHP retail output migration: Amazon detail ram_memory (NULL when absent).
-ALTER TABLE IF EXISTS dx_siel_hhp_retail_com
-  ADD COLUMN IF NOT EXISTS ram_memory TEXT;
+-- HHP retail output migration: Amazon detail hhp_memory_ram (NULL when absent).
+DO $$
+BEGIN
+  IF to_regclass('dx_siel_hhp_retail_com') IS NOT NULL THEN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+       WHERE table_name = 'dx_siel_hhp_retail_com'
+         AND column_name = 'ram_memory'
+    ) AND NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+       WHERE table_name = 'dx_siel_hhp_retail_com'
+         AND column_name = 'hhp_memory_ram'
+    ) THEN
+      ALTER TABLE dx_siel_hhp_retail_com RENAME COLUMN ram_memory TO hhp_memory_ram;
+    ELSE
+      ALTER TABLE dx_siel_hhp_retail_com ADD COLUMN IF NOT EXISTS hhp_memory_ram TEXT;
+    END IF;
+  END IF;
+END $$;
 
 
 CREATE INDEX IF NOT EXISTS idx_dx_siel_xpath_lookup ON dx_siel_xpath_selectors
@@ -195,7 +211,7 @@ VALUES
    '//table//tr[.//th[contains(text(),"Memory Storage Capacity") or contains(text(),"Internal Memory")]]/td',
    '//div[@id="poExpander"]//table//tr[.//td[contains(text(),"Memory")]]/td[2]',
    'e.g. "64 GB"'),
-  ('Amazon','detail','hhp','ram_memory',
+  ('Amazon','detail','hhp','hhp_memory_ram',
    '//table//tr[.//th[normalize-space(.)="RAM Memory Installed" or normalize-space(.)="RAM Memory" or normalize-space(.)="Installed RAM Memory"]]/td',
    '//div[@id="poExpander"]//table//tr[.//td[normalize-space(.)="RAM Memory Installed" or normalize-space(.)="RAM Memory" or normalize-space(.)="Installed RAM Memory"]]/td[2]',
    'Amazon HHP RAM memory, e.g. "4 GB". NULL when absent.'),

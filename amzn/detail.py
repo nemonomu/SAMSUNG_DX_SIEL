@@ -417,7 +417,7 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             if v is None and sel.get('fallback'):
                 v = extract_text_or_value(driver, sel['fallback'])
             rec[field] = v
-        elif field == 'ram_memory':
+        elif field == 'hhp_memory_ram':
             v = extract_single(driver, xpath)
             if v is None and sel.get('fallback'):
                 v = extract_single(driver, sel['fallback'])

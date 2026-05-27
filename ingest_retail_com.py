@@ -31,7 +31,7 @@ COLS = [
     'sku_popularity', 'sku_status',
     'main_rank', 'bsr_rank',
     'screen_size', 'model_year', 'estimated_annual_electricity_use',
-    'hhp_storage', 'hhp_color', 'ram_memory', 'trade_in',
+    'hhp_storage', 'hhp_color', 'hhp_memory_ram', 'trade_in',
     'ref_refrigerator_type', 'ref_capacity',
     'ldy_loading_type', 'ldy_capacity',
     'summarized_review_content', 'fastest_delivery', 'inventory_status',
