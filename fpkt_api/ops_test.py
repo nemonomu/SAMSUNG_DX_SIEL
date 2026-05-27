@@ -19,7 +19,7 @@ import re
 import ssl
 import sys
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -46,6 +46,31 @@ PRODUCT_QUERY = {
     "ref": "refrigerator",
     "ldy": "washing+machine",
 }
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+TV_RETAIL_COM_COLS = [
+    "country", "product", "item", "sku", "account_name", "page_type",
+    "retailer_sku_name", "product_url", "calendar_week", "crawl_datetime", "batch_id",
+    "star_rating", "count_of_star_ratings", "count_of_reviews",
+    "detailed_review_content", "retailer_sku_name_similar",
+    "final_sku_price", "original_sku_price", "savings", "discount_type",
+    "delivery_availability", "available_quantity_for_purchase",
+    "sku_popularity", "sku_status", "main_rank", "bsr_rank",
+    "screen_size", "model_year", "estimated_annual_electricity_use",
+    "summarized_review_content", "fastest_delivery", "inventory_status",
+    "sku_assurance", "number_of_units_purchased_past_month",
+]
+
+TV_PRODUCT_LIST_COLS = [
+    "country", "product", "item", "account_name", "page_type",
+    "retailer_sku_name", "product_url", "calendar_week", "crawl_datetime", "batch_id",
+    "star_rating", "count_of_star_ratings", "count_of_reviews",
+    "final_sku_price", "original_sku_price", "savings", "discount_type",
+    "available_quantity_for_purchase",
+    "sku_popularity", "sku_status", "main_rank", "bsr_rank",
+    "number_of_units_purchased_past_month",
+]
 
 
 def safe_print(value: str) -> None:
@@ -80,6 +105,15 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def write_csv_fields(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field) for field in fields})
+
+
 def to_int(value: Any) -> int | None:
     if value in (None, ""):
         return None
@@ -87,6 +121,57 @@ def to_int(value: Any) -> int | None:
     if not match:
         return None
     return int(match.group(0).replace(",", ""))
+
+
+def text_or_none(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    text = normalize_text(str(value))
+    return text or None
+
+
+def count_text(value: Any) -> str | None:
+    parsed = to_int(value)
+    if parsed is None:
+        return text_or_none(value)
+    return f"{parsed:,}"
+
+
+def price_text(value: Any) -> str | None:
+    parsed = to_int(value)
+    if parsed is None:
+        return text_or_none(value)
+    return f"{parsed:,}"
+
+
+def savings_text(final_price: Any, original_price: Any) -> str | None:
+    final = to_int(final_price)
+    original = to_int(original_price)
+    if not final or not original or original <= final:
+        return None
+    return f"{round((original - final) * 100 / original)}%"
+
+
+def sku_popularity_from_url(url: Any) -> str | None:
+    url = str(url or "")
+    labels = []
+    if "spotlightTagId=default_BestsellerId" in url:
+        labels.append("Bestseller")
+    if "spotlightTagId=default_TrendingId" in url:
+        labels.append("Trending")
+    return ", ".join(labels) if labels else None
+
+
+def now_ist() -> datetime:
+    return datetime.now(IST)
+
+
+def calendar_week(dt: datetime) -> str:
+    return f"w{dt.isocalendar().week:02d}"
+
+
+def test_batch_id(dt: datetime) -> str:
+    return f"f_{dt.strftime('%Y%m%d')}_000000"
 
 
 def output_dir(product: str) -> Path:
@@ -194,10 +279,27 @@ def detail_from_html(text: str, source_url: str) -> dict[str, Any]:
                                   if re.search(r"[?&]pid=([A-Z0-9]+)", source_url or "") else None),
         "brand": ((ld.get("brand") or {}).get("name") if isinstance(ld.get("brand"), dict) else None),
         "final_sku_price": offers.get("price"),
+        "original_sku_price": first_text(doc, '(//div[contains(@style,"line-through")])[1]'),
+        "savings": first_text(
+            doc,
+            '(//div[contains(text(),"%") and string-length(normalize-space(text()))<=5 '
+            'and not(ancestor::a[contains(@href,"/p/")])])[1]',
+        ),
+        "discount_type": first_text(
+            doc,
+            '//*[contains(text(),"Hot Deal") or contains(text(),"Hot deal") or '
+            'contains(text(),"Super Deals") or contains(text(),"Saver Deal") or '
+            'contains(text(),"Lowest Price Live") or contains(text(),"Limited time") or '
+            'contains(text(),"Special Price")][1]',
+        ),
         "availability": offers.get("availability"),
         "star_rating": rating.get("ratingValue"),
         "count_of_star_ratings": rating.get("ratingCount"),
         "count_of_reviews": rating.get("reviewCount"),
+        "sku": first_text(
+            doc,
+            '//div[normalize-space(text())="Model Name"]/following-sibling::div[1]',
+        ),
         "screen_size": first_text(
             doc,
             '//div[normalize-space(text())="Display Size"]/following-sibling::div[1] | '
@@ -207,6 +309,15 @@ def detail_from_html(text: str, source_url: str) -> dict[str, Any]:
             doc,
             '//div[normalize-space(text())="Launch Year" or normalize-space(text())="Launch Year:"]'
             "/following-sibling::div[1]",
+        ),
+        "estimated_annual_electricity_use": first_text(
+            doc,
+            '//div[normalize-space(text())="Power Consumption" or '
+            'normalize-space(text())="Annual Energy Consumption" or '
+            'normalize-space(text())="Energy Consumption" or '
+            'normalize-space(text())="Power Consumption:" or '
+            'normalize-space(text())="Annual Energy Consumption:"]'
+            '/following-sibling::div[1]',
         ),
         "review_url": review_url,
         "jsonld_review_count": len(ld.get("review") or []),
@@ -268,6 +379,211 @@ def detail_targets(main_rows: list[dict[str, Any]], bsr_rows: list[dict[str, Any
     return targets
 
 
+def listing_schema_record(
+    row: dict[str, Any],
+    product: str,
+    stage: str,
+    crawl_dt: str,
+    batch_id: str,
+) -> dict[str, Any]:
+    rank_field = "bsr_rank" if stage == "bsr" else "main_rank"
+    rank = row.get(rank_field) or row.get("rank")
+    fsn = row.get("product_id") or row.get("item_id")
+    return {
+        "account_name": "flipkart",
+        "product": product,
+        "stage": stage,
+        "page_no": row.get("page"),
+        rank_field: rank,
+        "fsn": fsn,
+        "item": fsn,
+        "retailer_sku_name": row.get("product_name"),
+        "brand": row.get("brand"),
+        "product_url": row.get("product_url"),
+        "final_sku_price": price_text(row.get("final_price")),
+        "original_sku_price": price_text(row.get("original_price")),
+        "savings": row.get("savings") or savings_text(row.get("final_price"), row.get("original_price")),
+        "star_rating": text_or_none(row.get("star_rating")),
+        "count_of_star_ratings": count_text(row.get("count_of_star_ratings")),
+        "count_of_reviews": count_text(row.get("count_of_reviews")),
+        "sku_popularity": row.get("sku_popularity") or sku_popularity_from_url(row.get("product_url")),
+        "sku_status": row.get("sku_status"),
+        "available_quantity_for_purchase": row.get("available_quantity_for_purchase"),
+        "batch_id": batch_id,
+        "crawl_datetime": crawl_dt,
+    }
+
+
+def detail_schema_record(
+    detail: dict[str, Any],
+    product: str,
+    crawl_dt: str,
+    batch_id: str,
+    detailed_review_content: str | None,
+) -> dict[str, Any]:
+    fsn = detail.get("fsn") or detail.get("product_id")
+    return {
+        "account_name": "flipkart",
+        "product": product,
+        "stage": "detail",
+        "source_url": detail.get("source_url"),
+        "product_url": detail.get("source_url"),
+        "fsn": fsn,
+        "item": fsn,
+        "sku": detail.get("sku"),
+        "retailer_sku_name": detail.get("retailer_sku_name"),
+        "final_sku_price": price_text(detail.get("final_sku_price")),
+        "original_sku_price": price_text(detail.get("original_sku_price")),
+        "savings": text_or_none(detail.get("savings")),
+        "discount_type": text_or_none(detail.get("discount_type")),
+        "star_rating": text_or_none(detail.get("star_rating")),
+        "count_of_star_ratings": count_text(detail.get("count_of_star_ratings")),
+        "count_of_reviews": count_text(detail.get("count_of_reviews")),
+        "detailed_review_content": detailed_review_content,
+        "screen_size": text_or_none(detail.get("screen_size")),
+        "model_year": text_or_none(detail.get("model_year")),
+        "estimated_annual_electricity_use": text_or_none(detail.get("estimated_annual_electricity_use")),
+        "delivery_availability": text_or_none(detail.get("delivery_availability")),
+        "batch_id": batch_id,
+        "crawl_datetime": crawl_dt,
+    }
+
+
+def format_detailed_review_content(rows: list[dict[str, Any]]) -> str | None:
+    parts = [normalize_text(str(row.get("text") or "")) for row in rows]
+    parts = [part for part in parts if part]
+    if not parts:
+        return None
+    return " ||| ".join(f"review{idx + 1} - {text}" for idx, text in enumerate(parts[:20]))
+
+
+def key_for_row(row: dict[str, Any]) -> str | None:
+    return row.get("product_id") or row.get("fsn") or row.get("item") or row.get("product_url")
+
+
+def build_tv_schema_outputs(
+    product: str,
+    main_rows: list[dict[str, Any]],
+    bsr_rows: list[dict[str, Any]],
+    details: list[dict[str, Any]],
+    reviews: list[dict[str, Any]],
+    crawl_dt: str,
+    batch_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    main_by_key = {key_for_row(row): row for row in main_rows if key_for_row(row)}
+    bsr_by_key = {key_for_row(row): row for row in bsr_rows if key_for_row(row)}
+    detail_by_key = {key_for_row(row): row for row in details if key_for_row(row)}
+    reviews_by_key: dict[str, list[dict[str, Any]]] = {}
+    for row in reviews:
+        key = key_for_row(row)
+        if key:
+            reviews_by_key.setdefault(key, []).append(row)
+
+    ordered_keys: list[str] = []
+    for row in main_rows + bsr_rows:
+        key = key_for_row(row)
+        if key and key not in ordered_keys:
+            ordered_keys.append(key)
+
+    retail_rows: list[dict[str, Any]] = []
+    product_list_rows: list[dict[str, Any]] = []
+    jsonl_rows: list[dict[str, Any]] = []
+
+    for row in main_rows:
+        jsonl_rows.append(listing_schema_record(row, product, "main", crawl_dt, batch_id))
+    for row in bsr_rows:
+        jsonl_rows.append(listing_schema_record(row, product, "bsr", crawl_dt, batch_id))
+
+    for key in ordered_keys:
+        main = main_by_key.get(key)
+        bsr = bsr_by_key.get(key)
+        primary = main or bsr or {}
+        detail = detail_by_key.get(key, {})
+        detailed_reviews = format_detailed_review_content(reviews_by_key.get(key, []))
+        if detail:
+            jsonl_rows.append(detail_schema_record(detail, product, crawl_dt, batch_id, detailed_reviews))
+
+        page_type = "main" if main else "bsr"
+        item = detail.get("fsn") or primary.get("product_id") or primary.get("item_id")
+        retail = {field: None for field in TV_RETAIL_COM_COLS}
+        retail.update({
+            "country": "siel",
+            "product": product.upper(),
+            "item": item,
+            "sku": detail.get("sku"),
+            "account_name": "Flipkart",
+            "page_type": page_type,
+            "retailer_sku_name": primary.get("product_name") or detail.get("retailer_sku_name"),
+            "product_url": primary.get("product_url") or detail.get("source_url"),
+            "calendar_week": calendar_week(datetime.fromisoformat(crawl_dt)),
+            "crawl_datetime": crawl_dt,
+            "batch_id": batch_id,
+            "star_rating": text_or_none(detail.get("star_rating") or primary.get("star_rating")),
+            "count_of_star_ratings": count_text(detail.get("count_of_star_ratings") or primary.get("count_of_star_ratings")),
+            "count_of_reviews": count_text(detail.get("count_of_reviews") or primary.get("count_of_reviews")),
+            "detailed_review_content": detailed_reviews,
+            "final_sku_price": price_text(detail.get("final_sku_price") or primary.get("final_price")),
+            "original_sku_price": price_text(detail.get("original_sku_price") or primary.get("original_price")),
+            "savings": text_or_none(
+                detail.get("savings")
+                or primary.get("savings")
+                or savings_text(primary.get("final_price"), primary.get("original_price"))
+            ),
+            "discount_type": text_or_none(detail.get("discount_type") or primary.get("discount_type")),
+            "delivery_availability": text_or_none(detail.get("delivery_availability")),
+            "available_quantity_for_purchase": primary.get("available_quantity_for_purchase"),
+            "sku_popularity": primary.get("sku_popularity") or detail.get("sku_popularity")
+            or sku_popularity_from_url(primary.get("product_url")),
+            "sku_status": primary.get("sku_status"),
+            "main_rank": to_int(main.get("main_rank") if main else None),
+            "bsr_rank": to_int(bsr.get("bsr_rank") if bsr else None),
+            "screen_size": text_or_none(detail.get("screen_size")),
+            "model_year": text_or_none(detail.get("model_year")),
+            "estimated_annual_electricity_use": text_or_none(detail.get("estimated_annual_electricity_use")),
+            "sku_assurance": None,
+        })
+        retail_rows.append(retail)
+
+        listing = {field: None for field in TV_PRODUCT_LIST_COLS}
+        listing.update({
+            "country": retail["country"],
+            "product": retail["product"],
+            "item": retail["item"],
+            "account_name": retail["account_name"],
+            "page_type": retail["page_type"],
+            "retailer_sku_name": retail["retailer_sku_name"],
+            "product_url": retail["product_url"],
+            "calendar_week": retail["calendar_week"],
+            "crawl_datetime": retail["crawl_datetime"],
+            "batch_id": retail["batch_id"],
+            "star_rating": text_or_none(primary.get("star_rating")),
+            "count_of_star_ratings": count_text(primary.get("count_of_star_ratings")),
+            "count_of_reviews": count_text(primary.get("count_of_reviews")),
+            "final_sku_price": price_text(primary.get("final_price")),
+            "original_sku_price": price_text(primary.get("original_price")),
+            "savings": text_or_none(
+                primary.get("savings")
+                or savings_text(primary.get("final_price"), primary.get("original_price"))
+            ),
+            "discount_type": text_or_none(primary.get("discount_type")),
+            "available_quantity_for_purchase": primary.get("available_quantity_for_purchase"),
+            "sku_popularity": primary.get("sku_popularity") or sku_popularity_from_url(primary.get("product_url")),
+            "sku_status": primary.get("sku_status"),
+            "main_rank": retail["main_rank"],
+            "bsr_rank": retail["bsr_rank"],
+        })
+        product_list_rows.append(listing)
+
+    return retail_rows, product_list_rows, jsonl_rows
+
+
+def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 def summarize_listing(stage: str, raw: list[dict[str, Any]], final: list[dict[str, Any]], pages: int, target: int) -> str:
     missing_reviews = sum(row.get("count_of_reviews") in (None, "") for row in final)
     duplicates = sum(1 for row in raw if row.get("duplicate"))
@@ -283,12 +599,17 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
     query = args.query or PRODUCT_QUERY[args.product]
     out_dir = args.out_dir or output_dir(args.product)
     out_dir.mkdir(parents=True, exist_ok=True)
+    run_dt = now_ist()
+    crawl_dt = run_dt.isoformat(timespec="seconds")
+    batch_id = test_batch_id(run_dt)
 
     lines: list[str] = [
         "db_insert=false",
         "command: " + " ".join(sys.argv),
         "api_dir: " + str(args.api_dir),
         "output_dir: " + str(out_dir),
+        "schema_batch_id: " + batch_id,
+        "schema_calendar_week: " + calendar_week(run_dt),
         "",
     ]
 
@@ -344,6 +665,29 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
     write_csv(out_dir / "detail.csv", details)
     write_csv(out_dir / "review.csv", reviews)
     write_csv(out_dir / "errors.csv", errors)
+
+    if args.product == "tv":
+        retail_rows, product_list_rows, jsonl_rows = build_tv_schema_outputs(
+            args.product, main_final, bsr_final, details, reviews, crawl_dt, batch_id
+        )
+        write_csv_fields(out_dir / "tv_retail_com_preview.csv", retail_rows, TV_RETAIL_COM_COLS)
+        write_csv_fields(out_dir / "tv_product_list_preview.csv", product_list_rows, TV_PRODUCT_LIST_COLS)
+        write_jsonl(out_dir / "api_run.jsonl", jsonl_rows)
+        lines.append(
+            f"[schema:tv_retail_com] rows={len(retail_rows)} "
+            f"cols={len(TV_RETAIL_COM_COLS)} "
+            f"missing_item={sum(row.get('item') in (None, '') for row in retail_rows)} "
+            f"missing_url={sum(row.get('product_url') in (None, '') for row in retail_rows)}"
+        )
+        lines.append(
+            f"[schema:tv_product_list] rows={len(product_list_rows)} "
+            f"cols={len(TV_PRODUCT_LIST_COLS)} "
+            f"missing_item={sum(row.get('item') in (None, '') for row in product_list_rows)} "
+            f"missing_url={sum(row.get('product_url') in (None, '') for row in product_list_rows)}"
+        )
+        lines.append(f"[schema:jsonl] rows={len(jsonl_rows)}")
+        lines.append("")
+
     lines.append(
         f"[detail] requested={args.max_detail} ok={len(details)} errors={len(errors)} "
         f"missing_rating={sum(row.get('star_rating') in (None, '') for row in details)} "
@@ -357,7 +701,10 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
     )
     lines.append("")
     lines.append("files:")
-    for name in ["main_final.csv", "bsr_final.csv", "detail.csv", "review.csv", "errors.csv"]:
+    file_names = ["main_final.csv", "bsr_final.csv", "detail.csv", "review.csv", "errors.csv"]
+    if args.product == "tv":
+        file_names += ["tv_retail_com_preview.csv", "tv_product_list_preview.csv", "api_run.jsonl"]
+    for name in file_names:
         lines.append(f"- {out_dir / name}")
     lines.append("")
     lines.append("main_sample:")
