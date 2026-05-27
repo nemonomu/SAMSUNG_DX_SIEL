@@ -16,6 +16,7 @@ import csv
 import json
 import os
 import re
+import ssl
 import sys
 import urllib.error
 import urllib.request
@@ -140,7 +141,10 @@ def page_fetch_har_requests(path: Path) -> list[tuple[int, dict[str, Any]]]:
 def fetch_json(url: str, headers: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
     payload = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-    with urllib.request.urlopen(request, timeout=40) as response:
+    context = None
+    if os.environ.get("FPKT_API_INSECURE_SSL", "").lower() in {"1", "true", "yes", "y"}:
+        context = ssl._create_unverified_context()
+    with urllib.request.urlopen(request, timeout=40, context=context) as response:
         return json.loads(response.read().decode("utf-8", errors="replace"))
 
 
@@ -453,7 +457,10 @@ def main() -> int:
     parser.add_argument("--review-pages", type=int, default=2)
     parser.add_argument("--save-test", action="store_true", help="Save summary/CSV/JSON under fpkt_api/test_output")
     parser.add_argument("--out-dir", type=Path, help="Directory for saved test outputs")
+    parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification for RDP/proxy tests")
     args = parser.parse_args()
+    if args.insecure:
+        os.environ["FPKT_API_INSECURE_SSL"] = "1"
 
     results: dict[str, Any] = {}
     if args.stage in {"main", "all"}:
