@@ -133,16 +133,71 @@ def price_value(price: Any) -> Any:
     return price
 
 
+def clean_percent(value: Any) -> str | None:
+    if value in (None, "", 0, "0"):
+        return None
+    text = str(value).strip()
+    text = text.replace("OFF", "").replace("off", "").strip()
+    if text.endswith("%"):
+        text = text[:-1].strip()
+    try:
+        number = float(text)
+    except ValueError:
+        return f"{text}%" if text else None
+    if number == int(number):
+        return f"{int(number)}%"
+    return f"{number:g}%"
+
+
 def discount_text(pricing: dict[str, Any]) -> str | None:
     candidates = [pricing.get("totalDiscount")]
     prices = pricing.get("prices")
     if isinstance(prices, list):
         candidates.extend(item.get("discount") for item in prices if isinstance(item, dict))
     for value in candidates:
-        if value in (None, "", 0, "0"):
-            continue
-        text = str(value).strip()
-        return text if text.endswith("%") else f"{text}%"
+        text = clean_percent(value)
+        if text:
+            return text
+    return None
+
+
+def iter_texts(value: Any):
+    if isinstance(value, dict):
+        text = value.get("text")
+        if isinstance(text, list):
+            joined = " ".join(str(part) for part in text if part not in (None, ""))
+            if joined:
+                yield joined
+        elif text not in (None, ""):
+            yield str(text)
+        for child in value.values():
+            yield from iter_texts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_texts(child)
+
+
+def snippet_text(product: dict[str, Any], predicate) -> str | None:
+    for text in iter_texts(product.get("snippets") or []):
+        text = " ".join(text.split())
+        if predicate(text):
+            return text
+    return None
+
+
+def spotlight_text(product: dict[str, Any]) -> str | None:
+    spotlight = product.get("spotlight") or {}
+    value = spotlight.get("value") or {}
+    text = value.get("text")
+    return str(text).strip() if text not in (None, "") else None
+
+
+def sku_status(product: dict[str, Any], value: dict[str, Any]) -> str | None:
+    if value.get("adInfo") or value.get("isSponsored") or value.get("sponsored"):
+        return "Sponsored"
+    for text in iter_texts(product):
+        if text.strip().lower() == "sponsored":
+            return "Sponsored"
     return None
 
 
@@ -187,6 +242,18 @@ def extract_products(response: dict[str, Any], page: int | None = None, page_siz
                     "count_of_star_ratings": rating.get("count"),
                     "count_of_reviews": rating.get("reviewCount"),
                     "availability": (value.get("availability") or {}).get("displayState"),
+                    "sku_status": sku_status(product, value),
+                    "sku_popularity": spotlight_text(product),
+                    "available_quantity_for_purchase": snippet_text(
+                        product,
+                        lambda text: "only" in text.lower() and "left" in text.lower(),
+                    ),
+                    "discount_type": snippet_text(
+                        product,
+                        lambda text: text.lower() not in {"bank offer"}
+                        and len(text) < 50
+                        and not ("only" in text.lower() and "left" in text.lower()),
+                    ),
                 }
             )
     return rows

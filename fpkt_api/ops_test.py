@@ -161,8 +161,17 @@ def best_count_text(*values: Any) -> str | None:
 def price_text(value: Any) -> str | None:
     parsed = to_int(value)
     if parsed is None:
-        return text_or_none(value)
-    return f"{parsed:,}"
+        text = text_or_none(value)
+        return text if not text or text.startswith("₹") else f"₹{text}"
+    return f"₹{parsed:,}"
+
+
+def original_price_text(original: Any, final: Any = None) -> str | None:
+    original_value = to_int(original)
+    final_value = to_int(final)
+    if original_value is not None and final_value is not None and original_value == final_value:
+        return None
+    return price_text(original)
 
 
 def sku_popularity_from_url(url: Any) -> str | None:
@@ -434,6 +443,75 @@ def json_label_value(value: Any, label: str) -> str | None:
     return None
 
 
+def json_label_values(value: Any, label: str) -> list[str]:
+    wanted = label.strip().lower().rstrip(":")
+    found: list[str] = []
+    for item in iter_dicts(value):
+        label_text = json_text(((item.get("label_0") or {}).get("value") if isinstance(item.get("label_0"), dict) else None))
+        if not label_text or label_text.strip().lower().rstrip(":") != wanted:
+            continue
+        for key in ("label_2", "label_1"):
+            candidate = item.get(key)
+            if isinstance(candidate, dict):
+                text = json_text(candidate.get("value"))
+                if text and text.strip().lower().rstrip(":") != wanted and text not in found:
+                    found.append(text)
+    return found
+
+
+def screen_size_value(response: dict[str, Any]) -> str | None:
+    values = json_label_values(response, "Display Size")
+    for value in values:
+        if re.search(r"\bcm\b", value, re.I) and re.search(r"\binch\b", value, re.I):
+            return value
+    return values[0] if values else None
+
+
+def delivery_availability_value(response: dict[str, Any]) -> str | None:
+    slots = (response.get("RESPONSE") or {}).get("slots") or []
+    texts: list[str] = []
+    for slot in slots:
+        widget = slot.get("widget") or {}
+        if widget.get("viewType") == "pp_delivery_widget_v2":
+            texts.extend(json_texts(slot))
+    for index, text in enumerate(texts):
+        if text.strip().lower() == "delivery by":
+            for candidate in texts[index + 1:index + 4]:
+                if re.search(r"\b(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", candidate, re.I):
+                    return f"Delivery by {candidate}"
+    for text in texts:
+        match = re.match(r"^By\s+(.+)$", text.strip(), re.I)
+        if match and re.search(r"\b(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", match.group(1), re.I):
+            return f"Delivery by {match.group(1)}"
+    return None
+
+
+def similar_product_names(response: dict[str, Any]) -> str | None:
+    names: list[str] = []
+    slots = (response.get("RESPONSE") or {}).get("slots") or []
+    for slot in slots:
+        widget = slot.get("widget") or {}
+        if widget.get("viewType") != "pp_reco_pmu_horizontal_scrollable_ads":
+            continue
+        header = None
+        for text in json_texts((widget.get("data") or {}).get("dlsData", {}).get("hp_reco_header_0")):
+            if text:
+                header = text
+                break
+        if not header or header.strip().lower() != "similar products":
+            continue
+        dls_data = (widget.get("data") or {}).get("dlsData") or {}
+        cards = ((dls_data.get("MRCSV_0") or {}).get("value") or [])
+        for card in cards:
+            card_value = ((card.get("value") or {}).get("hp_reco_product-card_0") or {}).get("value")
+            if not isinstance(card_value, dict):
+                continue
+            name = json_text(((card_value.get("label_2") or {}).get("value") if isinstance(card_value.get("label_2"), dict) else None))
+            if name and name not in names:
+                names.append(name)
+    return ", ".join(names) if names else None
+
+
 def detail_api_response(api_dir: Path, product_url: str) -> dict[str, Any]:
     commands = page_fetch_curl_commands(api_dir / "detail_curl.txt")
     if not commands:
@@ -480,13 +558,15 @@ def detail_from_api_response(response: dict[str, Any], source_url: str) -> dict[
         "count_of_star_ratings": rating_count,
         "count_of_reviews": review_count,
         "sku": json_label_value(response, "Model Name"),
-        "screen_size": json_label_value(response, "Display Size"),
+        "screen_size": screen_size_value(response),
         "model_year": json_label_value(response, "Launch Year"),
         "estimated_annual_electricity_use": (
             json_label_value(response, "Power Consumption")
             or json_label_value(response, "Annual Energy Consumption")
             or json_label_value(response, "Energy Consumption")
         ),
+        "delivery_availability": delivery_availability_value(response),
+        "retailer_sku_name_similar": similar_product_names(response),
         "review_url": fallback_review_url(source_url),
         "jsonld_review_count": None,
     }
@@ -562,7 +642,7 @@ def listing_schema_record(
         "brand": row.get("brand"),
         "product_url": row.get("product_url"),
         "final_sku_price": price_text(row.get("final_price")),
-        "original_sku_price": price_text(row.get("original_price")),
+        "original_sku_price": original_price_text(row.get("original_price"), row.get("final_price")),
         "savings": text_or_none(row.get("savings")),
         "star_rating": text_or_none(row.get("star_rating")),
         "count_of_star_ratings": count_text(row.get("count_of_star_ratings")),
@@ -594,9 +674,10 @@ def detail_schema_record(
         "sku": detail.get("sku"),
         "retailer_sku_name": detail.get("retailer_sku_name"),
         "final_sku_price": price_text(detail.get("final_sku_price")),
-        "original_sku_price": price_text(detail.get("original_sku_price")),
+        "original_sku_price": original_price_text(detail.get("original_sku_price"), detail.get("final_sku_price")),
         "savings": text_or_none(detail.get("savings")),
         "discount_type": text_or_none(detail.get("discount_type")),
+        "retailer_sku_name_similar": text_or_none(detail.get("retailer_sku_name_similar")),
         "star_rating": text_or_none(detail.get("star_rating")),
         "count_of_star_ratings": count_text(detail.get("count_of_star_ratings")),
         "count_of_reviews": count_text(detail.get("count_of_reviews")),
@@ -680,6 +761,10 @@ def validate_tv_outputs(
         for field in ("sku", "screen_size", "model_year"):
             if row.get(field) in (None, ""):
                 issues.append(qa_issue(f"missing_{field}", item, f"{field} is empty"))
+        screen_size = text_or_none(row.get("screen_size"))
+        if screen_size and not (re.search(r"\bcm\b", screen_size, re.I) and re.search(r"\binch\b", screen_size, re.I)):
+            issues.append(qa_issue("screen_size_format", item, "screen_size should include cm and inch",
+                                   screen_size=screen_size))
 
         review_total = to_int(row.get("count_of_reviews")) or 0
         content_count = review_content_count(row.get("detailed_review_content"))
@@ -704,7 +789,8 @@ def validate_tv_outputs(
         f"review_api_short={sum(row['check'] == 'review_api_short' for row in issues)}",
         f"[qa] missing_sku={sum(row['check'] == 'missing_sku' for row in issues)} "
         f"missing_screen_size={sum(row['check'] == 'missing_screen_size' for row in issues)} "
-        f"missing_model_year={sum(row['check'] == 'missing_model_year' for row in issues)}",
+        f"missing_model_year={sum(row['check'] == 'missing_model_year' for row in issues)} "
+        f"screen_size_format={sum(row['check'] == 'screen_size_format' for row in issues)}",
     ]
     return issues, summary
 
@@ -752,6 +838,8 @@ def build_tv_schema_outputs(
         primary = main or bsr or {}
         detail = detail_by_key.get(key, {})
         detailed_reviews = format_detailed_review_content(reviews_by_key.get(key, []))
+        final_price_value = primary.get("final_price") or detail.get("final_sku_price")
+        original_price_value = primary.get("original_price") or detail.get("original_sku_price")
         if detail:
             jsonl_rows.append(detail_schema_record(detail, product, crawl_dt, batch_id, detailed_reviews))
 
@@ -780,8 +868,9 @@ def build_tv_schema_outputs(
                 primary.get("count_of_reviews"),
             ),
             "detailed_review_content": detailed_reviews,
-            "final_sku_price": price_text(primary.get("final_price") or detail.get("final_sku_price")),
-            "original_sku_price": price_text(primary.get("original_price") or detail.get("original_sku_price")),
+            "retailer_sku_name_similar": text_or_none(detail.get("retailer_sku_name_similar")),
+            "final_sku_price": price_text(final_price_value),
+            "original_sku_price": original_price_text(original_price_value, final_price_value),
             "savings": text_or_none(primary.get("savings") or detail.get("savings")),
             "discount_type": text_or_none(primary.get("discount_type") or detail.get("discount_type")),
             "delivery_availability": text_or_none(detail.get("delivery_availability")),
@@ -814,7 +903,7 @@ def build_tv_schema_outputs(
             "count_of_star_ratings": count_text(primary.get("count_of_star_ratings")),
             "count_of_reviews": count_text(primary.get("count_of_reviews")),
             "final_sku_price": price_text(primary.get("final_price")),
-            "original_sku_price": price_text(primary.get("original_price")),
+            "original_sku_price": original_price_text(primary.get("original_price"), primary.get("final_price")),
             "savings": text_or_none(primary.get("savings")),
             "discount_type": text_or_none(primary.get("discount_type")),
             "available_quantity_for_purchase": primary.get("available_quantity_for_purchase"),
