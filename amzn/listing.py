@@ -247,6 +247,39 @@ def scan_card_asin(card):
     return None
 
 
+def _safe_find_elements(driver, xpath: str):
+    if not xpath:
+        return []
+    try:
+        return driver.find_elements(By.XPATH, xpath)
+    except WebDriverException:
+        return []
+
+
+def _page_height(driver) -> int:
+    try:
+        return int(driver.execute_script(
+            'return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);'
+        ) or 0)
+    except WebDriverException:
+        return 0
+
+
+def _viewport_height(driver) -> int:
+    try:
+        return int(driver.execute_script(
+            'return window.innerHeight || document.documentElement.clientHeight || 900;'
+        ) or 900)
+    except WebDriverException:
+        return 900
+
+
+def _scroll_to(driver, y: int) -> None:
+    try:
+        driver.execute_script('window.scrollTo(0, arguments[0]);', max(0, int(y)))
+    except WebDriverException:
+        pass
+
 def emit(rec: dict) -> None:
     sys.stdout.write(json.dumps(rec, ensure_ascii=False) + '\n')
     sys.stdout.flush()
@@ -379,16 +412,43 @@ def crawl_main(driver, product: str, selectors: dict, batch_id: str,
     return rank
 
 
-def _bsr_load_pattern(driver) -> None:
-    """BSR scroll pattern (사용자 spec): scroll-bottom → sleep 2 → scroll-bottom."""
-    scroll_to_bottom(driver, pause=1.5, max_scrolls=30)
-    time.sleep(2)
-    scroll_to_bottom(driver, pause=1.5, max_scrolls=30)
+def _load_bsr_cards(driver, container_xpath: str, expected_count: int = 50,
+                    max_rounds: int = 4):
+    best_cards = []
+    stable_rounds = 0
+    for _ in range(max_rounds):
+        height = max(_page_height(driver), 1)
+        viewport = max(_viewport_height(driver), 600)
+        step = max(int(viewport * 0.7), 420)
+        positions = list(range(0, height + step, step))
+        if positions[-1] != height:
+            positions.append(height)
+
+        for y in positions:
+            _scroll_to(driver, y)
+            time.sleep(0.35)
+            cards = _safe_find_elements(driver, container_xpath)
+            if len(cards) > len(best_cards):
+                best_cards = cards
+                stable_rounds = 0
+            if len(cards) >= expected_count:
+                return cards
+
+        time.sleep(1.0)
+        cards = _safe_find_elements(driver, container_xpath)
+        if len(cards) > len(best_cards):
+            best_cards = cards
+            stable_rounds = 0
+        elif len(cards) == len(best_cards):
+            stable_rounds += 1
+        if len(best_cards) >= expected_count or stable_rounds >= 2:
+            break
+    return best_cards or _safe_find_elements(driver, container_xpath)
 
 
 def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
               max_rank: int = 0) -> int:
-    """max_rank=0 (default) → 무제한, >0 이면 cap."""
+    """max_rank=0 (default) -> unlimited, >0 caps output."""
     container_xpath = (selectors.get('base_container') or {}).get('xpath')
     if not container_xpath:
         emit({'_error': 'base_container selector missing',
@@ -402,33 +462,31 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
             _logger.info('page=%d url=%s', page_no, url)
         driver.get(url)
         time.sleep(3)
-        _bsr_load_pattern(driver)
         if page_no == 1:
             maybe_save_html(driver)
-        cards = driver.find_elements(By.XPATH, container_xpath)
+        cards = _load_bsr_cards(driver, container_xpath, expected_count=50)
         if _logger:
-            _logger.info('page=%d cards=%d (initial)', page_no, len(cards))
-        # 0 → refresh (page broken) / 0<n<50 → retry scroll (lazy load 부족)
+            _logger.info('page=%d cards=%d (loaded primary gridItemRoot)', page_no, len(cards))
         if not cards:
             if _logger:
-                _logger.info('page=%d cards=0 → refresh', page_no)
+                _logger.info('page=%d cards=0 -> refresh', page_no)
             try:
                 driver.refresh()
                 time.sleep(3)
-                _bsr_load_pattern(driver)
-                cards = driver.find_elements(By.XPATH, container_xpath)
+                cards = _load_bsr_cards(driver, container_xpath, expected_count=50)
                 if _logger:
-                    _logger.info('page=%d cards=%d (after refresh)', page_no, len(cards))
+                    _logger.info('page=%d cards=%d (after refresh primary gridItemRoot)',
+                                 page_no, len(cards))
             except WebDriverException as e:
                 if _logger:
                     _logger.warning('page=%d refresh failed: %s', page_no, e)
         elif len(cards) < 50:
             if _logger:
-                _logger.info('page=%d cards=%d<50 → retry scroll', page_no, len(cards))
-            _bsr_load_pattern(driver)
-            cards = driver.find_elements(By.XPATH, container_xpath)
+                _logger.info('page=%d cards=%d<50 -> second primary-grid pass', page_no, len(cards))
+            cards = _load_bsr_cards(driver, container_xpath, expected_count=50)
             if _logger:
-                _logger.info('page=%d cards=%d (after retry)', page_no, len(cards))
+                _logger.info('page=%d cards=%d (after second primary-grid pass)',
+                             page_no, len(cards))
         for card in cards:
             if max_rank and rank >= max_rank:
                 break
@@ -448,7 +506,6 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
             })
             emit(rec)
     return rank
-
 
 def main() -> int:
     ap = argparse.ArgumentParser(description='Amazon.In listing crawler')
