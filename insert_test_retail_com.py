@@ -43,7 +43,7 @@ _COMMON_COLS = [
 ]
 _AMZN_ONLY_COLS = [
     'summarized_review_content', 'fastest_delivery', 'inventory_status',
-    'sku_assurance', 'number_of_units_purchased_past_month',
+    'number_of_units_purchased_past_month',
 ]
 _FPKT_ONLY_COLS = [
     'count_of_reviews', 'available_quantity_for_purchase', 'savings',
@@ -259,7 +259,6 @@ def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
             'summarized_review_content':            d.get('summarized_review_content'),
             'fastest_delivery':                     d.get('fastest_delivery'),
             'inventory_status':                     d.get('inventory_status'),
-            'sku_assurance':                        d.get('sku_assurance'),
             'number_of_units_purchased_past_month': primary.get('number_of_units_purchased_past_month'),
         }
         rows.append(row)

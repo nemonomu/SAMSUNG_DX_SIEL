@@ -35,7 +35,7 @@ COLS = [
     'ref_refrigerator_type', 'ref_capacity',
     'ldy_loading_type', 'ldy_capacity',
     'summarized_review_content', 'fastest_delivery', 'inventory_status',
-    'sku_assurance', 'number_of_units_purchased_past_month',
+    'number_of_units_purchased_past_month',
 ]
 
 INT_COLS = {'main_rank', 'bsr_rank'}

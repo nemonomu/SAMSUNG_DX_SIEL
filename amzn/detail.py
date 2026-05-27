@@ -334,7 +334,7 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
     maybe_save_html_post(driver)
 
     for field, sel in selectors.items():
-        if field in EXPAND_FIELDS or field == 'base_container':
+        if field in EXPAND_FIELDS or field in ('base_container', 'sku_assurance'):
             continue
         xpath = sel.get('xpath')
         if not xpath:
@@ -417,11 +417,6 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             if v is None and sel.get('fallback'):
                 v = extract_text_or_value(driver, sel['fallback'])
             rec[field] = v
-        elif field == 'sku_assurance':
-            v = extract_single(driver, xpath)
-            if v is None and sel.get('fallback'):
-                v = extract_single(driver, sel['fallback'])
-            rec[field] = siel_log.parse_sku_assurance(v)
         elif field == 'ram_memory':
             v = extract_single(driver, xpath)
             if v is None and sel.get('fallback'):

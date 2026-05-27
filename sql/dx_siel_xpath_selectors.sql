@@ -826,3 +826,11 @@ VALUES
 --  WHERE site_account = 'Amazon' AND is_active
 --  GROUP BY page_type, domain
 --  ORDER BY page_type, domain;
+
+-- Policy: sku_assurance is no longer collected. Keep existing DB columns; leave new rows NULL.
+UPDATE dx_siel_xpath_selectors
+   SET is_active = FALSE,
+       updated_at = NOW()
+ WHERE site_account = 'Amazon'
+   AND page_type = 'detail'
+   AND data_field = 'sku_assurance';
