@@ -462,9 +462,9 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
             _logger.info('page=%d url=%s', page_no, url)
         driver.get(url)
         time.sleep(3)
+        cards = _load_bsr_cards(driver, container_xpath, expected_count=50)
         if page_no == 1:
             maybe_save_html(driver)
-        cards = _load_bsr_cards(driver, container_xpath, expected_count=50)
         if _logger:
             _logger.info('page=%d cards=%d (loaded primary gridItemRoot)', page_no, len(cards))
         if not cards:
