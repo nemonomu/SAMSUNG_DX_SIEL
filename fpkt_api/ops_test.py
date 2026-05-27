@@ -32,6 +32,8 @@ if str(ROOT) not in sys.path:
 
 from main_probe import extract_products, request_headers
 from phase_probe import (
+    curl_headers,
+    curl_url,
     default_api_dir,
     fetch_json,
     first_har_request_for_page,
@@ -40,7 +42,9 @@ from phase_probe import (
     normalize_text,
     page_fetch_curl_commands,
     product_ld,
+    read_text,
     review_rows_from_response,
+    split_curl_commands,
 )
 from siel_batch import next_batch_id
 
@@ -224,6 +228,18 @@ def listing_until(
 
 
 def html_headers(api_dir: Path) -> dict[str, str]:
+    detail_curl = api_dir / "detail_curl.txt"
+    if detail_curl.exists():
+        for command in split_curl_commands(read_text(detail_curl)):
+            url = curl_url(command) or ""
+            if "www.flipkart.com/" in url and "/p/" in url:
+                headers = curl_headers(command)
+                headers.pop("Content-Type", None)
+                headers.pop("content-type", None)
+                headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                headers.setdefault("Referer", "https://www.flipkart.com/")
+                return headers
+
     har_path = api_dir / "main_page2_page1_har.txt"
     if not har_path.exists():
         har_path = api_dir / "main_har.txt"
