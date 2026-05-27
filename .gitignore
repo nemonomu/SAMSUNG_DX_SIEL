@@ -63,3 +63,4 @@ desktop.ini
 *.csv
 !requirements.txt
 .gstack/
+.batch_ids/

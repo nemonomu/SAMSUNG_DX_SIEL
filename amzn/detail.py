@@ -39,6 +39,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 import config
 import siel_log
+from siel_batch import next_batch_id
 
 # uc.Chrome.__del__ 가 GC 시점에 quit() 한 번 더 시도 → Windows OSError [WinError 6].
 # finally 에서 driver.quit() 명시 호출하므로 __del__ 은 불필요.
@@ -175,8 +176,7 @@ def emit(rec: dict) -> None:
 
 
 def make_batch_id(product: str) -> str:
-    ts = datetime.now(IST).strftime('%Y%m%d%H%M%S')
-    return f"{ts}_{ACCOUNT_NAME}_{product}_{STAGE}"
+    return next_batch_id('a', _ROOT, datetime.now(IST))
 
 
 def now_ist_iso() -> str:
@@ -418,7 +418,10 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                 v = extract_text_or_value(driver, sel['fallback'])
             rec[field] = v
         elif field == 'sku_assurance':
-            rec[field] = siel_log.parse_sku_assurance(extract_single(driver, xpath))
+            v = extract_single(driver, xpath)
+            if v is None and sel.get('fallback'):
+                v = extract_single(driver, sel['fallback'])
+            rec[field] = siel_log.parse_sku_assurance(v)
         elif field == 'delivery_availability':
             rec[field] = siel_log.parse_delivery_availability(extract_single(driver, xpath))
         elif field == 'fastest_delivery':

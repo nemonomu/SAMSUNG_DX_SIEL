@@ -43,6 +43,7 @@ from urllib3.exceptions import ReadTimeoutError as _Urllib3RT
 
 import config
 import siel_log
+from siel_batch import next_batch_id
 
 # uc.Chrome.__del__ 가 GC 시점에 quit() 한 번 더 시도 → Windows OSError [WinError 6].
 # finally 에서 driver.quit() 명시 호출하므로 __del__ 은 불필요.
@@ -128,8 +129,7 @@ def emit(rec: dict) -> None:
 
 
 def make_batch_id(product: str) -> str:
-    ts = datetime.now(IST).strftime('%Y%m%d%H%M%S')
-    return f"{ts}_{ACCOUNT_NAME}_{product}_{STAGE}"
+    return next_batch_id('f', _ROOT, datetime.now(IST))
 
 
 def now_ist_iso() -> str:

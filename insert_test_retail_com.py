@@ -154,8 +154,8 @@ def calendar_week_iso(dt) -> str:
             dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
         except ValueError:
             return None
-    iso_year, iso_week, _ = dt.isocalendar()
-    return f'{iso_year}-W{iso_week:02d}'
+    _iso_year, iso_week, _ = dt.isocalendar()
+    return f'w{iso_week:02d}'
 
 
 def parse_int_safe(v):

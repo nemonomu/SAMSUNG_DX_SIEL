@@ -35,6 +35,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 import config
 import siel_log
+from siel_batch import next_batch_id
 
 # Flipkart product URL 의 pid query param = fsn (Flipkart Standard Number).
 # main rec 에 fsn 채워 detail rec.fsn 와 listing_key 매칭.
@@ -158,8 +159,7 @@ def emit(rec: dict) -> None:
 
 
 def make_batch_id(stage: str, product: str) -> str:
-    ts = datetime.now(IST).strftime('%Y%m%d%H%M%S')
-    return f"{ts}_{ACCOUNT_NAME}_{product}_{stage}"
+    return next_batch_id('f', _ROOT, datetime.now(IST))
 
 
 def now_ist_iso() -> str:

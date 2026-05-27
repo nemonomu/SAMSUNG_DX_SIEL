@@ -60,7 +60,7 @@ def calendar_week_from_iso(v):
     except ValueError:
         return None
     iso = dt.isocalendar()
-    return f'{iso[0]}-W{iso[1]:02d}'
+    return f'w{iso[1]:02d}'
 
 
 def normalize_account(v):
