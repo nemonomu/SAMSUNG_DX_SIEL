@@ -800,6 +800,12 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
                 detail["product_id"] = target.get("product_id")
                 detail["main_rank"] = target.get("main_rank")
                 detail["bsr_rank"] = target.get("bsr_rank")
+                if detail.get("star_rating") in (None, ""):
+                    detail["star_rating"] = target.get("star_rating")
+                if detail.get("count_of_star_ratings") in (None, ""):
+                    detail["count_of_star_ratings"] = target.get("count_of_star_ratings")
+                if detail.get("count_of_reviews") in (None, ""):
+                    detail["count_of_reviews"] = target.get("count_of_reviews")
                 details.append(detail)
                 count_reviews = detail.get("count_of_reviews")
                 if args.review_pages > 0 and detail.get("review_url") and (to_int(count_reviews) or 0) >= 1:
