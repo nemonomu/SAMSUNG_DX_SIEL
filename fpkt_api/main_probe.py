@@ -133,6 +133,19 @@ def price_value(price: Any) -> Any:
     return price
 
 
+def discount_text(pricing: dict[str, Any]) -> str | None:
+    candidates = [pricing.get("totalDiscount")]
+    prices = pricing.get("prices")
+    if isinstance(prices, list):
+        candidates.extend(item.get("discount") for item in prices if isinstance(item, dict))
+    for value in candidates:
+        if value in (None, "", 0, "0"):
+            continue
+        text = str(value).strip()
+        return text if text.endswith("%") else f"{text}%"
+    return None
+
+
 def product_url(action: dict[str, Any], value: dict[str, Any]) -> str | None:
     params = action.get("params") or {}
     url = params.get("url") or action.get("url") or value.get("baseUrl") or value.get("smartUrl")
@@ -169,6 +182,7 @@ def extract_products(response: dict[str, Any], page: int | None = None, page_siz
                     "product_url": product_url(action, value),
                     "final_price": price_value(pricing.get("finalPrice")),
                     "original_price": price_value(pricing.get("mrp")),
+                    "savings": discount_text(pricing),
                     "star_rating": rating.get("average"),
                     "count_of_star_ratings": rating.get("count"),
                     "count_of_reviews": rating.get("reviewCount"),

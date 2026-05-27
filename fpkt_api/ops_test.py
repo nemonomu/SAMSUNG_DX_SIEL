@@ -144,14 +144,6 @@ def price_text(value: Any) -> str | None:
     return f"{parsed:,}"
 
 
-def savings_text(final_price: Any, original_price: Any) -> str | None:
-    final = to_int(final_price)
-    original = to_int(original_price)
-    if not final or not original or original <= final:
-        return None
-    return f"{round((original - final) * 100 / original)}%"
-
-
 def sku_popularity_from_url(url: Any) -> str | None:
     url = str(url or "")
     labels = []
@@ -402,7 +394,7 @@ def listing_schema_record(
         "product_url": row.get("product_url"),
         "final_sku_price": price_text(row.get("final_price")),
         "original_sku_price": price_text(row.get("original_price")),
-        "savings": row.get("savings") or savings_text(row.get("final_price"), row.get("original_price")),
+        "savings": text_or_none(row.get("savings")),
         "star_rating": text_or_none(row.get("star_rating")),
         "count_of_star_ratings": count_text(row.get("count_of_star_ratings")),
         "count_of_reviews": count_text(row.get("count_of_reviews")),
@@ -522,14 +514,10 @@ def build_tv_schema_outputs(
             "count_of_star_ratings": count_text(detail.get("count_of_star_ratings") or primary.get("count_of_star_ratings")),
             "count_of_reviews": count_text(detail.get("count_of_reviews") or primary.get("count_of_reviews")),
             "detailed_review_content": detailed_reviews,
-            "final_sku_price": price_text(detail.get("final_sku_price") or primary.get("final_price")),
-            "original_sku_price": price_text(detail.get("original_sku_price") or primary.get("original_price")),
-            "savings": text_or_none(
-                detail.get("savings")
-                or primary.get("savings")
-                or savings_text(primary.get("final_price"), primary.get("original_price"))
-            ),
-            "discount_type": text_or_none(detail.get("discount_type") or primary.get("discount_type")),
+            "final_sku_price": price_text(primary.get("final_price") or detail.get("final_sku_price")),
+            "original_sku_price": price_text(primary.get("original_price") or detail.get("original_sku_price")),
+            "savings": text_or_none(primary.get("savings") or detail.get("savings")),
+            "discount_type": text_or_none(primary.get("discount_type") or detail.get("discount_type")),
             "delivery_availability": text_or_none(detail.get("delivery_availability")),
             "available_quantity_for_purchase": primary.get("available_quantity_for_purchase"),
             "sku_popularity": primary.get("sku_popularity") or detail.get("sku_popularity")
@@ -561,10 +549,7 @@ def build_tv_schema_outputs(
             "count_of_reviews": count_text(primary.get("count_of_reviews")),
             "final_sku_price": price_text(primary.get("final_price")),
             "original_sku_price": price_text(primary.get("original_price")),
-            "savings": text_or_none(
-                primary.get("savings")
-                or savings_text(primary.get("final_price"), primary.get("original_price"))
-            ),
+            "savings": text_or_none(primary.get("savings")),
             "discount_type": text_or_none(primary.get("discount_type")),
             "available_quantity_for_purchase": primary.get("available_quantity_for_purchase"),
             "sku_popularity": primary.get("sku_popularity") or sku_popularity_from_url(primary.get("product_url")),
