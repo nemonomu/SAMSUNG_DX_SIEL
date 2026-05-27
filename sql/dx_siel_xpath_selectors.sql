@@ -662,11 +662,15 @@ BEGIN
        '(//*[@id="slot-list-container"]/div/div[2]//a[contains(@href,"/product-reviews/") and not(contains(@href,"buynow")) and not(contains(@href,"&an="))])[1]',
        '(//*[@id="slot-list-container"]/div/div[2]//a[contains(@href,"/product-reviews/") and not(contains(@href,"buynow"))])[1]',
        '리뷰 페이지 anchor. 5/10 #9 사용자 진단 (Haier M80): 이전 selector 의 첫 매치 가 rating breakdown 의 aspect-filtered anchor ("Picture/4.1" → href 에 &an=Picture) → review URL navigate 시 Picture aspect 별 review 만 표시 → 본 product 의 Picture aspect review 0 → 매치 결함. 신 primary: "&an=" query param 미포함 anchor 만 매치 (All reviews button). fallback: aspect 포함 anchor 도 OK (All reviews button 미존재 layout 호환).'),
-      -- count_of_star_ratings / count_of_reviews 는 Main Page (reference 시트 r51/r49). detail 정의 X.
+      -- count_of_reviews is still main-page only; detail can safely recover top product star_rating/count_of_star_ratings from the rating summary link.
       ('Flipkart','detail',d,'star_rating',
-       '(//*[@id="slot-list-container"]/div/div[2]//div[contains(@class,"css-146c3p1") and contains(@style,"inter_bold") and (string-length(normalize-space(text()))=1 or (string-length(normalize-space(text()))=3 and substring(normalize-space(text()),2,1)=".")) and number(normalize-space(text()))=number(normalize-space(text())) and number(normalize-space(text()))>=1 and number(normalize-space(text()))<=5])[1]',
+       '(//*[@id="slot-list-container"]/div/div[2]//a[contains(@href,"/ratings-reviews-details-page")]//div[contains(@class,"css-146c3p1") and contains(@style,"inter_bold") and (string-length(normalize-space(text()))=1 or (string-length(normalize-space(text()))=3 and substring(normalize-space(text()),2,1)=".")) and number(normalize-space(text()))=number(normalize-space(text())) and number(normalize-space(text()))>=1 and number(normalize-space(text()))<=5])[1]',
        NULL,
-       '사용자 검수 (5/10 #3) — 메인 product 별점 영역 = slot-list-container/div/div[2] 안. cls + inter_bold 만 으로는 "BESTSELLER" 같은 텍스트 매치 결함 → numeric 조건 추가: length=1 (정수 "4") 또는 length=3 (소수 "4.2") + numeric (number()=number() NaN 검사). 5/11 추가 — 5/10 batch 진단 에서 무평점 product 의 detail page "0" 매치 결함 발견 (LDY 4 + REF 3 + TV 2 = 9건, 동일 fsn 의 main=4.2 vs detail=0 evidence: WMNH95HNXEH8VJTH). main/bsr 단계 는 0건 — detail 만 결함. range 1-5 추가 → 0 / 6-9 reject. primary 매치 X 시 NULL'),
+       'Top product rating only. Scope to /ratings-reviews-details-page summary link to avoid sponsored/similar product rating noise on no-rating products.'),
+      ('Flipkart','detail',d,'count_of_star_ratings',
+       '(//*[@id="slot-list-container"]/div/div[2]//a[contains(@href,"/ratings-reviews-details-page")]//div[contains(@class,"css-146c3p1") and contains(normalize-space(.),"|")])[1]',
+       NULL,
+       'Top product rating summary count, e.g. "| 18,824". parse_count_of_ratings strips the pipe. NULL when no top rating summary exists.'),
       ('Flipkart','detail',d,'delivery_availability',
        '//div[normalize-space(text())="Delivery" or normalize-space(text())="Delivery by"]/parent::div',
        NULL,
