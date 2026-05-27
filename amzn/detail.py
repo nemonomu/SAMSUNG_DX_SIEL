@@ -422,6 +422,11 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             if v is None and sel.get('fallback'):
                 v = extract_single(driver, sel['fallback'])
             rec[field] = siel_log.parse_sku_assurance(v)
+        elif field == 'ram_memory':
+            v = extract_single(driver, xpath)
+            if v is None and sel.get('fallback'):
+                v = extract_single(driver, sel['fallback'])
+            rec[field] = v
         elif field == 'delivery_availability':
             rec[field] = siel_log.parse_delivery_availability(extract_single(driver, xpath))
         elif field == 'fastest_delivery':

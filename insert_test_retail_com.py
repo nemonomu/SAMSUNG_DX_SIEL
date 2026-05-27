@@ -49,7 +49,7 @@ _FPKT_ONLY_COLS = [
     'count_of_reviews', 'available_quantity_for_purchase', 'savings',
 ]
 _PRODUCT_SPECIFIC = {
-    'hhp': ['hhp_storage', 'hhp_color', 'trade_in'],
+    'hhp': ['hhp_storage', 'hhp_color', 'ram_memory', 'trade_in'],
     'tv':  ['screen_size', 'model_year', 'estimated_annual_electricity_use'],
     'ref': ['ref_refrigerator_type', 'ref_capacity'],
     'ldy': ['ldy_loading_type', 'ldy_capacity'],
@@ -247,6 +247,7 @@ def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
             # HHP
             'hhp_storage': d.get('hhp_storage'),
             'hhp_color':   d.get('hhp_color'),
+            'ram_memory':  d.get('ram_memory'),
             'trade_in':    d.get('trade_in'),
             # REF
             'ref_refrigerator_type': d.get('ref_refrigerator_type'),

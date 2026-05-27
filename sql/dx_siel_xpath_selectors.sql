@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS dx_siel_xpath_selectors (
   UNIQUE (site_account, page_type, domain, data_field)
 );
 
+-- HHP retail output migration: Amazon detail ram_memory (NULL when absent).
+ALTER TABLE IF EXISTS dx_siel_hhp_retail_com
+  ADD COLUMN IF NOT EXISTS ram_memory TEXT;
+
+
 CREATE INDEX IF NOT EXISTS idx_dx_siel_xpath_lookup ON dx_siel_xpath_selectors
   (site_account, page_type, domain, is_active);
 
@@ -190,6 +195,10 @@ VALUES
    '//table//tr[.//th[contains(text(),"Memory Storage Capacity") or contains(text(),"Internal Memory")]]/td',
    '//div[@id="poExpander"]//table//tr[.//td[contains(text(),"Memory")]]/td[2]',
    'e.g. "64 GB"'),
+  ('Amazon','detail','hhp','ram_memory',
+   '//table//tr[.//th[normalize-space(.)="RAM Memory Installed" or normalize-space(.)="RAM Memory" or normalize-space(.)="Installed RAM Memory"]]/td',
+   '//div[@id="poExpander"]//table//tr[.//td[normalize-space(.)="RAM Memory Installed" or normalize-space(.)="RAM Memory" or normalize-space(.)="Installed RAM Memory"]]/td[2]',
+   'Amazon HHP RAM memory, e.g. "4 GB". NULL when absent.'),
   ('Amazon','detail','hhp','hhp_color',
    '//table//tr[.//th[contains(text(),"Colour") or contains(text(),"Color")]]/td',
    '//div[@id="poExpander"]//table//tr[.//td[contains(text(),"Colour") or contains(text(),"Color")]]/td[2]',

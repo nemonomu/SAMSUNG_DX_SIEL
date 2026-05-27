@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS dx_siel_hhp_retail_com (
   -- HHP 전용 (다른 product 전용 컬럼은 제외 — TV/REF/LDY 전용은 각 retail_com 만)
   hhp_storage TEXT,
   hhp_color   TEXT,
+  ram_memory  TEXT,
   trade_in    TEXT,
   -- Amazon 전용
   summarized_review_content             TEXT,

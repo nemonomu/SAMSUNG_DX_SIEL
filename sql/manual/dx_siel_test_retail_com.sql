@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS dx_siel_test_retail_com (
   -- HHP 전용
   hhp_storage TEXT,
   hhp_color   TEXT,
+  ram_memory  TEXT,
   trade_in    TEXT,
   -- REF 전용
   ref_refrigerator_type TEXT,
