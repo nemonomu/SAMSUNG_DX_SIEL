@@ -146,6 +146,18 @@ def count_text(value: Any) -> str | None:
     return f"{parsed:,}"
 
 
+def best_count_text(*values: Any) -> str | None:
+    parsed = [to_int(value) for value in values if value not in (None, "")]
+    parsed = [value for value in parsed if value is not None]
+    if parsed:
+        return f"{max(parsed):,}"
+    for value in values:
+        text = text_or_none(value)
+        if text:
+            return text
+    return None
+
+
 def price_text(value: Any) -> str | None:
     parsed = to_int(value)
     if parsed is None:
@@ -351,6 +363,135 @@ def review_uri(review_url: str) -> str:
     return uri
 
 
+def page_uri(product_url: str) -> str:
+    parsed = urlparse(product_url)
+    uri = parsed.path
+    if parsed.query:
+        uri += "?" + parsed.query
+    return uri
+
+
+def json_text(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, dict):
+        if "text" in value:
+            return json_text(value.get("text"))
+        return None
+    if isinstance(value, list):
+        parts = [json_text(item) for item in value]
+        parts = [part for part in parts if part]
+        return " ".join(parts) if parts else None
+    return normalize_text(str(value))
+
+
+def iter_dicts(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from iter_dicts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_dicts(child)
+
+
+def json_texts(value: Any) -> list[str]:
+    found: list[str] = []
+    for item in iter_dicts(value):
+        text = None
+        if isinstance(item.get("value"), dict) and "text" in item["value"]:
+            text = json_text(item["value"])
+        elif isinstance(item.get("value"), str):
+            text = json_text(item.get("value"))
+        elif isinstance(item.get("text"), str):
+            text = json_text(item.get("text"))
+        if text and text not in found:
+            found.append(text)
+    return found
+
+
+def first_json_key(value: Any, key: str) -> str | None:
+    for item in iter_dicts(value):
+        if key in item:
+            text = json_text(item.get(key))
+            if text:
+                return text
+    return None
+
+
+def json_label_value(value: Any, label: str) -> str | None:
+    wanted = label.strip().lower().rstrip(":")
+    for item in iter_dicts(value):
+        label_text = json_text(((item.get("label_0") or {}).get("value") if isinstance(item.get("label_0"), dict) else None))
+        if not label_text or label_text.strip().lower().rstrip(":") != wanted:
+            continue
+        for key in ("label_2", "label_1"):
+            candidate = item.get(key)
+            if isinstance(candidate, dict):
+                text = json_text(candidate.get("value"))
+                if text and text.strip().lower().rstrip(":") != wanted:
+                    return text
+    return None
+
+
+def detail_api_response(api_dir: Path, product_url: str) -> dict[str, Any]:
+    commands = page_fetch_curl_commands(api_dir / "detail_curl.txt")
+    if not commands:
+        raise ValueError("detail_curl.txt has no page/fetch request")
+    _index, url, raw_body, headers = commands[0]
+    body = json.loads(raw_body)
+    body["pageUri"] = page_uri(product_url)
+    context = body.setdefault("pageContext", {})
+    context["pageNumber"] = 1
+    context["paginatedFetch"] = False
+    context["slotContextMap"] = {}
+    context["paginationContextMap"] = {}
+    return fetch_json(url, headers, body)
+
+
+def detail_from_api_response(response: dict[str, Any], source_url: str) -> dict[str, Any]:
+    texts = json_texts(response)
+    rating_value = None
+    rating_count = None
+    for item in iter_dicts(response):
+        if item.get("rating") is not None and item.get("reviewText") is not None:
+            rating_value = item.get("rating")
+            rating_count = to_int(item.get("reviewText"))
+            break
+    review_count = None
+    for text in texts:
+        match = re.search(r"([\d,]+)\s+ratings?\s+and\s+([\d,]+)\s+reviews?", text, re.I)
+        if match:
+            rating_count = to_int(match.group(1))
+            review_count = to_int(match.group(2))
+            break
+
+    return {
+        "source_url": source_url,
+        "retailer_sku_name": first_json_key(response, "prependingText"),
+        "fsn": (re.search(r"[?&]pid=([A-Z0-9]+)", source_url or "").group(1)
+                if re.search(r"[?&]pid=([A-Z0-9]+)", source_url or "") else None),
+        "final_sku_price": None,
+        "original_sku_price": None,
+        "savings": None,
+        "discount_type": next((text for text in texts if text in {"Hot Deal", "Hot deal", "Special Price"}), None),
+        "availability": None,
+        "star_rating": rating_value,
+        "count_of_star_ratings": rating_count,
+        "count_of_reviews": review_count,
+        "sku": json_label_value(response, "Model Name"),
+        "screen_size": json_label_value(response, "Display Size"),
+        "model_year": json_label_value(response, "Launch Year"),
+        "estimated_annual_electricity_use": (
+            json_label_value(response, "Power Consumption")
+            or json_label_value(response, "Annual Energy Consumption")
+            or json_label_value(response, "Energy Consumption")
+        ),
+        "review_url": fallback_review_url(source_url),
+        "jsonld_review_count": None,
+    }
+
+
 def review_for_product(
     api_dir: Path,
     review_url: str,
@@ -539,8 +680,14 @@ def build_tv_schema_outputs(
             "crawl_datetime": crawl_dt,
             "batch_id": batch_id,
             "star_rating": text_or_none(detail.get("star_rating") or primary.get("star_rating")),
-            "count_of_star_ratings": count_text(detail.get("count_of_star_ratings") or primary.get("count_of_star_ratings")),
-            "count_of_reviews": count_text(detail.get("count_of_reviews") or primary.get("count_of_reviews")),
+            "count_of_star_ratings": best_count_text(
+                detail.get("count_of_star_ratings"),
+                primary.get("count_of_star_ratings"),
+            ),
+            "count_of_reviews": best_count_text(
+                detail.get("count_of_reviews"),
+                primary.get("count_of_reviews"),
+            ),
             "detailed_review_content": detailed_reviews,
             "final_sku_price": price_text(primary.get("final_price") or detail.get("final_sku_price")),
             "original_sku_price": price_text(primary.get("original_price") or detail.get("original_sku_price")),
@@ -644,13 +791,12 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
     reviews: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     if args.max_detail >= 0:
-        headers = html_headers(args.api_dir)
         targets = detail_targets(main_final, bsr_final, args.max_detail)
         for idx, target in enumerate(targets, 1):
             url = target["product_url"]
             safe_print(f"[detail] {idx}/{len(targets)} {target.get('product_id')} {url}")
             try:
-                detail = detail_from_html(fetch_text(url, headers), url)
+                detail = detail_from_api_response(detail_api_response(args.api_dir, url), url)
                 detail["product_id"] = target.get("product_id")
                 detail["main_rank"] = target.get("main_rank")
                 detail["bsr_rank"] = target.get("bsr_rank")
