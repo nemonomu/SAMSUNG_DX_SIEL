@@ -237,6 +237,9 @@ def parse_amzn_apex_price(v):
     return None
 
 
+_RATINGS_RE = re.compile(r'(\d[\d,]*)\s*(?:global\s+)?[Rr]atings?\b')
+
+
 def parse_count_of_ratings(v):
     """'(6,743)' / '1,09,687' / '39,132 global ratings' → '6,743' / '109,687' / '39,132'.
     양 옆 paren/bracket/pipe + 'ratings'/'global ratings' 제거 + 인도식 → 서양식 (orchestrator 가 int 변환)."""
@@ -244,6 +247,9 @@ def parse_count_of_ratings(v):
         return None
     s = str(v).strip()
     s = re.sub(r'^[\(\[\|]+|[\)\]\|]+$', '', s).strip()
+    m = _RATINGS_RE.search(s)
+    if m:
+        return westernize_commas(m.group(1))
     s = re.sub(r'\s*(?:global\s+)?ratings?\s*$', '', s, flags=re.I).strip()
     s = westernize_commas(s)
     return s if s else None

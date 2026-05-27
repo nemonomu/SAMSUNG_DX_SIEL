@@ -57,6 +57,11 @@ STAGE = 'detail'
 IST = timezone(timedelta(hours=5, minutes=30))
 
 REVIEW_MAX = 20
+REVIEW_SUMMARY_XPATH = (
+    '(//div[contains(@class,"css-146c3p1") '
+    'and contains(translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz"),"ratings") '
+    'and contains(translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz"),"reviews")])[1]'
+)
 
 EXPAND_FIELDS = {'expand_specifications', 'expand_see_more'}
 NAVIGATE_FIELDS = {'click_show_all_reviews'}
@@ -159,6 +164,16 @@ def fsn_from_url(url: str):
     return m.group(1) if m else None
 
 
+def _pid_from_url(url: str):
+    m = re.search(r'[?&]pid=([A-Z0-9]+)', url)
+    return m.group(1) if m else None
+
+
+def _item_id_from_url(url: str):
+    m = re.search(r'/itm([a-z0-9]+)', url, re.IGNORECASE)
+    return m.group(1).lower() if m else None
+
+
 def robust_click(driver, xpath: str, wait_s: float = 10.0) -> bool:
     """Flipkart React click 좌표 이슈 회피 + element 등장까지 wait + stale retry.
 
@@ -216,6 +231,38 @@ def extract_single(driver, xpath: str):
         return (el.text or el.get_attribute('textContent') or '').strip() or None
     except (NoSuchElementException, WebDriverException):
         return None
+
+
+def _fill_review_summary_counts(driver, rec: dict):
+    raw = extract_single(driver, REVIEW_SUMMARY_XPATH)
+    if not raw:
+        return
+    ratings = siel_log.parse_count_of_ratings(raw)
+    reviews = siel_log.parse_count_of_reviews(raw)
+    changed = []
+    if ratings and not rec.get('count_of_star_ratings'):
+        rec['count_of_star_ratings'] = ratings
+        changed.append(f'count_of_star_ratings={ratings}')
+    if reviews and not rec.get('count_of_reviews'):
+        rec['count_of_reviews'] = reviews
+        changed.append(f'count_of_reviews={reviews}')
+    if changed and _logger:
+        _logger.info('review summary counts recovered: raw=%r %s',
+                     raw, ' '.join(changed))
+
+
+def _is_same_product_review_href(source_url: str, href: str) -> bool:
+    if not href or '/product-reviews/' not in href or 'buynow' in href:
+        return False
+    src_pid = _pid_from_url(source_url)
+    href_pid = _pid_from_url(href)
+    if src_pid and href_pid and src_pid != href_pid:
+        return False
+    src_item = _item_id_from_url(source_url)
+    href_item = _item_id_from_url(href)
+    if src_item and href_item and src_item != href_item:
+        return False
+    return True
 
 
 def _extract_multi_raw(driver, xpath: str, max_n=None) -> list:
@@ -463,13 +510,31 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                         continue
                     rev_href = href
                     break
-            # 3차 fallback: anchor 없거나 매치 0 → source URL 의 /p/ → /product-reviews/ 변환
-            #               URL 자체에 fsn 포함되어 100% 같은 product 보장
-            if not rev_href and '/p/' in url:
-                rev_href = url.replace('/p/', '/product-reviews/', 1)
-                if _logger:
-                    _logger.info('anchor 매치 없음 — source URL 변환으로 review URL 생성: %s',
-                                 rev_href)
+            # Broad scan for same-product review anchors. Do not synthesize review URLs.
+            if not rev_href:
+                try:
+                    anchors = driver.find_elements(
+                        By.XPATH,
+                        '//a[contains(@href,"/product-reviews/") and not(contains(@href,"buynow"))]'
+                    )
+                except WebDriverException:
+                    anchors = []
+                for prefer_no_aspect in (True, False):
+                    for a in anchors:
+                        try:
+                            href = a.get_attribute('href') or ''
+                        except WebDriverException:
+                            continue
+                        if not _is_same_product_review_href(url, href):
+                            continue
+                        if prefer_no_aspect and '&an=' in href:
+                            continue
+                        rev_href = href
+                        break
+                    if rev_href:
+                        break
+                if _logger and not rev_href:
+                    _logger.info('same-product review anchor href not found')
             if rev_href:
                 if _logger:
                     _logger.info('navigating to review page: %s (target=%d)', rev_href, target)
@@ -492,6 +557,10 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                 try:
                     driver.get(rev_href)
                     time.sleep(3)
+                    _fill_review_summary_counts(driver, rec)
+                    count_reviews = siel_log.parse_int_field(rec.get('count_of_reviews'))
+                    if count_reviews is not None and count_reviews >= 1:
+                        target = min(count_reviews, REVIEW_MAX)
                     # review body count 기반 scroll loop — height-based 정지 조건 결함 회피
                     # (Flipkart React virtual scroll 시 첫 iteration height 안 변하 break 결함).
                     # target = min(count_of_reviews, REVIEW_MAX) review body element 등장
@@ -531,6 +600,10 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                         time.sleep(2)
                         driver.get(rev_href)
                         time.sleep(3)
+                        _fill_review_summary_counts(driver, rec)
+                        count_reviews = siel_log.parse_int_field(rec.get('count_of_reviews'))
+                        if count_reviews is not None and count_reviews >= 1:
+                            target = min(count_reviews, REVIEW_MAX)
                         scroll_to_bottom(driver, pause=1.2, max_scrolls=15)
                     except (WebDriverException, _Urllib3RT) as e2:
                         if _logger:
