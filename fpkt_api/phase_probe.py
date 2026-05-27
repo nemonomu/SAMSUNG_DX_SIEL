@@ -49,8 +49,11 @@ def default_api_dir() -> Path:
         return Path(os.environ["FPKT_API_DIR"])
     repo_root = Path(__file__).resolve().parents[1]
     candidates = [
+        repo_root / "logs" / "api",
         repo_root / "siel_logs" / "api",
+        repo_root.parent / "logs" / "api",
         repo_root.parent / "siel_logs" / "api",
+        Path.cwd() / "logs" / "api",
         Path.cwd() / "siel_logs" / "api",
     ]
     for candidate in candidates:
