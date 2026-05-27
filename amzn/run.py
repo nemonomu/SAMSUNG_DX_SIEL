@@ -239,9 +239,9 @@ def _make_dual(orig_emit):
         if not key:
             return
         if stage == 'main':
-            _main_cache[key] = rec
+            _main_cache.setdefault(key, rec)
         elif stage == 'bsr':
-            _bsr_cache[key] = rec
+            _bsr_cache.setdefault(key, rec)
         elif stage == 'detail':
             _stream_insert(rec)
     return dual
