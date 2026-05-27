@@ -618,6 +618,97 @@ def format_detailed_review_content(rows: list[dict[str, Any]]) -> str | None:
     return " ||| ".join(f"review{idx + 1} - {text}" for idx, text in enumerate(parts[:20]))
 
 
+def url_pid(value: Any) -> str | None:
+    match = re.search(r"[?&]pid=([A-Z0-9]+)", str(value or ""))
+    return match.group(1) if match else None
+
+
+def review_content_count(value: Any) -> int:
+    text = str(value or "")
+    if not text:
+        return 0
+    return len(re.findall(r"(?:^| \|\|\| )review\d+\s+-", text))
+
+
+def qa_issue(check: str, item: Any, message: str, **extra: Any) -> dict[str, Any]:
+    row = {"check": check, "item": item, "message": message}
+    row.update(extra)
+    return row
+
+
+def validate_tv_outputs(
+    retail_rows: list[dict[str, Any]],
+    reviews: list[dict[str, Any]],
+    max_reviews_per_product: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    issues: list[dict[str, Any]] = []
+    item_counts: dict[str, int] = {}
+    review_counts: dict[str, int] = {}
+
+    for row in retail_rows:
+        item = row.get("item")
+        if item:
+            item_counts[item] = item_counts.get(item, 0) + 1
+    for row in reviews:
+        item = key_for_row(row)
+        if item:
+            review_counts[item] = review_counts.get(item, 0) + 1
+
+    for item, count in item_counts.items():
+        if count > 1:
+            issues.append(qa_issue("duplicate_item", item, f"item appears {count} times"))
+
+    for row in retail_rows:
+        item = row.get("item")
+        pid = url_pid(row.get("product_url"))
+        if pid and item and pid != item:
+            issues.append(qa_issue("pid_mismatch", item, f"url pid is {pid}"))
+
+        fsp = to_int(row.get("final_sku_price"))
+        osp = to_int(row.get("original_sku_price"))
+        savings = to_int(row.get("savings"))
+        if fsp is not None and osp is not None and fsp > osp:
+            issues.append(qa_issue("price_inversion", item, "final_sku_price is greater than original_sku_price",
+                                   final_sku_price=fsp, original_sku_price=osp))
+        if fsp is not None and osp not in (None, 0) and savings is not None:
+            calculated = (osp - fsp) * 100.0 / osp
+            if abs(calculated - savings) > 1.0:
+                issues.append(qa_issue("savings_mismatch", item, "savings differs from price-derived discount by >1pp",
+                                       final_sku_price=fsp, original_sku_price=osp,
+                                       savings=row.get("savings"), calculated=round(calculated, 2)))
+
+        for field in ("sku", "screen_size", "model_year"):
+            if row.get(field) in (None, ""):
+                issues.append(qa_issue(f"missing_{field}", item, f"{field} is empty"))
+
+        review_total = to_int(row.get("count_of_reviews")) or 0
+        content_count = review_content_count(row.get("detailed_review_content"))
+        api_count = review_counts.get(str(item), 0)
+        expected = min(review_total, max_reviews_per_product)
+        if expected > 0 and content_count < expected:
+            issues.append(qa_issue("review_content_short", item,
+                                   "detailed_review_content has fewer reviews than expected",
+                                   count_of_reviews=review_total, content_count=content_count, expected=expected))
+        if expected > 0 and api_count < expected:
+            issues.append(qa_issue("review_api_short", item,
+                                   "review.csv has fewer review rows than expected",
+                                   count_of_reviews=review_total, review_rows=api_count, expected=expected))
+
+    summary = [
+        f"[qa] issues={len(issues)} "
+        f"duplicate_item={sum(row['check'] == 'duplicate_item' for row in issues)} "
+        f"pid_mismatch={sum(row['check'] == 'pid_mismatch' for row in issues)} "
+        f"price_inversion={sum(row['check'] == 'price_inversion' for row in issues)} "
+        f"savings_mismatch={sum(row['check'] == 'savings_mismatch' for row in issues)} "
+        f"review_content_short={sum(row['check'] == 'review_content_short' for row in issues)} "
+        f"review_api_short={sum(row['check'] == 'review_api_short' for row in issues)}",
+        f"[qa] missing_sku={sum(row['check'] == 'missing_sku' for row in issues)} "
+        f"missing_screen_size={sum(row['check'] == 'missing_screen_size' for row in issues)} "
+        f"missing_model_year={sum(row['check'] == 'missing_model_year' for row in issues)}",
+    ]
+    return issues, summary
+
+
 def key_for_row(row: dict[str, Any]) -> str | None:
     return row.get("product_id") or row.get("fsn") or row.get("item") or row.get("product_url")
 
@@ -840,6 +931,8 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
         write_csv_fields(out_dir / "out_tv_retail_com.csv", retail_rows, TV_RETAIL_COM_COLS)
         write_csv_fields(out_dir / "out_tv_product_list.csv", product_list_rows, TV_PRODUCT_LIST_COLS)
         write_jsonl(out_dir / "api_run.jsonl", jsonl_rows)
+        qa_issues, qa_summary = validate_tv_outputs(retail_rows, reviews, args.max_reviews_per_product)
+        write_csv(out_dir / "qa_issues.csv", qa_issues)
         lines.append(
             f"[schema:tv_retail_com] rows={len(retail_rows)} "
             f"cols={len(TV_RETAIL_COM_COLS)} "
@@ -853,6 +946,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
             f"missing_url={sum(row.get('product_url') in (None, '') for row in product_list_rows)}"
         )
         lines.append(f"[schema:jsonl] rows={len(jsonl_rows)}")
+        lines.extend(qa_summary)
         lines.append("")
 
     lines.append(
@@ -875,6 +969,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
             "tv_product_list_preview.csv",
             "out_tv_retail_com.csv",
             "out_tv_product_list.csv",
+            "qa_issues.csv",
             "api_run.jsonl",
         ]
     for name in file_names:
