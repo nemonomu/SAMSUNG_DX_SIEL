@@ -397,7 +397,7 @@ _LDY_REQUIRED_KEYWORD_RE = re.compile(
 
 # LDY 전용 — Function Type / Loading Type raw 값에서 'Top Load' / 'Front Load' 만 추출.
 # 끝에 매칭 안 되면 None (e.g. 'Washer only' → None).
-_LDY_LOADING_TAIL_RE = re.compile(r'(top|front)\s*load\s*$', re.IGNORECASE)
+_LDY_LOADING_TAIL_RE = re.compile(r'\b(top|front)\s+load\s*$', re.IGNORECASE)
 
 
 def parse_ldy_loading_type(v):
@@ -405,7 +405,8 @@ def parse_ldy_loading_type(v):
     'Washer only' → None. 대소문자 무관, 끝 매칭만."""
     if not v:
         return None
-    m = _LDY_LOADING_TAIL_RE.search(str(v).strip())
+    s = re.sub(r'\s+', ' ', str(v).strip())
+    m = _LDY_LOADING_TAIL_RE.search(s)
     if not m:
         return None
     return f"{m.group(1).capitalize()} Load"
