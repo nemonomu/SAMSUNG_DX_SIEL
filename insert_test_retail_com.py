@@ -279,6 +279,7 @@ def main() -> int:
     listing_by_url = {}  # key → {'main': rec or None, 'bsr': rec or None}
     detail_by_url = {}
     n_main = n_bsr = n_detail = n_other = 0
+    n_dup_main = n_dup_bsr = 0
 
     with open(jsonl_path, 'r', encoding='utf-8') as f:
         for line in f:
@@ -296,7 +297,12 @@ def main() -> int:
                 continue
             if stage in ('main', 'bsr'):
                 entry = listing_by_url.setdefault(key, {'main': None, 'bsr': None})
-                entry[stage] = rec
+                if entry.get(stage) is None:
+                    entry[stage] = rec
+                elif stage == 'main':
+                    n_dup_main += 1
+                else:
+                    n_dup_bsr += 1
                 if stage == 'main':
                     n_main += 1
                 else:
@@ -307,7 +313,7 @@ def main() -> int:
             else:
                 n_other += 1
 
-    print(f'[insert_test] read main={n_main} bsr={n_bsr} detail={n_detail} other={n_other} unique_listing={len(listing_by_url)}',
+    print(f'[insert_test] read main={n_main} bsr={n_bsr} detail={n_detail} other={n_other} unique_listing={len(listing_by_url)} dup_main={n_dup_main} dup_bsr={n_dup_bsr}',
           file=sys.stderr)
 
     # retail_com 용 — main + bsr + detail merge (full)
