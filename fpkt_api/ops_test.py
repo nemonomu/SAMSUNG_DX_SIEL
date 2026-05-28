@@ -934,6 +934,47 @@ def review_for_product(
     return rows
 
 
+def review_for_product_with_retries(
+    api_dir: Path,
+    review_url: str,
+    pages: int,
+    max_reviews: int,
+    expected_reviews: int,
+    retries: int,
+    label: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    rows = review_for_product(api_dir, review_url, pages, max_reviews)
+    expected = min(expected_reviews, max_reviews) if max_reviews > 0 else expected_reviews
+    messages: list[str] = []
+    if expected <= 0 or len(rows) >= expected:
+        return rows, messages
+
+    best_rows = rows
+    for attempt in range(1, max(retries, 0) + 1):
+        if len(best_rows) >= expected:
+            break
+        try:
+            retry_rows = review_for_product(api_dir, review_url, pages, max_reviews)
+        except Exception as exc:
+            messages.append(
+                f"[review_retry] {label} attempt={attempt}/{retries} "
+                f"error={repr(exc)} best={len(best_rows)} expected={expected}"
+            )
+            continue
+        if len(retry_rows) > len(best_rows):
+            messages.append(
+                f"[review_retry] {label} attempt={attempt}/{retries} "
+                f"recovered {len(best_rows)}->{len(retry_rows)} expected={expected}"
+            )
+            best_rows = retry_rows
+        else:
+            messages.append(
+                f"[review_retry] {label} attempt={attempt}/{retries} "
+                f"rows={len(retry_rows)} best={len(best_rows)} expected={expected}"
+            )
+    return best_rows, messages
+
+
 def detail_targets(main_rows: list[dict[str, Any]], bsr_rows: list[dict[str, Any]], max_detail: int) -> list[dict[str, Any]]:
     targets: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1408,6 +1449,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
 
     details: list[dict[str, Any]] = []
     reviews: list[dict[str, Any]] = []
+    review_retry_lines: list[str] = []
     errors: list[dict[str, Any]] = []
     if args.max_detail >= 0:
         targets = detail_targets(main_final, bsr_final, args.max_detail)
@@ -1428,12 +1470,19 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
                 details.append(detail)
                 count_reviews = detail.get("count_of_reviews")
                 if args.review_pages > 0 and detail.get("review_url") and (to_int(count_reviews) or 0) >= 1:
-                    for review in review_for_product(
+                    review_rows, retry_lines = review_for_product_with_retries(
                         args.api_dir,
                         detail["review_url"],
                         args.review_pages,
                         args.max_reviews_per_product,
-                    ):
+                        to_int(count_reviews) or 0,
+                        args.review_retries,
+                        str(target.get("product_id") or detail.get("fsn") or detail.get("review_url")),
+                    )
+                    for line in retry_lines:
+                        safe_print(line)
+                    review_retry_lines.extend(retry_lines)
+                    for review in review_rows:
                         review["product_id"] = target.get("product_id")
                         review["fsn"] = detail.get("fsn")
                         reviews.append(review)
@@ -1509,6 +1558,11 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         f"unique={len({row.get('id') for row in reviews if row.get('id')})} "
         f"errors={len(errors)}"
     )
+    if review_retry_lines:
+        lines.append(f"[review_retry] events={len(review_retry_lines)}")
+        lines.extend(review_retry_lines[:50])
+        if len(review_retry_lines) > 50:
+            lines.append(f"[review_retry] omitted={len(review_retry_lines) - 50}")
     lines.append("")
     lines.append("files:")
     file_names = ["main_final.csv", "bsr_final.csv", "detail.csv", "review.csv", "errors.csv"]
@@ -1558,6 +1612,7 @@ def main() -> int:
     parser.add_argument("--max-detail", type=int, default=10, help="detail target count; 0=all unique, -1=skip detail")
     parser.add_argument("--review-pages", type=int, default=2)
     parser.add_argument("--max-reviews-per-product", type=int, default=20)
+    parser.add_argument("--review-retries", type=int, default=2, help="Retry review API when collected rows are below count_of_reviews")
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--insecure", action="store_true")
     parser.add_argument("--real-batch-id", action="store_true", help="Use the normal f_YYYYMMDD_NNNNNN batch counter")
