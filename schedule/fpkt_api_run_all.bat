@@ -137,25 +137,12 @@ for %%P in (%FPKT_PRODUCTS%) do (
   >> "%RUN_LOG%" echo [fpkt_api_run_all] start %%P
   echo [fpkt_api_run_all] log=!PRODUCT_LOG!
   >> "%RUN_LOG%" echo [fpkt_api_run_all] log=!PRODUCT_LOG!
-  python fpkt_api\ops_test.py ^
-    --api-dir "%FPKT_API_DIR%" ^
-    --product %%P ^
-    --main-target %FPKT_MAIN_TARGET% ^
-    --bsr-target %FPKT_BSR_TARGET% ^
-    --max-pages-main %FPKT_MAX_PAGES_MAIN% ^
-    --max-pages-bsr %FPKT_MAX_PAGES_BSR% ^
-    --max-detail %FPKT_MAX_DETAIL% ^
-    --detail-retries %FPKT_DETAIL_RETRIES% ^
-    --review-pages %FPKT_REVIEW_PAGES% ^
-    --review-short-max-pages %FPKT_REVIEW_SHORT_MAX_PAGES% ^
-    --review-retries %FPKT_REVIEW_RETRIES% ^
-    --max-reviews-per-product %FPKT_MAX_REVIEWS_PER_PRODUCT% ^
-    --insert-max-n %FPKT_INSERT_MAX_N% ^
-    !DB_FLAGS! ^
-    !EMAIL_FLAGS! > "!PRODUCT_LOG!" 2>&1
+  set "PRODUCT_CMD=python -u fpkt_api\ops_test.py --api-dir %FPKT_API_DIR% --product %%P --main-target %FPKT_MAIN_TARGET% --bsr-target %FPKT_BSR_TARGET% --max-pages-main %FPKT_MAX_PAGES_MAIN% --max-pages-bsr %FPKT_MAX_PAGES_BSR% --max-detail %FPKT_MAX_DETAIL% --detail-retries %FPKT_DETAIL_RETRIES% --review-pages %FPKT_REVIEW_PAGES% --review-short-max-pages %FPKT_REVIEW_SHORT_MAX_PAGES% --review-retries %FPKT_REVIEW_RETRIES% --max-reviews-per-product %FPKT_MAX_REVIEWS_PER_PRODUCT% --insert-max-n %FPKT_INSERT_MAX_N% !DB_FLAGS! !EMAIL_FLAGS!"
+  set "FPKT_PRODUCT_CMD=!PRODUCT_CMD!"
+  set "FPKT_PRODUCT_LOG=!PRODUCT_LOG!"
+  set "FPKT_RUN_LOG=%RUN_LOG%"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "$cmd=$env:FPKT_PRODUCT_CMD; $productLog=$env:FPKT_PRODUCT_LOG; $runLog=$env:FPKT_RUN_LOG; if (Test-Path -LiteralPath $productLog) { Remove-Item -LiteralPath $productLog -Force }; & cmd.exe /d /c $cmd 2>&1 | Tee-Object -FilePath $productLog | Tee-Object -FilePath $runLog -Append; exit $LASTEXITCODE"
   set "PRODUCT_CODE=!ERRORLEVEL!"
-  type "!PRODUCT_LOG!"
-  type "!PRODUCT_LOG!" >> "%RUN_LOG%"
   if not "!PRODUCT_CODE!"=="0" (
     echo [fpkt_api_run_all] failed %%P exit=!PRODUCT_CODE!
     >> "%RUN_LOG%" echo [fpkt_api_run_all] failed %%P exit=!PRODUCT_CODE!

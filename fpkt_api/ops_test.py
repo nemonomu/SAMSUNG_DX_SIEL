@@ -112,7 +112,7 @@ DB_QUERY_VIEW_COLS = DB_QUERY_VIEW_COLS_BY_PRODUCT["tv"]
 
 def safe_print(value: str) -> None:
     encoding = sys.stdout.encoding or "utf-8"
-    print(value.encode(encoding, errors="replace").decode(encoding, errors="replace"))
+    print(value.encode(encoding, errors="replace").decode(encoding, errors="replace"), flush=True)
 
 
 def ssl_context() -> ssl.SSLContext | None:
