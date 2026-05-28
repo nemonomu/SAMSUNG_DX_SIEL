@@ -1531,6 +1531,28 @@ def schema_null_report(name: str, rows: list[dict[str, Any]], cols: list[str]) -
     return lines
 
 
+def full_null_columns(rows: list[dict[str, Any]], cols: list[str]) -> list[str]:
+    if not rows:
+        return cols[:]
+    return [col for col in cols if all(is_null_value(row.get(col)) for row in rows)]
+
+
+def null_count(rows: list[dict[str, Any]], col: str) -> int:
+    return sum(1 for row in rows if is_null_value(row.get(col)))
+
+
+def parse_db_insert_counts(lines: list[str], product_key: str) -> tuple[int | None, int | None]:
+    pattern = re.compile(
+        rf"\[insert\]\s+OK:\s+{re.escape(product_key.lower())}\s+retail=(\d+)\s+list=(\d+)",
+        re.IGNORECASE,
+    )
+    for line in lines:
+        match = pattern.search(line)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    return None, None
+
+
 def email_config_value(cfg: dict[str, Any], *keys: str, default: Any = None) -> Any:
     for key in keys:
         value = cfg.get(key)
@@ -1551,45 +1573,46 @@ def email_recipients(value: Any) -> list[str]:
 
 def build_email_report(
     product: str,
-    batch_id: str,
-    crawl_dt: str,
-    out_dir: Path,
-    db_status: str,
     main_final: list[dict[str, Any]],
     bsr_final: list[dict[str, Any]],
-    details: list[dict[str, Any]],
-    reviews: list[dict[str, Any]],
+    main_target: int,
+    bsr_target: int,
     retail_rows: list[dict[str, Any]],
     retail_cols: list[str],
-    product_list_rows: list[dict[str, Any]],
-    product_list_cols: list[str],
-    qa_issues: list[dict[str, Any]],
-) -> str:
-    title = product.upper()
+    retail_db_ok: bool | None,
+    product_list_db_ok: bool | None,
+) -> tuple[str, bool]:
+    required_cols = ["retailer_sku_name", "final_sku_price", "product_url"]
+    all_null_cols = full_null_columns(retail_rows, retail_cols)
+    warnings: list[str] = []
+
+    if len(main_final) < main_target:
+        warnings.append(f"listing 수집 부족: main {len(main_final)}/{main_target}")
+    if len(bsr_final) < bsr_target:
+        warnings.append(f"listing 수집 부족: bsr {len(bsr_final)}/{bsr_target}")
+    if retail_db_ok is False:
+        warnings.append("retail_com DB insert 실패")
+    if product_list_db_ok is False:
+        warnings.append("product_list DB insert 실패")
+
+    for col in required_cols:
+        count = null_count(retail_rows, col)
+        if count:
+            warnings.append(f"{col} null 발생: {count}건")
+
+    null_names = ", ".join(all_null_cols) if all_null_cols else "없음"
     lines = [
-        f"[SIEL] {title} crawling report",
-        "",
-        f"product: {title}",
-        f"batch_id: {batch_id}",
-        f"crawl_datetime: {crawl_dt}",
-        f"db_insert: {db_status}",
-        f"output_dir: {out_dir}",
-        "",
-        "총 수집개수",
-        f"- main listing unique: {len(main_final)}",
-        f"- bsr listing unique: {len(bsr_final)}",
-        f"- detail products: {len(details)}",
-        f"- review rows: {len(reviews)}",
-        f"- retail_com rows: {len(retail_rows)}",
-        f"- product_list rows: {len(product_list_rows)}",
-        f"- qa issues: {len(qa_issues)}",
-        "",
-        "수집스키마별 null 비율",
+        f"최종 수집대상개수: {len(retail_rows)}",
+        f"전체 null 컬럼: {len(all_null_cols)}개 ({null_names})",
     ]
-    lines.extend(schema_null_report("retail_com", retail_rows, retail_cols))
-    lines.append("")
-    lines.extend(schema_null_report("product_list", product_list_rows, product_list_cols))
-    return "\n".join(lines) + "\n"
+    if warnings:
+        lines.append("")
+        lines.append("WARNING")
+        lines.extend(f"- {warning}" for warning in warnings)
+    elif not all_null_cols:
+        lines.append("")
+        lines.append("특이사항 없음")
+    return "\n".join(lines) + "\n", bool(warnings)
 
 
 def send_email_report(subject: str, body: str) -> tuple[bool, list[str]]:
@@ -1668,6 +1691,8 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     batch_id = schema_batch_id(run_dt, args.real_batch_id)
     exit_code = 0
     db_status = "not requested"
+    retail_db_ok: bool | None = None
+    product_list_db_ok: bool | None = None
 
     lines: list[str] = [
         f"db_insert={str(bool(args.db_insert)).lower()}",
@@ -1792,10 +1817,14 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         if errors:
             lines.append(f"[db_insert] skipped: detail/review errors={len(errors)}")
             db_status = f"skipped: detail/review errors={len(errors)}"
+            retail_db_ok = False
+            product_list_db_ok = False
             exit_code = 1
         elif qa_issues and not args.allow_qa_insert:
             lines.append(f"[db_insert] skipped: qa_issues={len(qa_issues)} (use --allow-qa-insert to force)")
             db_status = f"skipped: qa_issues={len(qa_issues)}"
+            retail_db_ok = False
+            product_list_db_ok = False
             exit_code = 1
         else:
             insert_code, insert_lines = insert_into_db(api_run_path, args.insert_max_n, args.db_dry_run)
@@ -1803,8 +1832,15 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             if insert_code != 0:
                 lines.append("[db_insert] FAIL")
                 db_status = f"FAIL returncode={insert_code}"
+                retail_db_ok = False
+                product_list_db_ok = False
                 exit_code = insert_code or 1
             else:
+                inserted_retail, inserted_list = parse_db_insert_counts(insert_lines, product_key)
+                expected_retail = len(retail_rows) if args.insert_max_n == 0 else min(len(retail_rows), args.insert_max_n)
+                expected_list = len(product_list_rows) if args.insert_max_n == 0 else min(len(product_list_rows), args.insert_max_n)
+                retail_db_ok = True if inserted_retail is None else inserted_retail == expected_retail
+                product_list_db_ok = True if inserted_list is None else inserted_list == expected_list
                 lines.append("[db_insert] OK")
                 db_status = "DRY_RUN OK" if args.db_dry_run else "OK"
     lines.append("")
@@ -1865,22 +1901,19 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
 
     if args.email_report:
         subject = f"[SIEL] {product_key.upper()} crawling report"
-        body = build_email_report(
+        body, has_email_warning = build_email_report(
             args.product,
-            batch_id,
-            crawl_dt,
-            out_dir,
-            db_status,
             main_final,
             bsr_final,
-            details,
-            reviews,
+            args.main_target,
+            args.bsr_target,
             retail_rows,
             retail_cols,
-            product_list_rows,
-            product_list_cols,
-            qa_issues,
+            retail_db_ok,
+            product_list_db_ok,
         )
+        if has_email_warning:
+            subject = f"WARNING {subject}"
         (out_dir / "email_report.txt").write_text(body, encoding="utf-8")
         _sent, email_lines = send_email_report(subject, body)
         lines.extend(email_lines)
