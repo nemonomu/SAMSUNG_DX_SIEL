@@ -1026,6 +1026,7 @@ def review_for_product_with_retries(
     api_dir: Path,
     review_url: str,
     pages: int,
+    short_max_pages: int,
     max_reviews: int,
     expected_reviews: int,
     retries: int,
@@ -1038,11 +1039,34 @@ def review_for_product_with_retries(
         return rows, messages
 
     best_rows = rows
+    retry_pages = pages
+    if short_max_pages > pages:
+        try:
+            expanded_rows = review_for_product(api_dir, review_url, short_max_pages, max_reviews)
+        except Exception as exc:
+            messages.append(
+                f"[review_retry] {label} expand_pages={pages}->{short_max_pages} "
+                f"error={repr(exc)} best={len(best_rows)} expected={expected}"
+            )
+        else:
+            retry_pages = short_max_pages
+            if len(expanded_rows) > len(best_rows):
+                messages.append(
+                    f"[review_retry] {label} expand_pages={pages}->{short_max_pages} "
+                    f"recovered {len(best_rows)}->{len(expanded_rows)} expected={expected}"
+                )
+                best_rows = expanded_rows
+            else:
+                messages.append(
+                    f"[review_retry] {label} expand_pages={pages}->{short_max_pages} "
+                    f"rows={len(expanded_rows)} best={len(best_rows)} expected={expected}"
+                )
+
     for attempt in range(1, max(retries, 0) + 1):
         if len(best_rows) >= expected:
             break
         try:
-            retry_rows = review_for_product(api_dir, review_url, pages, max_reviews)
+            retry_rows = review_for_product(api_dir, review_url, retry_pages, max_reviews)
         except Exception as exc:
             messages.append(
                 f"[review_retry] {label} attempt={attempt}/{retries} "
@@ -1573,6 +1597,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
                         args.api_dir,
                         detail["review_url"],
                         args.review_pages,
+                        args.review_short_max_pages,
                         args.max_reviews_per_product,
                         to_int(count_reviews) or 0,
                         args.review_retries,
@@ -1658,6 +1683,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             lines.append(f"[detail_retry] omitted={len(detail_retry_lines) - 50}")
     lines.append(
         f"[review] pages_per_product={args.review_pages} rows={len(reviews)} "
+        f"short_max_pages={args.review_short_max_pages} "
         f"max_per_product={args.max_reviews_per_product} "
         f"unique={len({row.get('id') for row in reviews if row.get('id')})} "
         f"errors={len(errors)}"
@@ -1716,6 +1742,8 @@ def main() -> int:
     parser.add_argument("--max-detail", type=int, default=10, help="detail target count; 0=all unique, -1=skip detail")
     parser.add_argument("--detail-retries", type=int, default=2, help="Retry detail API when a product response fails")
     parser.add_argument("--review-pages", type=int, default=2)
+    parser.add_argument("--review-short-max-pages", type=int, default=3,
+                        help="When review rows are short, expand review pages up to this value")
     parser.add_argument("--max-reviews-per-product", type=int, default=20)
     parser.add_argument("--review-retries", type=int, default=2, help="Retry review API when collected rows are below count_of_reviews")
     parser.add_argument("--out-dir", type=Path)
