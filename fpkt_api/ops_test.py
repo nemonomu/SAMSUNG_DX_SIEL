@@ -1531,12 +1531,6 @@ def schema_null_report(name: str, rows: list[dict[str, Any]], cols: list[str]) -
     return lines
 
 
-def full_null_columns(rows: list[dict[str, Any]], cols: list[str]) -> list[str]:
-    if not rows:
-        return cols[:]
-    return [col for col in cols if all(is_null_value(row.get(col)) for row in rows)]
-
-
 def null_count(rows: list[dict[str, Any]], col: str) -> int:
     return sum(1 for row in rows if is_null_value(row.get(col)))
 
@@ -1585,7 +1579,6 @@ def build_email_report(
     product_list_db_ok: bool | None,
 ) -> tuple[str, bool]:
     required_cols = ["retailer_sku_name", "final_sku_price", "product_url"]
-    all_null_cols = full_null_columns(retail_rows, retail_cols)
     warnings: list[str] = []
 
     if len(main_final) < main_target:
@@ -1620,16 +1613,14 @@ def build_email_report(
         if count:
             warnings.append(f"{col} null 발생: {count}건")
 
-    null_names = ", ".join(all_null_cols) if all_null_cols else "없음"
     lines = [
         f"최종 수집대상개수: {len(retail_rows)}",
-        f"전체 null 컬럼: {len(all_null_cols)}개 ({null_names})",
     ]
     if warnings:
         lines.append("")
         lines.append("WARNING")
         lines.extend(f"- {warning}" for warning in warnings)
-    elif not all_null_cols:
+    else:
         lines.append("")
         lines.append("특이사항 없음")
     return "\n".join(lines) + "\n", bool(warnings)
