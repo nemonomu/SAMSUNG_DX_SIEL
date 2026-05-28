@@ -17,6 +17,7 @@ import json
 import os
 import re
 import ssl
+import subprocess
 import sys
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -1045,6 +1046,28 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def insert_into_db(jsonl_path: Path, max_n: int) -> tuple[int, list[str]]:
+    script = ROOT / "insert_test_retail_com.py"
+    if not script.exists():
+        return 2, [f"[db_insert] missing insert script: {script}"]
+    command = [sys.executable, str(script), str(jsonl_path), str(max_n)]
+    proc = subprocess.run(
+        command,
+        cwd=str(ROOT),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=1200,
+    )
+    lines = [f"[db_insert] command={' '.join(command)}", f"[db_insert] returncode={proc.returncode}"]
+    if proc.stdout.strip():
+        lines.extend(f"[db_insert][stdout] {line}" for line in proc.stdout.strip().splitlines())
+    if proc.stderr.strip():
+        lines.extend(f"[db_insert][stderr] {line}" for line in proc.stderr.strip().splitlines())
+    return proc.returncode, lines
+
+
 def summarize_listing(stage: str, raw: list[dict[str, Any]], final: list[dict[str, Any]], pages: int, target: int) -> str:
     missing_reviews = sum(row.get("count_of_reviews") in (None, "") for row in final)
     duplicates = sum(1 for row in raw if row.get("duplicate"))
@@ -1057,7 +1080,7 @@ def summarize_listing(stage: str, raw: list[dict[str, Any]], final: list[dict[st
     )
 
 
-def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
+def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     if args.insecure:
         os.environ["FPKT_API_INSECURE_SSL"] = "1"
     query = args.query or PRODUCT_QUERY[args.product]
@@ -1066,9 +1089,10 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
     run_dt = now_ist()
     crawl_dt = run_dt.isoformat(timespec="seconds")
     batch_id = schema_batch_id(run_dt, args.real_batch_id)
+    exit_code = 0
 
     lines: list[str] = [
-        "db_insert=false",
+        f"db_insert={str(bool(args.db_insert)).lower()}",
         "command: " + " ".join(sys.argv),
         "api_dir: " + str(args.api_dir),
         "output_dir: " + str(out_dir),
@@ -1136,6 +1160,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
     write_csv(out_dir / "errors.csv", errors)
 
     if args.product == "tv":
+        api_run_path = out_dir / "api_run.jsonl"
         retail_rows, product_list_rows, jsonl_rows = build_tv_schema_outputs(
             args.product, main_final, bsr_final, details, reviews, crawl_dt, batch_id
         )
@@ -1144,7 +1169,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
         write_csv_fields(out_dir / "out_tv_retail_com.csv", retail_rows, TV_RETAIL_COM_COLS)
         write_csv_fields(out_dir / "out_tv_product_list.csv", product_list_rows, TV_PRODUCT_LIST_COLS)
         write_csv_fields(out_dir / "db_query_view.csv", retail_rows, DB_QUERY_VIEW_COLS)
-        write_jsonl(out_dir / "api_run.jsonl", jsonl_rows)
+        write_jsonl(api_run_path, jsonl_rows)
         qa_issues, qa_summary = validate_tv_outputs(retail_rows, reviews, args.max_reviews_per_product)
         write_csv(out_dir / "qa_issues.csv", qa_issues)
         lines.append(
@@ -1161,6 +1186,21 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
         )
         lines.append(f"[schema:jsonl] rows={len(jsonl_rows)}")
         lines.extend(qa_summary)
+        if args.db_insert:
+            if errors:
+                lines.append(f"[db_insert] skipped: detail/review errors={len(errors)}")
+                exit_code = 1
+            elif qa_issues and not args.allow_qa_insert:
+                lines.append(f"[db_insert] skipped: qa_issues={len(qa_issues)} (use --allow-qa-insert to force)")
+                exit_code = 1
+            else:
+                insert_code, insert_lines = insert_into_db(api_run_path, args.insert_max_n)
+                lines.extend(insert_lines)
+                if insert_code != 0:
+                    lines.append("[db_insert] FAIL")
+                    exit_code = insert_code or 1
+                else:
+                    lines.append("[db_insert] OK")
         lines.append("")
 
     lines.append(
@@ -1185,6 +1225,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
             "out_tv_product_list.csv",
             "qa_issues.csv",
             "api_run.jsonl",
+            "db_query_view.csv",
         ]
     for name in file_names:
         lines.append(f"- {out_dir / name}")
@@ -1207,11 +1248,11 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
 
     (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (out_dir / "command.txt").write_text(" ".join(sys.argv) + "\n", encoding="utf-8")
-    return out_dir, lines
+    return out_dir, lines, exit_code
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Flipkart API operation-like test; never inserts into DB")
+    parser = argparse.ArgumentParser(description="Flipkart API operation runner; DB insert is opt-in")
     parser.add_argument("--api-dir", type=Path, default=default_api_dir())
     parser.add_argument("--product", choices=sorted(PRODUCT_QUERY), default="tv")
     parser.add_argument("--query", default=None)
@@ -1225,14 +1266,17 @@ def main() -> int:
     parser.add_argument("--out-dir", type=Path)
     parser.add_argument("--insecure", action="store_true")
     parser.add_argument("--real-batch-id", action="store_true", help="Use the normal f_YYYYMMDD_NNNNNN batch counter")
+    parser.add_argument("--db-insert", action="store_true", help="Insert into existing dx_siel_* tables after output validation")
+    parser.add_argument("--insert-max-n", type=int, default=0, help="Rows cap passed to insert_test_retail_com.py; 0=unlimited")
+    parser.add_argument("--allow-qa-insert", action="store_true", help="Insert even when QA issues are present")
     args = parser.parse_args()
 
-    out_dir, lines = run(args)
+    out_dir, lines, exit_code = run(args)
     for line in lines:
         safe_print(line)
     safe_print(f"[saved] {out_dir}")
     safe_print(f"[summary] {out_dir / 'summary.txt'}")
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":
