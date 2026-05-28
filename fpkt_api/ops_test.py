@@ -1579,6 +1579,7 @@ def build_email_report(
     bsr_target: int,
     retail_rows: list[dict[str, Any]],
     retail_cols: list[str],
+    errors: list[dict[str, Any]],
     retail_db_ok: bool | None,
     product_list_db_ok: bool | None,
 ) -> tuple[str, bool]:
@@ -1594,6 +1595,23 @@ def build_email_report(
         warnings.append("retail_com DB insert 실패")
     if product_list_db_ok is False:
         warnings.append("product_list DB insert 실패")
+    if errors:
+        warnings.append(f"detail/review 오류: {len(errors)}건")
+        for row in errors[:10]:
+            product_id = row.get("product_id") or row.get("item") or "-"
+            stage = row.get("stage") or "detail/review"
+            reason = row.get("error") or "-"
+            meta = []
+            if row.get("attempts") not in (None, ""):
+                meta.append(f"attempts={row.get('attempts')}")
+            if row.get("review_pages") not in (None, ""):
+                meta.append(f"review_pages={row.get('review_pages')}")
+            if row.get("review_short_max_pages") not in (None, ""):
+                meta.append(f"review_short_max_pages={row.get('review_short_max_pages')}")
+            suffix = f" ({', '.join(meta)})" if meta else ""
+            warnings.append(f"{product_id} [{stage}] {reason}{suffix}")
+        if len(errors) > 10:
+            warnings.append(f"detail/review 오류 {len(errors) - 10}건 추가 생략")
 
     for col in required_cols:
         count = null_count(retail_rows, col)
@@ -1737,21 +1755,32 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
                     args.detail_retries,
                     str(target.get("product_id") or url),
                 )
-                for line in retry_lines:
-                    safe_print(line)
-                detail_retry_lines.extend(retry_lines)
-                detail["product_id"] = target.get("product_id")
-                detail["main_rank"] = target.get("main_rank")
-                detail["bsr_rank"] = target.get("bsr_rank")
-                if detail.get("star_rating") in (None, ""):
-                    detail["star_rating"] = target.get("star_rating")
-                if detail.get("count_of_star_ratings") in (None, ""):
-                    detail["count_of_star_ratings"] = target.get("count_of_star_ratings")
-                if detail.get("count_of_reviews") in (None, ""):
-                    detail["count_of_reviews"] = target.get("count_of_reviews")
-                details.append(detail)
-                count_reviews = detail.get("count_of_reviews")
-                if args.review_pages > 0 and detail.get("review_url") and (to_int(count_reviews) or 0) >= 1:
+            except Exception as exc:
+                errors.append({
+                    "stage": "detail",
+                    "product_id": target.get("product_id"),
+                    "url": url,
+                    "attempts": max(args.detail_retries, 0) + 1,
+                    "error": repr(exc),
+                })
+                safe_print(f"[error] detail {target.get('product_id')} {repr(exc)}")
+                continue
+            for line in retry_lines:
+                safe_print(line)
+            detail_retry_lines.extend(retry_lines)
+            detail["product_id"] = target.get("product_id")
+            detail["main_rank"] = target.get("main_rank")
+            detail["bsr_rank"] = target.get("bsr_rank")
+            if detail.get("star_rating") in (None, ""):
+                detail["star_rating"] = target.get("star_rating")
+            if detail.get("count_of_star_ratings") in (None, ""):
+                detail["count_of_star_ratings"] = target.get("count_of_star_ratings")
+            if detail.get("count_of_reviews") in (None, ""):
+                detail["count_of_reviews"] = target.get("count_of_reviews")
+            details.append(detail)
+            count_reviews = detail.get("count_of_reviews")
+            if args.review_pages > 0 and detail.get("review_url") and (to_int(count_reviews) or 0) >= 1:
+                try:
                     review_rows, retry_lines = review_for_product_with_retries(
                         args.api_dir,
                         detail["review_url"],
@@ -1762,21 +1791,26 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
                         args.review_retries,
                         str(target.get("product_id") or detail.get("fsn") or detail.get("review_url")),
                     )
-                    for line in retry_lines:
-                        safe_print(line)
-                    review_retry_lines.extend(retry_lines)
-                    for review in review_rows:
-                        review["product_id"] = target.get("product_id")
-                        review["fsn"] = detail.get("fsn")
-                        reviews.append(review)
-            except Exception as exc:
-                errors.append({
-                    "stage": "detail_review",
-                    "product_id": target.get("product_id"),
-                    "url": url,
-                    "error": repr(exc),
-                })
-                safe_print(f"[error] {target.get('product_id')} {repr(exc)}")
+                except Exception as exc:
+                    errors.append({
+                        "stage": "review",
+                        "product_id": target.get("product_id"),
+                        "url": url,
+                        "review_url": detail.get("review_url"),
+                        "review_pages": args.review_pages,
+                        "review_short_max_pages": args.review_short_max_pages,
+                        "attempts": max(args.review_retries, 0) + 1,
+                        "error": repr(exc),
+                    })
+                    safe_print(f"[error] review {target.get('product_id')} {repr(exc)}")
+                    continue
+                for line in retry_lines:
+                    safe_print(line)
+                review_retry_lines.extend(retry_lines)
+                for review in review_rows:
+                    review["product_id"] = target.get("product_id")
+                    review["fsn"] = detail.get("fsn")
+                    reviews.append(review)
 
     write_csv(out_dir / "detail.csv", details)
     write_csv(out_dir / "review.csv", reviews)
@@ -1909,6 +1943,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             args.bsr_target,
             retail_rows,
             retail_cols,
+            errors,
             retail_db_ok,
             product_list_db_ok,
         )
