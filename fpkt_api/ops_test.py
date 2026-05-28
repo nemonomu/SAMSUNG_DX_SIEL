@@ -268,12 +268,13 @@ def listing_until(
         for row in extract_products(response, page=page):
             key = row.get("product_id") or row.get("item_id") or row.get("product_url")
             meta = html_meta.get(str(key or ""))
+            api_discount = deal_label_from_text(str(row.get("discount_type") or ""))
             if meta:
                 row["sku_status"] = row.get("sku_status") or meta.get("sku_status")
                 row["sku_popularity"] = row.get("sku_popularity") or meta.get("sku_popularity")
-                row["discount_type"] = meta.get("discount_type")
+                row["discount_type"] = meta.get("discount_type") or api_discount
             else:
-                row["discount_type"] = None
+                row["discount_type"] = api_discount
             raw = dict(row)
             raw["stage"] = stage
             raw["duplicate"] = bool(key in seen)
@@ -1130,6 +1131,7 @@ def listing_schema_record(
         "final_sku_price": price_text(row.get("final_price")),
         "original_sku_price": original_price_text(row.get("original_price"), row.get("final_price")),
         "savings": text_or_none(row.get("savings")),
+        "discount_type": text_or_none(row.get("discount_type")),
         "star_rating": text_or_none(row.get("star_rating")),
         "count_of_star_ratings": count_text(row.get("count_of_star_ratings")),
         "count_of_reviews": count_text(row.get("count_of_reviews")),
