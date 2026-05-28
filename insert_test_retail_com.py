@@ -188,6 +188,16 @@ def parse_int_safe(v):
         return None
 
 
+def null_if_blank(v):
+    if isinstance(v, str) and v.strip() == '':
+        return None
+    return v
+
+
+def nullify_blank_strings(row: dict) -> dict:
+    return {key: null_if_blank(value) for key, value in row.items()}
+
+
 def make_row(main_rec, bsr_rec, detail_rec):
     """단일 main + bsr + detail record → 1 row dict (None 가능). retail_com (full) 용."""
     listing_one = {'_': {'main': main_rec, 'bsr': bsr_rec}}
@@ -308,7 +318,7 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             'sku_assurance':                        d.get('sku_assurance'),
             'number_of_units_purchased_past_month': primary.get('number_of_units_purchased_past_month'),
         }
-        rows.append(row)
+        rows.append(nullify_blank_strings(row))
     return rows
 
 
