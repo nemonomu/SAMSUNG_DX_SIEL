@@ -302,6 +302,7 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             'summarized_review_content':            d.get('summarized_review_content'),
             'fastest_delivery':                     d.get('fastest_delivery'),
             'inventory_status':                     d.get('inventory_status'),
+            'sku_assurance':                        d.get('sku_assurance'),
             'number_of_units_purchased_past_month': primary.get('number_of_units_purchased_past_month'),
         }
         rows.append(row)
