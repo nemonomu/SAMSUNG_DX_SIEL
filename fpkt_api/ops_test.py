@@ -476,13 +476,7 @@ def detail_from_html(text: str, source_url: str) -> dict[str, Any]:
             '(//div[contains(text(),"%") and string-length(normalize-space(text()))<=5 '
             'and not(ancestor::a[contains(@href,"/p/")])])[1]',
         ),
-        "discount_type": first_text(
-            doc,
-            '//*[contains(text(),"Hot Deal") or contains(text(),"Hot deal") or '
-            'contains(text(),"Super Deals") or contains(text(),"Saver Deal") or '
-            'contains(text(),"Lowest Price Live") or contains(text(),"Limited time") or '
-            'contains(text(),"Special Price")][1]',
-        ),
+        "discount_type": None,
         "availability": offers.get("availability"),
         "star_rating": rating.get("ratingValue"),
         "count_of_star_ratings": rating.get("ratingCount"),
@@ -885,7 +879,7 @@ def detail_from_api_response(response: dict[str, Any], source_url: str, product:
         "final_sku_price": None,
         "original_sku_price": None,
         "savings": None,
-        "discount_type": next((text for text in texts if text in {"Hot Deal", "Hot deal", "Special Price"}), None),
+        "discount_type": None,
         "availability": None,
         "star_rating": rating_value,
         "count_of_star_ratings": rating_count,
@@ -1334,7 +1328,7 @@ def build_schema_outputs(
             "final_sku_price": price_text(final_price_value),
             "original_sku_price": original_price_text(original_price_value, final_price_value),
             "savings": text_or_none(primary.get("savings") or detail.get("savings")),
-            "discount_type": text_or_none(primary.get("discount_type") or detail.get("discount_type")),
+            "discount_type": text_or_none(primary.get("discount_type")),
             "delivery_availability": text_or_none(detail.get("delivery_availability")),
             "available_quantity_for_purchase": primary.get("available_quantity_for_purchase"),
             "sku_popularity": primary.get("sku_popularity") or detail.get("sku_popularity")

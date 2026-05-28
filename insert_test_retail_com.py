@@ -276,7 +276,7 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             'final_sku_price':    normalize_price(primary.get('final_sku_price') or d.get('final_sku_price')),
             'original_sku_price': normalize_price(primary.get('original_sku_price') or d.get('original_sku_price')),
             'savings':            primary.get('savings') or d.get('savings'),
-            'discount_type':      primary.get('discount_type') or d.get('discount_type'),
+            'discount_type':      primary.get('discount_type'),
             # 배송/재고
             'delivery_availability':           d.get('delivery_availability') or primary.get('delivery_availability'),
             'available_quantity_for_purchase': primary.get('available_quantity_for_purchase'),
