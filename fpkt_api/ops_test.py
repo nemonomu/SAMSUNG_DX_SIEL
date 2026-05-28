@@ -931,7 +931,6 @@ def listing_schema_record(
         "sku_popularity": row.get("sku_popularity") or sku_popularity_from_url(row.get("product_url")),
         "sku_status": row.get("sku_status"),
         "available_quantity_for_purchase": row.get("available_quantity_for_purchase"),
-        "inventory_status": text_or_none(row.get("availability")),
         "batch_id": batch_id,
         "crawl_datetime": crawl_dt,
     }
@@ -965,7 +964,6 @@ def detail_schema_record(
         "count_of_reviews": count_text(detail.get("count_of_reviews")),
         "detailed_review_content": detailed_review_content,
         "delivery_availability": text_or_none(detail.get("delivery_availability")),
-        "inventory_status": text_or_none(detail.get("inventory_status") or detail.get("availability")),
         "batch_id": batch_id,
         "crawl_datetime": crawl_dt,
     }
@@ -1123,7 +1121,6 @@ def validate_schema_outputs(
         "[qa] " + " ".join(part for part in (missing_summary, format_summary) if part).strip(),
         "[qa_fill] "
         f"sku_status={sum(bool(row.get('sku_status')) for row in retail_rows)} "
-        f"inventory_status={sum(bool(row.get('inventory_status')) for row in retail_rows)} "
         f"delivery_availability={sum(bool(row.get('delivery_availability')) for row in retail_rows)} "
         f"trade_in={sum(bool(row.get('trade_in')) for row in retail_rows) if product == 'hhp' else 'n/a'}",
     ]
@@ -1224,12 +1221,6 @@ def build_schema_outputs(
             "sku_popularity": primary.get("sku_popularity") or detail.get("sku_popularity")
             or sku_popularity_from_url(primary.get("product_url")),
             "sku_status": primary.get("sku_status"),
-            "inventory_status": text_or_none(
-                detail.get("inventory_status")
-                or detail.get("availability")
-                or primary.get("inventory_status")
-                or primary.get("availability")
-            ),
             "main_rank": to_int(main.get("main_rank") if main else None),
             "bsr_rank": to_int(bsr.get("bsr_rank") if bsr else None),
             "sku_assurance": None,

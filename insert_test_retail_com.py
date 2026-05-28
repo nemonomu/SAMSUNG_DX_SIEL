@@ -46,6 +46,9 @@ _AMZN_ONLY_COLS = [
     'summarized_review_content', 'fastest_delivery', 'inventory_status',
     'sku_assurance', 'number_of_units_purchased_past_month',
 ]
+_AMZN_ONLY_COLS_FPKT_INSERT = [
+    col for col in _AMZN_ONLY_COLS if col != 'inventory_status'
+]
 _FPKT_ONLY_COLS = [
     'count_of_reviews', 'available_quantity_for_purchase', 'savings',
 ]
@@ -71,7 +74,7 @@ COLUMNS_BY_PRODUCT = {
     for p in PRODUCT_LOWERS
 }
 COLUMNS_BY_PRODUCT_FPKT = {
-    p: _COMMON_COLS + _AMZN_ONLY_COLS + _FPKT_ONLY_COLS + _PRODUCT_SPECIFIC_FPKT[p]
+    p: _COMMON_COLS + _AMZN_ONLY_COLS_FPKT_INSERT + _FPKT_ONLY_COLS + _PRODUCT_SPECIFIC_FPKT[p]
     for p in PRODUCT_LOWERS
 }
 
@@ -301,7 +304,7 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             # Amazon
             'summarized_review_content':            d.get('summarized_review_content'),
             'fastest_delivery':                     d.get('fastest_delivery'),
-            'inventory_status':                     d.get('inventory_status') or primary.get('inventory_status'),
+            'inventory_status':                     d.get('inventory_status'),
             'sku_assurance':                        d.get('sku_assurance'),
             'number_of_units_purchased_past_month': primary.get('number_of_units_purchased_past_month'),
         }
