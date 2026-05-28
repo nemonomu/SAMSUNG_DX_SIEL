@@ -773,22 +773,50 @@ def product_detail_values(response: dict[str, Any], product: str) -> dict[str, s
 
 
 def delivery_availability_value(response: dict[str, Any]) -> str | None:
+    def has_delivery_date(value: str) -> bool:
+        return bool(re.search(
+            r"(\b\d{1,2}\s+[A-Za-z]{3,9},\s*(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
+            r"|\b(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday),\s*\d{1,2}\s+[A-Za-z]{3,9}\b)",
+            value,
+            re.I,
+        ))
+
+    def normalize_delivery(value: str) -> str | None:
+        value = normalize_text(value)
+        if not value:
+            return None
+        match = re.search(r"\bDelivery\s+by\s+(.+)$", value, re.I)
+        if match and has_delivery_date(match.group(1)):
+            return f"Delivery by {match.group(1).strip()}"
+        match = re.search(r"^by\s+(.+)$", value, re.I)
+        if match and has_delivery_date(match.group(1)):
+            return f"Delivery by {match.group(1).strip()}"
+        if has_delivery_date(value):
+            return f"Delivery by {value.strip()}"
+        return None
+
+    def find_delivery(texts: list[str]) -> str | None:
+        for index, text in enumerate(texts):
+            stripped = normalize_text(text)
+            lowered = stripped.lower()
+            if lowered in {"delivery", "delivery by"}:
+                for candidate in texts[index + 1:index + 4]:
+                    delivery = normalize_delivery(candidate)
+                    if delivery:
+                        return delivery
+            delivery = normalize_delivery(stripped)
+            if delivery:
+                return delivery
+        return None
+
+    delivery_view_types = {"pp_delivery_widget_v2", "default_fk_pp_delivery_widget"}
     slots = (response.get("RESPONSE") or {}).get("slots") or []
-    texts: list[str] = []
+    widget_texts: list[str] = []
     for slot in slots:
         widget = slot.get("widget") or {}
-        if widget.get("viewType") == "pp_delivery_widget_v2":
-            texts.extend(json_texts(slot))
-    for index, text in enumerate(texts):
-        if text.strip().lower() == "delivery by":
-            for candidate in texts[index + 1:index + 4]:
-                if re.search(r"\b(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", candidate, re.I):
-                    return f"Delivery by {candidate}"
-    for text in texts:
-        match = re.match(r"^By\s+(.+)$", text.strip(), re.I)
-        if match and re.search(r"\b(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", match.group(1), re.I):
-            return f"Delivery by {match.group(1)}"
-    return None
+        if widget.get("viewType") in delivery_view_types:
+            widget_texts.extend(json_texts(slot))
+    return find_delivery(widget_texts)
 
 
 def similar_product_names(response: dict[str, Any]) -> str | None:
