@@ -679,10 +679,32 @@ def screen_size_value(response: dict[str, Any]) -> str | None:
     return values[0] if values else None
 
 
+def trailing_parenthetical(value: Any) -> str | None:
+    text = normalize_text(str(value or ""))
+    if not text.endswith(")"):
+        return None
+    depth = 0
+    for index in range(len(text) - 1, -1, -1):
+        char = text[index]
+        if char == ")":
+            depth += 1
+        elif char == "(":
+            depth -= 1
+            if depth == 0:
+                return normalize_text(text[index + 1:-1])
+    return None
+
+
 def product_sku_value(response: dict[str, Any], product: str) -> str | None:
-    if product.lower() == "hhp":
+    product = product.lower()
+    if product == "hhp":
         return detail_label_value(response, "Model Number") or first_json_key(response, "prependingText")
-    return detail_label_value(response, "Model Name")
+    sku = detail_label_value(response, "Model Name")
+    if sku:
+        return sku
+    if product == "ldy":
+        return trailing_parenthetical(first_json_key(response, "prependingText"))
+    return None
 
 
 def hhp_storage_value(response: dict[str, Any]) -> str | None:
@@ -788,7 +810,21 @@ def ldy_capacity_value(response: dict[str, Any]) -> str | None:
             capacity = siel_log.parse_ldy_capacity(value)
             if capacity:
                 return capacity
-    return None
+    title = first_json_key(response, "prependingText")
+    return siel_log.parse_ldy_capacity(title)
+
+
+def ldy_loading_type_value(response: dict[str, Any]) -> str | None:
+    loading_type = siel_log.parse_ldy_loading_type(
+        detail_label_value(response, "Function Type") or detail_label_value(response, "Loading Type")
+    )
+    if loading_type:
+        return loading_type
+    title = first_json_key(response, "prependingText") or ""
+    match = re.search(r"\b(top|front)\s+load\b", title, re.I)
+    if not match:
+        return None
+    return f"{match.group(1).title()} Load"
 
 
 def product_detail_values(response: dict[str, Any], product: str) -> dict[str, str | None]:
@@ -816,9 +852,7 @@ def product_detail_values(response: dict[str, Any], product: str) -> dict[str, s
         }
     if product == "ldy":
         return {
-            "ldy_loading_type": siel_log.parse_ldy_loading_type(
-                detail_label_value(response, "Function Type") or detail_label_value(response, "Loading Type")
-            ),
+            "ldy_loading_type": ldy_loading_type_value(response),
             "ldy_capacity": ldy_capacity_value(response),
         }
     return {}
