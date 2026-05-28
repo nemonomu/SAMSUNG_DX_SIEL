@@ -1,7 +1,8 @@
 param(
   [string[]]$Products = @('hhp', 'tv', 'ref', 'ldy'),
   [switch]$SkipPull,
-  [switch]$NoRun
+  [switch]$NoRun,
+  [switch]$ApplySql
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,10 +24,21 @@ function Invoke-Logged {
   )
 
   $logPath = Join-Path $OutDir $Name
-  $commandLine = ($Exe, $Args) -join ' '
+  $argText = $Args -join ' '
+  $commandLine = "$Exe $argText".Trim()
   Write-Host "[amzn_full_test] $commandLine"
-  & $Exe @Args 2>&1 | Tee-Object -FilePath $logPath
-  $code = $LASTEXITCODE
+
+  $oldErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & $Exe @Args 2>&1 |
+      ForEach-Object { $_.ToString() } |
+      Tee-Object -FilePath $logPath
+    $code = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $oldErrorActionPreference
+  }
+
   if ($null -eq $code) {
     $code = 0
   }
@@ -53,14 +65,20 @@ Set-Content -Encoding UTF8 -Path (Join-Path $OutDir 'command.txt') `
   "products=$($Products -join ' ')"
   "no_auto_insert=true"
   "skip_pull=$SkipPull"
+  "apply_sql=$ApplySql"
 ) | Set-Content -Encoding UTF8 -Path (Join-Path $OutDir 'summary.txt')
 
 try {
-  Invoke-Logged 'git_status_before.txt' 'git' @('status')
+  Invoke-Logged 'git_status_before.txt' 'git' @('status', '--short', '--untracked-files=no')
   if (-not $SkipPull) {
     Invoke-Logged 'git_pull.txt' 'git' @('pull')
   }
-  Invoke-Logged 'apply_sql.txt' 'python' @('apply_sql.py', 'sql\dx_siel_xpath_selectors.sql')
+  if ($ApplySql) {
+    Invoke-Logged 'apply_sql.txt' 'python' @('apply_sql.py', 'sql\dx_siel_xpath_selectors.sql')
+  } else {
+    Set-Content -Encoding UTF8 -Path (Join-Path $OutDir 'apply_sql.txt') `
+      -Value '[amzn_full_test] skipped. Run with -ApplySql to apply selector/schema SQL.'
+  }
   Invoke-Logged 'py_compile.txt' 'python' @('-m', 'py_compile', 'insert_test_retail_com.py', 'amzn\run.py', 'amzn\detail.py', 'amzn\listing.py')
 
   if ($NoRun) {
@@ -82,7 +100,7 @@ try {
     Out-String |
     Set-Content -Encoding UTF8 -Path (Join-Path $OutDir 'copied_logs.txt')
 
-  Invoke-Logged 'git_status_after.txt' 'git' @('status')
+  Invoke-Logged 'git_status_after.txt' 'git' @('status', '--short', '--untracked-files=no')
   Add-Content -Encoding UTF8 -Path (Join-Path $OutDir 'summary.txt') `
     -Value "finished=$((Get-Date).ToString('o'))"
 
@@ -91,7 +109,7 @@ try {
 } catch {
   Add-Content -Encoding UTF8 -Path (Join-Path $OutDir 'summary.txt') `
     -Value "error=$($_.Exception.Message)"
-  Write-Error $_
+  Write-Host "[amzn_full_test] ERROR: $($_.Exception.Message)"
   Write-Host "[amzn_full_test] RESULT_FOLDER=$OutDir"
   exit 1
 }

@@ -59,6 +59,7 @@ Thumbs.db
 desktop.ini
 
 # Data (client deliverables should not be in code repo)
+test_output/
 *.xlsx
 *.csv
 !requirements.txt
