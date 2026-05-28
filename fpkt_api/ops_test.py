@@ -78,7 +78,7 @@ PRODUCT_SPECIFIC_COLS = {
 }
 
 AMAZON_PREVIEW_COLS = [
-    "summarized_review_content", "fastest_delivery", "inventory_status",
+    "summarized_review_content", "fastest_delivery",
     "sku_assurance", "number_of_units_purchased_past_month",
 ]
 
