@@ -680,10 +680,29 @@ def trade_in_candidate(text: Any) -> str | None:
     )
     if not has_offer_value:
         return None
-    if re.fullmatch(r"\d[\d,]*(?:\.\d+)?\s*off", candidate, re.I):
-        candidate = f"Up to \u20b9{candidate}"
-    trade_in = siel_log.parse_trade_in(candidate)
-    return trade_in or None
+    return normalize_trade_in_value(candidate)
+
+
+def normalize_trade_in_value(value: Any) -> str | None:
+    text = normalize_text(str(value or ""))
+    if not text:
+        return None
+
+    amount_match = (
+        re.search(r"(?:\u20b9|Rs\.?|INR)\s*([0-9][0-9,]*(?:\.\d+)?)", text, re.I)
+        or re.search(r"\b([0-9]{1,3}(?:,[0-9]{3})+(?:\.\d+)?)\b", text)
+        or re.search(r"\b([0-9]{4,})(?:\.\d+)?\b", text)
+    )
+    if not amount_match:
+        return None
+
+    try:
+        amount = int(float(amount_match.group(1).replace(",", "")))
+    except ValueError:
+        return None
+    if amount <= 0:
+        return None
+    return f"Up to \u20b9{amount:,}"
 
 
 def hhp_trade_in_value(response: dict[str, Any]) -> str | None:
