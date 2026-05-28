@@ -264,7 +264,8 @@ def listing_until(
                 seen.add(key)
             final = dict(raw)
             final["unique_rank"] = len(final_rows) + 1
-            final[f"{stage}_rank"] = final.get("rank")
+            final["source_rank"] = final.get("rank")
+            final[f"{stage}_rank"] = final["unique_rank"]
             final_rows.append(final)
             if len(final_rows) >= target_unique:
                 return raw_rows, final_rows, pages_used
