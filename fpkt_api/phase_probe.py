@@ -290,6 +290,67 @@ def stage_detail(api_dir: Path) -> dict[str, Any]:
     }
 
 
+def iter_dicts(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from iter_dicts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_dicts(child)
+
+
+def value_text(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, dict):
+        if "text" in value:
+            return value_text(value.get("text"))
+        if "value" in value:
+            return value_text(value.get("value"))
+        return None
+    if isinstance(value, list):
+        parts = [value_text(item) for item in value]
+        parts = [part for part in parts if part]
+        return " ".join(parts) if parts else None
+    text = normalize_text(str(value))
+    return text or None
+
+
+def review_row_from_value(value: dict[str, Any]) -> dict[str, Any] | None:
+    rating = value.get("rating") or value.get("reviewRating") or value.get("ratingValue")
+    text = (
+        value_text(value.get("text"))
+        or value_text(value.get("reviewText"))
+        or value_text(value.get("description"))
+        or value_text(value.get("content"))
+    )
+    title = (
+        value_text(value.get("title"))
+        or value_text(value.get("reviewTitle"))
+        or value_text(value.get("heading"))
+    )
+    author = (
+        value_text(value.get("author"))
+        or value_text(value.get("userName"))
+        or value_text(value.get("reviewerName"))
+    )
+    if rating in (None, "") or not text:
+        return None
+    if not (title or author or value.get("id")):
+        return None
+    return {
+        "id": value.get("id") or value.get("reviewId"),
+        "rating": rating,
+        "title": title,
+        "text": text,
+        "author": author,
+        "created": value.get("created") or value.get("createdAt") or value.get("date"),
+        "helpful_count": value.get("helpfulCount"),
+        "certified_buyer": value.get("certifiedBuyer"),
+    }
+
+
 def review_rows_from_response(response: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for slot in (response.get("RESPONSE") or {}).get("slots") or []:
@@ -311,6 +372,19 @@ def review_rows_from_response(response: dict[str, Any]) -> list[dict[str, Any]]:
                     "certified_buyer": value.get("certifiedBuyer"),
                 }
             )
+    if rows:
+        return rows
+
+    seen: set[str] = set()
+    for value in iter_dicts(response):
+        row = review_row_from_value(value)
+        if not row:
+            continue
+        key = row.get("id") or f"{row.get('rating')}|{row.get('title')}|{row.get('text')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
     return rows
 
 

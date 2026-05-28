@@ -873,6 +873,7 @@ def review_for_product(
         context["pageNumber"] = page
         context["paginatedFetch"] = page > 1
         context["paginationContextMap"] = {}
+        context.pop("pageHashKey", None)
         response = fetch_json(url, headers, body)
         for row in review_rows_from_response(response):
             if len(rows) >= max_reviews:
