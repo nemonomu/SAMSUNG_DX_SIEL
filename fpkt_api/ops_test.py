@@ -389,6 +389,16 @@ def listing_html_metadata(text: str) -> dict[str, dict[str, str | None]]:
                 deal_labels.append(deal_label)
 
         sponsored = bool(card.xpath('.//*[contains(concat(" ", normalize-space(@class), " "), " t7gRps ")]'))
+        if not sponsored:
+            for text in card.xpath(".//text()"):
+                if normalize_text(text).strip().lower() == "sponsored":
+                    sponsored = True
+                    break
+        if not sponsored:
+            for attr in card.xpath(".//@aria-label | .//@title | .//@alt"):
+                if normalize_text(attr).strip().lower() == "sponsored":
+                    sponsored = True
+                    break
         metadata[product_id] = {
             "sku_status": "Sponsored" if sponsored else None,
             "sku_popularity": ", ".join(labels) if labels else None,
@@ -560,6 +570,25 @@ def json_texts(value: Any) -> list[str]:
     return found
 
 
+def scalar_texts(value: Any) -> list[str]:
+    found: list[str] = []
+
+    def visit(item: Any) -> None:
+        if isinstance(item, dict):
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+        elif item not in (None, ""):
+            text = normalize_text(str(item))
+            if text and text not in found:
+                found.append(text)
+
+    visit(value)
+    return found
+
+
 def first_json_key(value: Any, key: str) -> str | None:
     for item in iter_dicts(value):
         if key in item:
@@ -622,18 +651,54 @@ def hhp_storage_value(response: dict[str, Any]) -> str | None:
     return None
 
 
+def exchange_label(text: Any) -> bool:
+    lowered = normalize_text(str(text or "")).lower()
+    return (
+        "exchange offer" in lowered
+        or "with exchange" in lowered
+        or "on exchange" in lowered
+        or "off on exchange" in lowered
+        or "off exchange" in lowered
+        or "off with exchange" in lowered
+        or "off_exchange" in lowered
+        or "offerdetails:exchange" in lowered
+    )
+
+
+def trade_in_candidate(text: Any) -> str | None:
+    candidate = normalize_text(str(text or ""))
+    if not candidate:
+        return None
+    lowered = candidate.lower()
+    if "pincode" in lowered or "service" in lowered or "bank offer" in lowered:
+        return None
+    has_offer_value = (
+        "up to" in lowered
+        or "upto" in lowered
+        or re.search(r"\boff\b", lowered)
+        or "\u20b9" in candidate
+    )
+    if not has_offer_value:
+        return None
+    if re.fullmatch(r"\d[\d,]*(?:\.\d+)?\s*off", candidate, re.I):
+        candidate = f"Up to \u20b9{candidate}"
+    trade_in = siel_log.parse_trade_in(candidate)
+    return trade_in or None
+
+
 def hhp_trade_in_value(response: dict[str, Any]) -> str | None:
-    texts = json_texts(response)
-    for index, text in enumerate(texts):
-        if text.strip().lower() != "exchange offer":
-            continue
-        for candidate in texts[index + 1:index + 8]:
-            if (
-                "up to" in candidate.lower()
-                or " off" in candidate.lower()
-                or "\u20b9" in candidate
-            ):
-                trade_in = siel_log.parse_trade_in(candidate)
+    text_groups = [json_texts(response)]
+    for item in iter_dicts(response):
+        texts = scalar_texts(item)
+        if len(texts) <= 60 and any(exchange_label(text) for text in texts):
+            text_groups.append(texts)
+
+    for texts in text_groups:
+        for index, text in enumerate(texts):
+            if not exchange_label(text):
+                continue
+            for candidate in texts[index:index + 10]:
+                trade_in = trade_in_candidate(candidate)
                 if trade_in:
                     return trade_in
     return None
@@ -866,6 +931,7 @@ def listing_schema_record(
         "sku_popularity": row.get("sku_popularity") or sku_popularity_from_url(row.get("product_url")),
         "sku_status": row.get("sku_status"),
         "available_quantity_for_purchase": row.get("available_quantity_for_purchase"),
+        "inventory_status": text_or_none(row.get("availability")),
         "batch_id": batch_id,
         "crawl_datetime": crawl_dt,
     }
@@ -899,6 +965,7 @@ def detail_schema_record(
         "count_of_reviews": count_text(detail.get("count_of_reviews")),
         "detailed_review_content": detailed_review_content,
         "delivery_availability": text_or_none(detail.get("delivery_availability")),
+        "inventory_status": text_or_none(detail.get("inventory_status") or detail.get("availability")),
         "batch_id": batch_id,
         "crawl_datetime": crawl_dt,
     }
@@ -1054,6 +1121,11 @@ def validate_schema_outputs(
         f"review_content_short={sum(row['check'] == 'review_content_short' for row in issues)} "
         f"review_api_short={sum(row['check'] == 'review_api_short' for row in issues)}",
         "[qa] " + " ".join(part for part in (missing_summary, format_summary) if part).strip(),
+        "[qa_fill] "
+        f"sku_status={sum(bool(row.get('sku_status')) for row in retail_rows)} "
+        f"inventory_status={sum(bool(row.get('inventory_status')) for row in retail_rows)} "
+        f"delivery_availability={sum(bool(row.get('delivery_availability')) for row in retail_rows)} "
+        f"trade_in={sum(bool(row.get('trade_in')) for row in retail_rows) if product == 'hhp' else 'n/a'}",
     ]
     return issues, summary
 
@@ -1152,6 +1224,12 @@ def build_schema_outputs(
             "sku_popularity": primary.get("sku_popularity") or detail.get("sku_popularity")
             or sku_popularity_from_url(primary.get("product_url")),
             "sku_status": primary.get("sku_status"),
+            "inventory_status": text_or_none(
+                detail.get("inventory_status")
+                or detail.get("availability")
+                or primary.get("inventory_status")
+                or primary.get("availability")
+            ),
             "main_rank": to_int(main.get("main_rank") if main else None),
             "bsr_rank": to_int(bsr.get("bsr_rank") if bsr else None),
             "sku_assurance": None,

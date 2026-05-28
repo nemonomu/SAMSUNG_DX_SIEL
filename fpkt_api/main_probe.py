@@ -177,6 +177,16 @@ def iter_texts(value: Any):
             yield from iter_texts(child)
 
 
+def iter_dicts(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from iter_dicts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_dicts(child)
+
+
 def snippet_text(product: dict[str, Any], predicate) -> str | None:
     for text in iter_texts(product.get("snippets") or []):
         text = " ".join(text.split())
@@ -195,6 +205,10 @@ def spotlight_text(product: dict[str, Any]) -> str | None:
 def sku_status(product: dict[str, Any], value: dict[str, Any]) -> str | None:
     if value.get("adInfo") or value.get("isSponsored") or value.get("sponsored"):
         return "Sponsored"
+    for item in iter_dicts(product):
+        for key, child in item.items():
+            if str(key).lower() in {"adinfo", "issponsored", "sponsored"} and child:
+                return "Sponsored"
     for text in iter_texts(product):
         if text.strip().lower() == "sponsored":
             return "Sponsored"
