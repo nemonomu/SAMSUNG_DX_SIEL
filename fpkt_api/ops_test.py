@@ -900,6 +900,36 @@ def detail_from_api_response(response: dict[str, Any], source_url: str, product:
     return detail
 
 
+def detail_from_api_with_retries(
+    api_dir: Path,
+    product_url: str,
+    product: str,
+    retries: int,
+    label: str,
+) -> tuple[dict[str, Any], list[str]]:
+    messages: list[str] = []
+    last_exc: Exception | None = None
+    for attempt in range(0, max(retries, 0) + 1):
+        try:
+            detail = detail_from_api_response(
+                detail_api_response(api_dir, product_url),
+                product_url,
+                product,
+            )
+            if attempt > 0:
+                messages.append(f"[detail_retry] {label} attempt={attempt}/{retries} recovered")
+            return detail, messages
+        except Exception as exc:
+            last_exc = exc
+            if attempt < max(retries, 0):
+                messages.append(f"[detail_retry] {label} attempt={attempt + 1}/{retries} error={repr(exc)}")
+                continue
+            break
+    if last_exc:
+        raise last_exc
+    raise RuntimeError(f"detail retry failed without exception: {label}")
+
+
 def review_for_product(
     api_dir: Path,
     review_url: str,
@@ -1448,6 +1478,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     lines.append("")
 
     details: list[dict[str, Any]] = []
+    detail_retry_lines: list[str] = []
     reviews: list[dict[str, Any]] = []
     review_retry_lines: list[str] = []
     errors: list[dict[str, Any]] = []
@@ -1457,7 +1488,16 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             url = target["product_url"]
             safe_print(f"[detail] {idx}/{len(targets)} {target.get('product_id')} {url}")
             try:
-                detail = detail_from_api_response(detail_api_response(args.api_dir, url), url, args.product)
+                detail, retry_lines = detail_from_api_with_retries(
+                    args.api_dir,
+                    url,
+                    args.product,
+                    args.detail_retries,
+                    str(target.get("product_id") or url),
+                )
+                for line in retry_lines:
+                    safe_print(line)
+                detail_retry_lines.extend(retry_lines)
                 detail["product_id"] = target.get("product_id")
                 detail["main_rank"] = target.get("main_rank")
                 detail["bsr_rank"] = target.get("bsr_rank")
@@ -1552,6 +1592,11 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         f"missing_rating={sum(row.get('star_rating') in (None, '') for row in details)} "
         f"missing_reviews={sum(row.get('count_of_reviews') in (None, '') for row in details)}"
     )
+    if detail_retry_lines:
+        lines.append(f"[detail_retry] events={len(detail_retry_lines)}")
+        lines.extend(detail_retry_lines[:50])
+        if len(detail_retry_lines) > 50:
+            lines.append(f"[detail_retry] omitted={len(detail_retry_lines) - 50}")
     lines.append(
         f"[review] pages_per_product={args.review_pages} rows={len(reviews)} "
         f"max_per_product={args.max_reviews_per_product} "
@@ -1610,6 +1655,7 @@ def main() -> int:
     parser.add_argument("--max-pages-main", type=int, default=30)
     parser.add_argument("--max-pages-bsr", type=int, default=15)
     parser.add_argument("--max-detail", type=int, default=10, help="detail target count; 0=all unique, -1=skip detail")
+    parser.add_argument("--detail-retries", type=int, default=2, help="Retry detail API when a product response fails")
     parser.add_argument("--review-pages", type=int, default=2)
     parser.add_argument("--max-reviews-per-product", type=int, default=20)
     parser.add_argument("--review-retries", type=int, default=2, help="Retry review API when collected rows are below count_of_reviews")
