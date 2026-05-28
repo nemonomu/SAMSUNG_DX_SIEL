@@ -41,9 +41,10 @@ _COMMON_COLS = [
     'delivery_availability',
     'sku_popularity', 'sku_status', 'main_rank', 'bsr_rank',
 ]
+_AMZN_REDIRECT_COLS = ['redirect']
 _AMZN_ONLY_COLS = [
     'summarized_review_content', 'fastest_delivery', 'inventory_status',
-    'number_of_units_purchased_past_month',
+    'sku_assurance', 'number_of_units_purchased_past_month',
 ]
 _FPKT_ONLY_COLS = [
     'count_of_reviews', 'available_quantity_for_purchase', 'savings',
@@ -54,18 +55,28 @@ _PRODUCT_SPECIFIC = {
     'ref': ['ref_refrigerator_type', 'ref_capacity'],
     'ldy': ['ldy_loading_type', 'ldy_capacity'],
 }
+_PRODUCT_SPECIFIC_FPKT = {
+    'hhp': ['hhp_storage', 'hhp_color', 'trade_in'],
+    'tv':  _PRODUCT_SPECIFIC['tv'],
+    'ref': _PRODUCT_SPECIFIC['ref'],
+    'ldy': _PRODUCT_SPECIFIC['ldy'],
+}
 
 # 8 운영 테이블 (4 retail_com + 4 product_list). product 별 분기.
 PRODUCT_LOWERS = ('hhp', 'tv', 'ref', 'ldy')
 
 # retail_com — product 별 컬럼 분기
 COLUMNS_BY_PRODUCT = {
-    p: _COMMON_COLS + _AMZN_ONLY_COLS + _FPKT_ONLY_COLS + _PRODUCT_SPECIFIC[p]
+    p: _COMMON_COLS + _AMZN_REDIRECT_COLS + _AMZN_ONLY_COLS + _FPKT_ONLY_COLS + _PRODUCT_SPECIFIC[p]
+    for p in PRODUCT_LOWERS
+}
+COLUMNS_BY_PRODUCT_FPKT = {
+    p: _COMMON_COLS + _AMZN_ONLY_COLS + _FPKT_ONLY_COLS + _PRODUCT_SPECIFIC_FPKT[p]
     for p in PRODUCT_LOWERS
 }
 
 # 호환용 alias (전체 컬럼 union — main() 의 row 검증용, INSERT 안 함)
-COLUMNS = (_COMMON_COLS + _AMZN_ONLY_COLS + _FPKT_ONLY_COLS
+COLUMNS = (_COMMON_COLS + _AMZN_REDIRECT_COLS + _AMZN_ONLY_COLS + _FPKT_ONLY_COLS
            + _PRODUCT_SPECIFIC['hhp'] + _PRODUCT_SPECIFIC['tv']
            + _PRODUCT_SPECIFIC['ref'] + _PRODUCT_SPECIFIC['ldy'])
 
@@ -81,6 +92,11 @@ COLUMNS_LIST = [
     'sku_popularity', 'sku_status', 'main_rank', 'bsr_rank',
     'number_of_units_purchased_past_month',
 ]
+COLUMNS_LIST_AMZN = (
+    COLUMNS_LIST[:COLUMNS_LIST.index('product_url') + 1]
+    + _AMZN_REDIRECT_COLS
+    + COLUMNS_LIST[COLUMNS_LIST.index('product_url') + 1:]
+)
 
 
 _ASIN_RE = re.compile(r'/(?:dp|gp/product)/([A-Z0-9]{10})')
@@ -107,6 +123,8 @@ def normalize_price(p):
     raw = digits.replace(',', '')
     if not raw.isdigit():
         return p
+    if suffix == '.00':
+        suffix = ''
     return f'{prefix}{int(raw):,}{suffix}'
 
 
@@ -189,6 +207,18 @@ def make_row_listing(main_rec, bsr_rec, detail_rec=None):
         redirect_by_key=redirect_by_key,
     )  # detail dict empty → detail 출처 컬럼 NULL
     return rows[0] if rows else None
+
+
+def retail_columns_for_row(prod_lower: str, row: dict) -> list[str]:
+    if (row.get('account_name') or '').lower() == 'flipkart':
+        return COLUMNS_BY_PRODUCT_FPKT[prod_lower]
+    return COLUMNS_BY_PRODUCT[prod_lower]
+
+
+def list_columns_for_row(row: dict) -> list[str]:
+    if (row.get('account_name') or '').lower() == 'amazon':
+        return COLUMNS_LIST_AMZN
+    return COLUMNS_LIST
 
 
 def merge(listing: dict, detail: dict, max_n: int = 10,
@@ -364,8 +394,6 @@ def main() -> int:
     conn = psycopg2.connect(**cfg)
     # 본 운영 8 테이블 (4 retail_com + 4 product_list) — product 별 분기 INSERT.
     # 5/10 사용자 룰: 제품별 retail_com 은 해당 제품 전용 컬럼만 (다른 product 전용 X).
-    cols_list = ', '.join(COLUMNS_LIST)
-    placeholders_list = ', '.join(f'%({c})s' for c in COLUMNS_LIST)
     total_inserted = 0
     try:
         for prod_lower in PRODUCT_LOWERS:
@@ -375,16 +403,25 @@ def main() -> int:
                 continue
             table_retail = f'dx_siel_{prod_lower}_retail_com'
             table_list = f'dx_siel_{prod_lower}_product_list'
-            cols_prod = COLUMNS_BY_PRODUCT[prod_lower]
-            cols_retail = ', '.join(cols_prod)
-            placeholders_retail = ', '.join(f'%({c})s' for c in cols_prod)
-            sql_retail = f'INSERT INTO {table_retail} ({cols_retail}) VALUES ({placeholders_retail})'
-            sql_list = f'INSERT INTO {table_list} ({cols_list}) VALUES ({placeholders_list})'
+            rows_full_by_cols = {}
+            for row in rows_full_prod:
+                cols_key = tuple(retail_columns_for_row(prod_lower, row))
+                rows_full_by_cols.setdefault(cols_key, []).append(row)
+            rows_listing_by_cols = {}
+            for row in rows_listing_prod:
+                cols_key = tuple(list_columns_for_row(row))
+                rows_listing_by_cols.setdefault(cols_key, []).append(row)
             with conn.cursor() as cur:
-                if rows_full_prod:
-                    psycopg2.extras.execute_batch(cur, sql_retail, rows_full_prod, page_size=50)
-                if rows_listing_prod:
-                    psycopg2.extras.execute_batch(cur, sql_list, rows_listing_prod, page_size=50)
+                for cols_key, rows_for_cols in rows_full_by_cols.items():
+                    cols_retail = ', '.join(cols_key)
+                    placeholders_retail = ', '.join(f'%({c})s' for c in cols_key)
+                    sql_retail = f'INSERT INTO {table_retail} ({cols_retail}) VALUES ({placeholders_retail})'
+                    psycopg2.extras.execute_batch(cur, sql_retail, rows_for_cols, page_size=50)
+                for cols_key, rows_for_cols in rows_listing_by_cols.items():
+                    cols_list = ', '.join(cols_key)
+                    placeholders_list = ', '.join(f'%({c})s' for c in cols_key)
+                    sql_list = f'INSERT INTO {table_list} ({cols_list}) VALUES ({placeholders_list})'
+                    psycopg2.extras.execute_batch(cur, sql_list, rows_for_cols, page_size=50)
             total_inserted += len(rows_full_prod) + len(rows_listing_prod)
             if dry_run:
                 conn.rollback()

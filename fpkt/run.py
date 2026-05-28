@@ -73,8 +73,9 @@ def _setup_db():
         _db_cursor = _db_conn.cursor()
         # retail_com — product 별 컬럼 분기 (5/10 사용자 룰)
         _retail_sqls = {}
+        columns_by_product = getattr(ITR, 'COLUMNS_BY_PRODUCT_FPKT', ITR.COLUMNS_BY_PRODUCT)
         for p in ITR.PRODUCT_LOWERS:
-            cols_p = ITR.COLUMNS_BY_PRODUCT[p]
+            cols_p = columns_by_product[p]
             cols_join = ', '.join(cols_p)
             placeholders_join = ', '.join(f'%({c})s' for c in cols_p)
             _retail_sqls[p] = f'INSERT INTO dx_siel_{p}_retail_com ({cols_join}) VALUES ({placeholders_join})'

@@ -20,7 +20,7 @@ import ssl
 import subprocess
 import sys
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -48,6 +48,7 @@ from phase_probe import (
     split_curl_commands,
 )
 from siel_batch import next_batch_id
+import siel_log
 
 
 PRODUCT_QUERY = {
@@ -57,9 +58,9 @@ PRODUCT_QUERY = {
     "ldy": "washing+machine",
 }
 
-IST = timezone(timedelta(hours=5, minutes=30))
+CRAWL_TZ = timezone.utc
 
-TV_RETAIL_COM_COLS = [
+RETAIL_BASE_COLS = [
     "country", "product", "item", "sku", "account_name", "page_type",
     "retailer_sku_name", "product_url", "calendar_week", "crawl_datetime", "batch_id",
     "star_rating", "count_of_star_ratings", "count_of_reviews",
@@ -67,12 +68,26 @@ TV_RETAIL_COM_COLS = [
     "final_sku_price", "original_sku_price", "savings", "discount_type",
     "delivery_availability", "available_quantity_for_purchase",
     "sku_popularity", "sku_status", "main_rank", "bsr_rank",
-    "screen_size", "model_year", "estimated_annual_electricity_use",
+]
+
+PRODUCT_SPECIFIC_COLS = {
+    "hhp": ["hhp_storage", "hhp_color", "trade_in"],
+    "tv": ["screen_size", "model_year", "estimated_annual_electricity_use"],
+    "ref": ["ref_refrigerator_type", "ref_capacity"],
+    "ldy": ["ldy_loading_type", "ldy_capacity"],
+}
+
+AMAZON_PREVIEW_COLS = [
     "summarized_review_content", "fastest_delivery", "inventory_status",
     "sku_assurance", "number_of_units_purchased_past_month",
 ]
 
-TV_PRODUCT_LIST_COLS = [
+RETAIL_COM_COLS_BY_PRODUCT = {
+    product: RETAIL_BASE_COLS + PRODUCT_SPECIFIC_COLS[product] + AMAZON_PREVIEW_COLS
+    for product in PRODUCT_QUERY
+}
+
+PRODUCT_LIST_COLS = [
     "country", "product", "item", "account_name", "page_type",
     "retailer_sku_name", "product_url", "calendar_week", "crawl_datetime", "batch_id",
     "star_rating", "count_of_star_ratings", "count_of_reviews",
@@ -82,16 +97,15 @@ TV_PRODUCT_LIST_COLS = [
     "number_of_units_purchased_past_month",
 ]
 
-DB_QUERY_VIEW_COLS = [
-    "country", "product", "item", "sku", "account_name", "page_type",
-    "retailer_sku_name", "product_url", "calendar_week", "crawl_datetime", "batch_id",
-    "star_rating", "count_of_star_ratings", "count_of_reviews",
-    "detailed_review_content", "retailer_sku_name_similar",
-    "final_sku_price", "original_sku_price", "savings", "discount_type",
-    "delivery_availability", "available_quantity_for_purchase",
-    "sku_popularity", "sku_status", "main_rank", "bsr_rank",
-    "screen_size", "model_year", "estimated_annual_electricity_use",
-]
+PRODUCT_LIST_COLS_BY_PRODUCT = {product: PRODUCT_LIST_COLS for product in PRODUCT_QUERY}
+DB_QUERY_VIEW_COLS_BY_PRODUCT = {
+    product: RETAIL_BASE_COLS + PRODUCT_SPECIFIC_COLS[product]
+    for product in PRODUCT_QUERY
+}
+
+TV_RETAIL_COM_COLS = RETAIL_COM_COLS_BY_PRODUCT["tv"]
+TV_PRODUCT_LIST_COLS = PRODUCT_LIST_COLS_BY_PRODUCT["tv"]
+DB_QUERY_VIEW_COLS = DB_QUERY_VIEW_COLS_BY_PRODUCT["tv"]
 
 
 def safe_print(value: str) -> None:
@@ -196,8 +210,12 @@ def sku_popularity_from_url(url: Any) -> str | None:
     return ", ".join(labels) if labels else None
 
 
+def now_crawl() -> datetime:
+    return datetime.now(CRAWL_TZ)
+
+
 def now_ist() -> datetime:
-    return datetime.now(IST)
+    return now_crawl()
 
 
 def calendar_week(dt: datetime) -> str:
@@ -215,7 +233,7 @@ def schema_batch_id(dt: datetime, real_batch_id: bool) -> str:
 
 
 def output_dir(product: str) -> Path:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = now_crawl().strftime("%Y%m%d_%H%M%S")
     return Path(__file__).resolve().parent / "test_output" / f"ops_{product}_{stamp}"
 
 
@@ -590,6 +608,86 @@ def screen_size_value(response: dict[str, Any]) -> str | None:
     return values[0] if values else None
 
 
+def product_sku_value(response: dict[str, Any], product: str) -> str | None:
+    if product.lower() == "hhp":
+        return json_label_value(response, "Model Number") or first_json_key(response, "prependingText")
+    return json_label_value(response, "Model Name")
+
+
+def hhp_storage_value(response: dict[str, Any]) -> str | None:
+    for text in json_texts(response):
+        storage = siel_log.parse_hhp_storage(text)
+        if storage:
+            return storage
+    return None
+
+
+def hhp_trade_in_value(response: dict[str, Any]) -> str | None:
+    texts = json_texts(response)
+    for index, text in enumerate(texts):
+        if text.strip().lower() != "exchange offer":
+            continue
+        for candidate in texts[index + 1:index + 8]:
+            if (
+                "up to" in candidate.lower()
+                or " off" in candidate.lower()
+                or "\u20b9" in candidate
+            ):
+                trade_in = siel_log.parse_trade_in(candidate)
+                if trade_in:
+                    return trade_in
+    return None
+
+
+def ref_capacity_value(response: dict[str, Any]) -> str | None:
+    for value in json_label_values(response, "Capacity"):
+        if re.search(r"\b\d+(?:\.\d+)?\s*(?:l|litre|liter)s?\b", value, re.I):
+            return value
+    return None
+
+
+def ldy_capacity_value(response: dict[str, Any]) -> str | None:
+    for label in ("Washing Capacity", "Capacity"):
+        for value in json_label_values(response, label):
+            capacity = siel_log.parse_ldy_capacity(value)
+            if capacity:
+                return capacity
+    return None
+
+
+def product_detail_values(response: dict[str, Any], product: str) -> dict[str, str | None]:
+    product = product.lower()
+    if product == "tv":
+        return {
+            "screen_size": screen_size_value(response),
+            "model_year": json_label_value(response, "Launch Year"),
+            "estimated_annual_electricity_use": (
+                json_label_value(response, "Power Consumption")
+                or json_label_value(response, "Annual Energy Consumption")
+                or json_label_value(response, "Energy Consumption")
+            ),
+        }
+    if product == "hhp":
+        return {
+            "hhp_storage": hhp_storage_value(response),
+            "hhp_color": json_label_value(response, "Color") or json_label_value(response, "Selected Color"),
+            "trade_in": hhp_trade_in_value(response),
+        }
+    if product == "ref":
+        return {
+            "ref_refrigerator_type": json_label_value(response, "Refrigerator Type"),
+            "ref_capacity": ref_capacity_value(response),
+        }
+    if product == "ldy":
+        return {
+            "ldy_loading_type": siel_log.parse_ldy_loading_type(
+                json_label_value(response, "Function Type") or json_label_value(response, "Loading Type")
+            ),
+            "ldy_capacity": ldy_capacity_value(response),
+        }
+    return {}
+
+
 def delivery_availability_value(response: dict[str, Any]) -> str | None:
     slots = (response.get("RESPONSE") or {}).get("slots") or []
     texts: list[str] = []
@@ -650,7 +748,7 @@ def detail_api_response(api_dir: Path, product_url: str) -> dict[str, Any]:
     return fetch_json(url, headers, body)
 
 
-def detail_from_api_response(response: dict[str, Any], source_url: str) -> dict[str, Any]:
+def detail_from_api_response(response: dict[str, Any], source_url: str, product: str = "tv") -> dict[str, Any]:
     texts = json_texts(response)
     rating_value = None
     rating_count = None
@@ -667,7 +765,7 @@ def detail_from_api_response(response: dict[str, Any], source_url: str) -> dict[
             review_count = to_int(match.group(2))
             break
 
-    return {
+    detail = {
         "source_url": source_url,
         "retailer_sku_name": first_json_key(response, "prependingText"),
         "fsn": (re.search(r"[?&]pid=([A-Z0-9]+)", source_url or "").group(1)
@@ -680,19 +778,14 @@ def detail_from_api_response(response: dict[str, Any], source_url: str) -> dict[
         "star_rating": rating_value,
         "count_of_star_ratings": rating_count,
         "count_of_reviews": review_count,
-        "sku": json_label_value(response, "Model Name"),
-        "screen_size": screen_size_value(response),
-        "model_year": json_label_value(response, "Launch Year"),
-        "estimated_annual_electricity_use": (
-            json_label_value(response, "Power Consumption")
-            or json_label_value(response, "Annual Energy Consumption")
-            or json_label_value(response, "Energy Consumption")
-        ),
+        "sku": product_sku_value(response, product),
         "delivery_availability": delivery_availability_value(response),
         "retailer_sku_name_similar": similar_product_names(response),
         "review_url": fallback_review_url(source_url),
         "jsonld_review_count": None,
     }
+    detail.update(product_detail_values(response, product))
+    return detail
 
 
 def review_for_product(
@@ -786,7 +879,7 @@ def detail_schema_record(
     detailed_review_content: str | None,
 ) -> dict[str, Any]:
     fsn = detail.get("fsn") or detail.get("product_id")
-    return {
+    record = {
         "account_name": "flipkart",
         "product": product,
         "stage": "detail",
@@ -805,13 +898,13 @@ def detail_schema_record(
         "count_of_star_ratings": count_text(detail.get("count_of_star_ratings")),
         "count_of_reviews": count_text(detail.get("count_of_reviews")),
         "detailed_review_content": detailed_review_content,
-        "screen_size": text_or_none(detail.get("screen_size")),
-        "model_year": text_or_none(detail.get("model_year")),
-        "estimated_annual_electricity_use": text_or_none(detail.get("estimated_annual_electricity_use")),
         "delivery_availability": text_or_none(detail.get("delivery_availability")),
         "batch_id": batch_id,
         "crawl_datetime": crawl_dt,
     }
+    for field in PRODUCT_SPECIFIC_COLS[product.lower()]:
+        record[field] = text_or_none(detail.get(field))
+    return record
 
 
 def format_detailed_review_content(rows: list[dict[str, Any]]) -> str | None:
@@ -840,11 +933,21 @@ def qa_issue(check: str, item: Any, message: str, **extra: Any) -> dict[str, Any
     return row
 
 
-def validate_tv_outputs(
+REQUIRED_DETAIL_FIELDS_BY_PRODUCT = {
+    "hhp": ["sku", "hhp_storage", "hhp_color"],
+    "tv": ["sku", "screen_size", "model_year"],
+    "ref": ["sku", "ref_refrigerator_type", "ref_capacity"],
+    "ldy": ["sku", "ldy_loading_type", "ldy_capacity"],
+}
+
+
+def validate_schema_outputs(
+    product: str,
     retail_rows: list[dict[str, Any]],
     reviews: list[dict[str, Any]],
     max_reviews_per_product: int,
 ) -> tuple[list[dict[str, Any]], list[str]]:
+    product = product.lower()
     issues: list[dict[str, Any]] = []
     item_counts: dict[str, int] = {}
     review_counts: dict[str, int] = {}
@@ -881,13 +984,37 @@ def validate_tv_outputs(
                                        final_sku_price=fsp, original_sku_price=osp,
                                        savings=row.get("savings"), calculated=round(calculated, 2)))
 
-        for field in ("sku", "screen_size", "model_year"):
+        for field in REQUIRED_DETAIL_FIELDS_BY_PRODUCT[product]:
             if row.get(field) in (None, ""):
                 issues.append(qa_issue(f"missing_{field}", item, f"{field} is empty"))
-        screen_size = text_or_none(row.get("screen_size"))
-        if screen_size and not (re.search(r"\bcm\b", screen_size, re.I) and re.search(r"\binch\b", screen_size, re.I)):
-            issues.append(qa_issue("screen_size_format", item, "screen_size should include cm and inch",
-                                   screen_size=screen_size))
+
+        if product == "tv":
+            screen_size = text_or_none(row.get("screen_size"))
+            if screen_size and not (
+                re.search(r"\bcm\b", screen_size, re.I) and re.search(r"\binch\b", screen_size, re.I)
+            ):
+                issues.append(qa_issue("screen_size_format", item, "screen_size should include cm and inch",
+                                       screen_size=screen_size))
+        elif product == "hhp":
+            storage = text_or_none(row.get("hhp_storage"))
+            if storage and not re.search(r"\b\d+\s*[GT]B\b", storage, re.I):
+                issues.append(qa_issue("hhp_storage_format", item, "hhp_storage should be GB/TB storage",
+                                       hhp_storage=storage))
+        elif product == "ref":
+            capacity = text_or_none(row.get("ref_capacity"))
+            if capacity and not re.search(r"\b\d+(?:\.\d+)?\s*(?:l|litre|liter)s?\b", capacity, re.I):
+                issues.append(qa_issue("ref_capacity_format", item, "ref_capacity should include litre capacity",
+                                       ref_capacity=capacity))
+        elif product == "ldy":
+            capacity = text_or_none(row.get("ldy_capacity"))
+            if capacity and not re.search(r"\b\d+(?:\.\d+)?\s*kg\b", capacity, re.I):
+                issues.append(qa_issue("ldy_capacity_format", item, "ldy_capacity should include kg capacity",
+                                       ldy_capacity=capacity))
+            loading_type = text_or_none(row.get("ldy_loading_type"))
+            if loading_type and loading_type not in {"Top Load", "Front Load"}:
+                issues.append(qa_issue("ldy_loading_type_format", item,
+                                       "ldy_loading_type should be Top Load or Front Load",
+                                       ldy_loading_type=loading_type))
 
         review_total = to_int(row.get("count_of_reviews")) or 0
         content_count = review_content_count(row.get("detailed_review_content"))
@@ -902,6 +1029,22 @@ def validate_tv_outputs(
                                    "review.csv has fewer review rows than expected",
                                    count_of_reviews=review_total, review_rows=api_count, expected=expected))
 
+    missing_summary = " ".join(
+        f"missing_{field}={sum(row['check'] == f'missing_{field}' for row in issues)}"
+        for field in REQUIRED_DETAIL_FIELDS_BY_PRODUCT[product]
+    )
+    format_checks = [
+        "screen_size_format",
+        "hhp_storage_format",
+        "ref_capacity_format",
+        "ldy_capacity_format",
+        "ldy_loading_type_format",
+    ]
+    format_summary = " ".join(
+        f"{check}={sum(row['check'] == check for row in issues)}"
+        for check in format_checks
+        if any(row["check"] == check for row in issues)
+    )
     summary = [
         f"[qa] issues={len(issues)} "
         f"duplicate_item={sum(row['check'] == 'duplicate_item' for row in issues)} "
@@ -910,19 +1053,24 @@ def validate_tv_outputs(
         f"savings_mismatch={sum(row['check'] == 'savings_mismatch' for row in issues)} "
         f"review_content_short={sum(row['check'] == 'review_content_short' for row in issues)} "
         f"review_api_short={sum(row['check'] == 'review_api_short' for row in issues)}",
-        f"[qa] missing_sku={sum(row['check'] == 'missing_sku' for row in issues)} "
-        f"missing_screen_size={sum(row['check'] == 'missing_screen_size' for row in issues)} "
-        f"missing_model_year={sum(row['check'] == 'missing_model_year' for row in issues)} "
-        f"screen_size_format={sum(row['check'] == 'screen_size_format' for row in issues)}",
+        "[qa] " + " ".join(part for part in (missing_summary, format_summary) if part).strip(),
     ]
     return issues, summary
+
+
+def validate_tv_outputs(
+    retail_rows: list[dict[str, Any]],
+    reviews: list[dict[str, Any]],
+    max_reviews_per_product: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    return validate_schema_outputs("tv", retail_rows, reviews, max_reviews_per_product)
 
 
 def key_for_row(row: dict[str, Any]) -> str | None:
     return row.get("product_id") or row.get("fsn") or row.get("item") or row.get("product_url")
 
 
-def build_tv_schema_outputs(
+def build_schema_outputs(
     product: str,
     main_rows: list[dict[str, Any]],
     bsr_rows: list[dict[str, Any]],
@@ -931,6 +1079,9 @@ def build_tv_schema_outputs(
     crawl_dt: str,
     batch_id: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    product_key = product.lower()
+    retail_cols = RETAIL_COM_COLS_BY_PRODUCT[product_key]
+    product_list_cols = PRODUCT_LIST_COLS_BY_PRODUCT[product_key]
     main_by_key = {key_for_row(row): row for row in main_rows if key_for_row(row)}
     bsr_by_key = {key_for_row(row): row for row in bsr_rows if key_for_row(row)}
     detail_by_key = {key_for_row(row): row for row in details if key_for_row(row)}
@@ -968,7 +1119,7 @@ def build_tv_schema_outputs(
 
         page_type = "main" if main else "bsr"
         item = detail.get("fsn") or primary.get("product_id") or primary.get("item_id")
-        retail = {field: None for field in TV_RETAIL_COM_COLS}
+        retail = {field: None for field in retail_cols}
         retail.update({
             "country": "siel",
             "product": product.upper(),
@@ -1003,14 +1154,13 @@ def build_tv_schema_outputs(
             "sku_status": primary.get("sku_status"),
             "main_rank": to_int(main.get("main_rank") if main else None),
             "bsr_rank": to_int(bsr.get("bsr_rank") if bsr else None),
-            "screen_size": text_or_none(detail.get("screen_size")),
-            "model_year": text_or_none(detail.get("model_year")),
-            "estimated_annual_electricity_use": text_or_none(detail.get("estimated_annual_electricity_use")),
             "sku_assurance": None,
         })
+        for field in PRODUCT_SPECIFIC_COLS[product_key]:
+            retail[field] = text_or_none(detail.get(field))
         retail_rows.append(retail)
 
-        listing = {field: None for field in TV_PRODUCT_LIST_COLS}
+        listing = {field: None for field in product_list_cols}
         listing.update({
             "country": retail["country"],
             "product": retail["product"],
@@ -1038,6 +1188,18 @@ def build_tv_schema_outputs(
         product_list_rows.append(listing)
 
     return retail_rows, product_list_rows, jsonl_rows
+
+
+def build_tv_schema_outputs(
+    product: str,
+    main_rows: list[dict[str, Any]],
+    bsr_rows: list[dict[str, Any]],
+    details: list[dict[str, Any]],
+    reviews: list[dict[str, Any]],
+    crawl_dt: str,
+    batch_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    return build_schema_outputs(product, main_rows, bsr_rows, details, reviews, crawl_dt, batch_id)
 
 
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -1097,7 +1259,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     query = args.query or PRODUCT_QUERY[args.product]
     out_dir = args.out_dir or output_dir(args.product)
     out_dir.mkdir(parents=True, exist_ok=True)
-    run_dt = now_ist()
+    run_dt = now_crawl()
     crawl_dt = run_dt.isoformat(timespec="seconds")
     batch_id = schema_batch_id(run_dt, args.real_batch_id)
     exit_code = 0
@@ -1136,7 +1298,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             url = target["product_url"]
             safe_print(f"[detail] {idx}/{len(targets)} {target.get('product_id')} {url}")
             try:
-                detail = detail_from_api_response(detail_api_response(args.api_dir, url), url)
+                detail = detail_from_api_response(detail_api_response(args.api_dir, url), url, args.product)
                 detail["product_id"] = target.get("product_id")
                 detail["main_rank"] = target.get("main_rank")
                 detail["bsr_rank"] = target.get("bsr_rank")
@@ -1171,49 +1333,52 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     write_csv(out_dir / "review.csv", reviews)
     write_csv(out_dir / "errors.csv", errors)
 
-    if args.product == "tv":
-        api_run_path = out_dir / "api_run.jsonl"
-        retail_rows, product_list_rows, jsonl_rows = build_tv_schema_outputs(
-            args.product, main_final, bsr_final, details, reviews, crawl_dt, batch_id
-        )
-        write_csv_fields(out_dir / "tv_retail_com_preview.csv", retail_rows, TV_RETAIL_COM_COLS)
-        write_csv_fields(out_dir / "tv_product_list_preview.csv", product_list_rows, TV_PRODUCT_LIST_COLS)
-        write_csv_fields(out_dir / "out_tv_retail_com.csv", retail_rows, TV_RETAIL_COM_COLS)
-        write_csv_fields(out_dir / "out_tv_product_list.csv", product_list_rows, TV_PRODUCT_LIST_COLS)
-        write_csv_fields(out_dir / "db_query_view.csv", retail_rows, DB_QUERY_VIEW_COLS)
-        write_jsonl(api_run_path, jsonl_rows)
-        qa_issues, qa_summary = validate_tv_outputs(retail_rows, reviews, args.max_reviews_per_product)
-        write_csv(out_dir / "qa_issues.csv", qa_issues)
-        lines.append(
-            f"[schema:tv_retail_com] rows={len(retail_rows)} "
-            f"cols={len(TV_RETAIL_COM_COLS)} "
-            f"missing_item={sum(row.get('item') in (None, '') for row in retail_rows)} "
-            f"missing_url={sum(row.get('product_url') in (None, '') for row in retail_rows)}"
-        )
-        lines.append(
-            f"[schema:tv_product_list] rows={len(product_list_rows)} "
-            f"cols={len(TV_PRODUCT_LIST_COLS)} "
-            f"missing_item={sum(row.get('item') in (None, '') for row in product_list_rows)} "
-            f"missing_url={sum(row.get('product_url') in (None, '') for row in product_list_rows)}"
-        )
-        lines.append(f"[schema:jsonl] rows={len(jsonl_rows)}")
-        lines.extend(qa_summary)
-        if args.db_insert:
-            if errors:
-                lines.append(f"[db_insert] skipped: detail/review errors={len(errors)}")
-                exit_code = 1
-            elif qa_issues and not args.allow_qa_insert:
-                lines.append(f"[db_insert] skipped: qa_issues={len(qa_issues)} (use --allow-qa-insert to force)")
-                exit_code = 1
+    product_key = args.product.lower()
+    retail_cols = RETAIL_COM_COLS_BY_PRODUCT[product_key]
+    product_list_cols = PRODUCT_LIST_COLS_BY_PRODUCT[product_key]
+    db_query_view_cols = DB_QUERY_VIEW_COLS_BY_PRODUCT[product_key]
+    api_run_path = out_dir / "api_run.jsonl"
+    retail_rows, product_list_rows, jsonl_rows = build_schema_outputs(
+        args.product, main_final, bsr_final, details, reviews, crawl_dt, batch_id
+    )
+    write_csv_fields(out_dir / f"{product_key}_retail_com_preview.csv", retail_rows, retail_cols)
+    write_csv_fields(out_dir / f"{product_key}_product_list_preview.csv", product_list_rows, product_list_cols)
+    write_csv_fields(out_dir / f"out_{product_key}_retail_com.csv", retail_rows, retail_cols)
+    write_csv_fields(out_dir / f"out_{product_key}_product_list.csv", product_list_rows, product_list_cols)
+    write_csv_fields(out_dir / "db_query_view.csv", retail_rows, db_query_view_cols)
+    write_jsonl(api_run_path, jsonl_rows)
+    qa_issues, qa_summary = validate_schema_outputs(args.product, retail_rows, reviews, args.max_reviews_per_product)
+    write_csv(out_dir / "qa_issues.csv", qa_issues)
+    lines.append(
+        f"[schema:{product_key}_retail_com] rows={len(retail_rows)} "
+        f"cols={len(retail_cols)} "
+        f"missing_item={sum(row.get('item') in (None, '') for row in retail_rows)} "
+        f"missing_url={sum(row.get('product_url') in (None, '') for row in retail_rows)}"
+    )
+    lines.append(
+        f"[schema:{product_key}_product_list] rows={len(product_list_rows)} "
+        f"cols={len(product_list_cols)} "
+        f"missing_item={sum(row.get('item') in (None, '') for row in product_list_rows)} "
+        f"missing_url={sum(row.get('product_url') in (None, '') for row in product_list_rows)}"
+    )
+    lines.append(f"[schema:jsonl] rows={len(jsonl_rows)}")
+    lines.extend(qa_summary)
+    if args.db_insert:
+        if errors:
+            lines.append(f"[db_insert] skipped: detail/review errors={len(errors)}")
+            exit_code = 1
+        elif qa_issues and not args.allow_qa_insert:
+            lines.append(f"[db_insert] skipped: qa_issues={len(qa_issues)} (use --allow-qa-insert to force)")
+            exit_code = 1
+        else:
+            insert_code, insert_lines = insert_into_db(api_run_path, args.insert_max_n, args.db_dry_run)
+            lines.extend(insert_lines)
+            if insert_code != 0:
+                lines.append("[db_insert] FAIL")
+                exit_code = insert_code or 1
             else:
-                insert_code, insert_lines = insert_into_db(api_run_path, args.insert_max_n, args.db_dry_run)
-                lines.extend(insert_lines)
-                if insert_code != 0:
-                    lines.append("[db_insert] FAIL")
-                    exit_code = insert_code or 1
-                else:
-                    lines.append("[db_insert] OK")
-        lines.append("")
+                lines.append("[db_insert] OK")
+    lines.append("")
 
     lines.append(
         f"[detail] requested={args.max_detail} ok={len(details)} errors={len(errors)} "
@@ -1229,16 +1394,15 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     lines.append("")
     lines.append("files:")
     file_names = ["main_final.csv", "bsr_final.csv", "detail.csv", "review.csv", "errors.csv"]
-    if args.product == "tv":
-        file_names += [
-            "tv_retail_com_preview.csv",
-            "tv_product_list_preview.csv",
-            "out_tv_retail_com.csv",
-            "out_tv_product_list.csv",
-            "qa_issues.csv",
-            "api_run.jsonl",
-            "db_query_view.csv",
-        ]
+    file_names += [
+        f"{product_key}_retail_com_preview.csv",
+        f"{product_key}_product_list_preview.csv",
+        f"out_{product_key}_retail_com.csv",
+        f"out_{product_key}_product_list.csv",
+        "qa_issues.csv",
+        "api_run.jsonl",
+        "db_query_view.csv",
+    ]
     for name in file_names:
         lines.append(f"- {out_dir / name}")
     lines.append("")
