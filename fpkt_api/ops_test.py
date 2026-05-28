@@ -271,7 +271,9 @@ def listing_until(
             if meta:
                 row["sku_status"] = row.get("sku_status") or meta.get("sku_status")
                 row["sku_popularity"] = row.get("sku_popularity") or meta.get("sku_popularity")
-                row["discount_type"] = row.get("discount_type") or meta.get("discount_type")
+                row["discount_type"] = meta.get("discount_type")
+            else:
+                row["discount_type"] = None
             raw = dict(row)
             raw["stage"] = stage
             raw["duplicate"] = bool(key in seen)
@@ -383,7 +385,11 @@ def listing_html_metadata(text: str) -> dict[str, dict[str, str | None]]:
                 labels.append(label)
 
         deal_labels: list[str] = []
-        for text in card.xpath(".//text()"):
+        deal_badges = card.xpath(
+            './/*[contains(concat(" ", normalize-space(@class), " "), " HZ0E6r ") '
+            'and contains(concat(" ", normalize-space(@class), " "), " Rm9_cy ")]//text()'
+        )
+        for text in deal_badges:
             deal_label = deal_label_from_text(text)
             if deal_label and deal_label not in deal_labels:
                 deal_labels.append(deal_label)
@@ -623,8 +629,50 @@ def json_label_values(value: Any, label: str) -> list[str]:
     return found
 
 
+SPEC_LABEL_VIEW_TYPES = {
+    "rpd_all_details_showcase_vertical_list_layout",
+    "rpd_all_details_showcase_horizontal_list_layout",
+    "size-selector-view-wrapper",
+    "variant-selector-image-view-wrapper",
+    "product-highlights-layout",
+}
+
+
+def detail_spec_slots(response: dict[str, Any]) -> list[dict[str, Any]]:
+    slots = (response.get("RESPONSE") or {}).get("slots") or []
+    scoped: list[dict[str, Any]] = []
+    for slot in slots:
+        widget = slot.get("widget") or {}
+        if widget.get("viewType") in SPEC_LABEL_VIEW_TYPES:
+            scoped.append(slot)
+    return scoped
+
+
+def detail_label_values(response: dict[str, Any], label: str) -> list[str]:
+    found: list[str] = []
+    for slot in detail_spec_slots(response):
+        for value in json_label_values(slot, label):
+            if value not in found:
+                found.append(value)
+    return found
+
+
+def detail_label_value(response: dict[str, Any], label: str) -> str | None:
+    values = detail_label_values(response, label)
+    return values[0] if values else None
+
+
+def detail_spec_texts(response: dict[str, Any]) -> list[str]:
+    found: list[str] = []
+    for slot in detail_spec_slots(response):
+        for text in json_texts(slot):
+            if text not in found:
+                found.append(text)
+    return found
+
+
 def screen_size_value(response: dict[str, Any]) -> str | None:
-    values = json_label_values(response, "Display Size")
+    values = detail_label_values(response, "Display Size")
     for value in values:
         if re.search(r"\bcm\b", value, re.I) and re.search(r"\binch\b", value, re.I):
             return value
@@ -633,12 +681,17 @@ def screen_size_value(response: dict[str, Any]) -> str | None:
 
 def product_sku_value(response: dict[str, Any], product: str) -> str | None:
     if product.lower() == "hhp":
-        return json_label_value(response, "Model Number") or first_json_key(response, "prependingText")
-    return json_label_value(response, "Model Name")
+        return detail_label_value(response, "Model Number") or first_json_key(response, "prependingText")
+    return detail_label_value(response, "Model Name")
 
 
 def hhp_storage_value(response: dict[str, Any]) -> str | None:
-    for text in json_texts(response):
+    for label in ("Internal Storage", "Storage"):
+        for text in detail_label_values(response, label):
+            match = re.search(r"\b(\d+(?:\.\d+)?)\s*(GB|TB)\b", text, re.I)
+            if match:
+                return f"{match.group(1)} {match.group(2).upper()}"
+    for text in detail_spec_texts(response):
         storage = siel_log.parse_hhp_storage(text)
         if storage:
             return storage
@@ -700,11 +753,16 @@ def normalize_trade_in_value(value: Any) -> str | None:
 
 
 def hhp_trade_in_value(response: dict[str, Any]) -> str | None:
-    text_groups = [json_texts(response)]
-    for item in iter_dicts(response):
-        texts = scalar_texts(item)
-        if len(texts) <= 60 and any(exchange_label(text) for text in texts):
-            text_groups.append(texts)
+    text_groups: list[list[str]] = []
+    slots = (response.get("RESPONSE") or {}).get("slots") or []
+    for slot in slots:
+        widget = slot.get("widget") or {}
+        if widget.get("type") != "ATLAS_NEP_V2" and widget.get("viewType") != "pp_pricing_price_summary":
+            continue
+        for item in iter_dicts(slot):
+            texts = scalar_texts(item)
+            if len(texts) <= 60 and any(exchange_label(text) for text in texts):
+                text_groups.append(texts)
 
     for texts in text_groups:
         for index, text in enumerate(texts):
@@ -718,7 +776,7 @@ def hhp_trade_in_value(response: dict[str, Any]) -> str | None:
 
 
 def ref_capacity_value(response: dict[str, Any]) -> str | None:
-    for value in json_label_values(response, "Capacity"):
+    for value in detail_label_values(response, "Capacity"):
         if re.search(r"\b\d+(?:\.\d+)?\s*(?:l|litre|liter)s?\b", value, re.I):
             return value
     return None
@@ -726,7 +784,7 @@ def ref_capacity_value(response: dict[str, Any]) -> str | None:
 
 def ldy_capacity_value(response: dict[str, Any]) -> str | None:
     for label in ("Washing Capacity", "Capacity"):
-        for value in json_label_values(response, label):
+        for value in detail_label_values(response, label):
             capacity = siel_log.parse_ldy_capacity(value)
             if capacity:
                 return capacity
@@ -738,28 +796,28 @@ def product_detail_values(response: dict[str, Any], product: str) -> dict[str, s
     if product == "tv":
         return {
             "screen_size": screen_size_value(response),
-            "model_year": json_label_value(response, "Launch Year"),
+            "model_year": detail_label_value(response, "Launch Year"),
             "estimated_annual_electricity_use": (
-                json_label_value(response, "Power Consumption")
-                or json_label_value(response, "Annual Energy Consumption")
-                or json_label_value(response, "Energy Consumption")
+                detail_label_value(response, "Power Consumption")
+                or detail_label_value(response, "Annual Energy Consumption")
+                or detail_label_value(response, "Energy Consumption")
             ),
         }
     if product == "hhp":
         return {
             "hhp_storage": hhp_storage_value(response),
-            "hhp_color": json_label_value(response, "Color") or json_label_value(response, "Selected Color"),
+            "hhp_color": detail_label_value(response, "Color") or detail_label_value(response, "Selected Color"),
             "trade_in": hhp_trade_in_value(response),
         }
     if product == "ref":
         return {
-            "ref_refrigerator_type": json_label_value(response, "Refrigerator Type"),
+            "ref_refrigerator_type": detail_label_value(response, "Refrigerator Type"),
             "ref_capacity": ref_capacity_value(response),
         }
     if product == "ldy":
         return {
             "ldy_loading_type": siel_log.parse_ldy_loading_type(
-                json_label_value(response, "Function Type") or json_label_value(response, "Loading Type")
+                detail_label_value(response, "Function Type") or detail_label_value(response, "Loading Type")
             ),
             "ldy_capacity": ldy_capacity_value(response),
         }
