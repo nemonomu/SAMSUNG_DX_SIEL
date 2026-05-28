@@ -47,6 +47,7 @@ if "%FPKT_REVIEW_RETRIES%"=="" set "FPKT_REVIEW_RETRIES=2"
 if "%FPKT_MAX_REVIEWS_PER_PRODUCT%"=="" set "FPKT_MAX_REVIEWS_PER_PRODUCT=20"
 if "%FPKT_INSERT_MAX_N%"=="" set "FPKT_INSERT_MAX_N=0"
 if "%FPKT_LOCK_STALE_HOURS%"=="" set "FPKT_LOCK_STALE_HOURS=18"
+if "%FPKT_INSECURE_SSL%"=="" set "FPKT_INSECURE_SSL=1"
 if "%FPKT_EMAIL_REPORT%"=="" (
   set "FPKT_EMAIL_REPORT=0"
   if /I "%RUN_MODE%"=="insert" set "FPKT_EMAIL_REPORT=1"
@@ -62,6 +63,8 @@ echo [fpkt_api_run_all] review_pages=%FPKT_REVIEW_PAGES% review_short_max_pages=
 >> "%RUN_LOG%" echo [fpkt_api_run_all] review_pages=%FPKT_REVIEW_PAGES% review_short_max_pages=%FPKT_REVIEW_SHORT_MAX_PAGES%
 echo [fpkt_api_run_all] email_report=%FPKT_EMAIL_REPORT%
 >> "%RUN_LOG%" echo [fpkt_api_run_all] email_report=%FPKT_EMAIL_REPORT%
+echo [fpkt_api_run_all] insecure_ssl=%FPKT_INSECURE_SSL%
+>> "%RUN_LOG%" echo [fpkt_api_run_all] insecure_ssl=%FPKT_INSECURE_SSL%
 
 git status --short --untracked-files=no > "%RUN_DIR%\git_status_before.txt" 2>&1
 
