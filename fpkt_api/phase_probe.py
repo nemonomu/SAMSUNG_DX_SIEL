@@ -144,7 +144,8 @@ def fetch_json(url: str, headers: dict[str, str], body: dict[str, Any]) -> dict[
     context = None
     if os.environ.get("FPKT_API_INSECURE_SSL", "").lower() in {"1", "true", "yes", "y"}:
         context = ssl._create_unverified_context()
-    with urllib.request.urlopen(request, timeout=40, context=context) as response:
+    timeout = int(os.environ.get("FPKT_API_TIMEOUT", "60"))
+    with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
         return json.loads(response.read().decode("utf-8", errors="replace"))
 
 

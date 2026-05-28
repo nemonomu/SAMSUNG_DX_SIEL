@@ -1579,6 +1579,7 @@ def build_email_report(
     bsr_target: int,
     retail_rows: list[dict[str, Any]],
     retail_cols: list[str],
+    product_list_rows: list[dict[str, Any]],
     errors: list[dict[str, Any]],
     retail_db_ok: bool | None,
     product_list_db_ok: bool | None,
@@ -1592,13 +1593,14 @@ def build_email_report(
     if len(bsr_final) < bsr_target:
         warnings.append(f"listing 수집 부족: bsr {len(bsr_final)}/{bsr_target}")
     if retail_db_ok is False:
-        warnings.append("retail_com DB insert 실패")
+        warnings.append(f"{len(retail_rows)}건 retail_com DB insert 실패")
     if product_list_db_ok is False:
-        warnings.append("product_list DB insert 실패")
+        warnings.append(f"{len(product_list_rows)}건 product_list DB insert 실패")
     if errors:
+        warnings.append(f"{len(errors)}건 DB insert 제외: detail/review 오류")
         warnings.append(f"detail/review 오류: {len(errors)}건")
         for row in errors[:10]:
-            product_id = row.get("product_id") or row.get("item") or "-"
+            location = row.get("url") or row.get("review_url") or "-"
             stage = row.get("stage") or "detail/review"
             reason = row.get("error") or "-"
             meta = []
@@ -1609,7 +1611,7 @@ def build_email_report(
             if row.get("review_short_max_pages") not in (None, ""):
                 meta.append(f"review_short_max_pages={row.get('review_short_max_pages')}")
             suffix = f" ({', '.join(meta)})" if meta else ""
-            warnings.append(f"{product_id} [{stage}] {reason}{suffix}")
+            warnings.append(f"{location} [{stage}] {reason}{suffix}")
         if len(errors) > 10:
             warnings.append(f"detail/review 오류 {len(errors) - 10}건 추가 생략")
 
@@ -1742,32 +1744,34 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     reviews: list[dict[str, Any]] = []
     review_retry_lines: list[str] = []
     errors: list[dict[str, Any]] = []
-    if args.max_detail >= 0:
-        targets = detail_targets(main_final, bsr_final, args.max_detail)
-        for idx, target in enumerate(targets, 1):
-            url = target["product_url"]
-            safe_print(f"[detail] {idx}/{len(targets)} {target.get('product_id')} {url}")
+    targets: list[dict[str, Any]] = []
+
+    def fetch_target_detail_reviews(
+        target: dict[str, Any],
+        *,
+        existing_detail: dict[str, Any] | None = None,
+        final_retry: bool = False,
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[str], list[str], dict[str, Any] | None]:
+        url = target["product_url"]
+        label = str(target.get("product_id") or url)
+        if existing_detail is None:
             try:
-                detail, retry_lines = detail_from_api_with_retries(
+                detail, local_detail_retry_lines = detail_from_api_with_retries(
                     args.api_dir,
                     url,
                     args.product,
                     args.detail_retries,
-                    str(target.get("product_id") or url),
+                    label,
                 )
             except Exception as exc:
-                errors.append({
+                return None, [], [], [], {
                     "stage": "detail",
                     "product_id": target.get("product_id"),
                     "url": url,
                     "attempts": max(args.detail_retries, 0) + 1,
+                    "retry_phase": "final" if final_retry else "initial",
                     "error": repr(exc),
-                })
-                safe_print(f"[error] detail {target.get('product_id')} {repr(exc)}")
-                continue
-            for line in retry_lines:
-                safe_print(line)
-            detail_retry_lines.extend(retry_lines)
+                }
             detail["product_id"] = target.get("product_id")
             detail["main_rank"] = target.get("main_rank")
             detail["bsr_rank"] = target.get("bsr_rank")
@@ -1777,40 +1781,119 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
                 detail["count_of_star_ratings"] = target.get("count_of_star_ratings")
             if detail.get("count_of_reviews") in (None, ""):
                 detail["count_of_reviews"] = target.get("count_of_reviews")
-            details.append(detail)
-            count_reviews = detail.get("count_of_reviews")
-            if args.review_pages > 0 and detail.get("review_url") and (to_int(count_reviews) or 0) >= 1:
-                try:
-                    review_rows, retry_lines = review_for_product_with_retries(
-                        args.api_dir,
-                        detail["review_url"],
-                        args.review_pages,
-                        args.review_short_max_pages,
-                        args.max_reviews_per_product,
-                        to_int(count_reviews) or 0,
-                        args.review_retries,
-                        str(target.get("product_id") or detail.get("fsn") or detail.get("review_url")),
-                    )
-                except Exception as exc:
-                    errors.append({
-                        "stage": "review",
-                        "product_id": target.get("product_id"),
-                        "url": url,
-                        "review_url": detail.get("review_url"),
-                        "review_pages": args.review_pages,
-                        "review_short_max_pages": args.review_short_max_pages,
-                        "attempts": max(args.review_retries, 0) + 1,
-                        "error": repr(exc),
-                    })
-                    safe_print(f"[error] review {target.get('product_id')} {repr(exc)}")
+        else:
+            detail = existing_detail
+            local_detail_retry_lines = []
+
+        local_review_retry_lines: list[str] = []
+        review_rows: list[dict[str, Any]] = []
+        count_reviews = detail.get("count_of_reviews")
+        if args.review_pages > 0 and detail.get("review_url") and (to_int(count_reviews) or 0) >= 1:
+            try:
+                review_rows, local_review_retry_lines = review_for_product_with_retries(
+                    args.api_dir,
+                    detail["review_url"],
+                    args.review_pages,
+                    args.review_short_max_pages,
+                    args.max_reviews_per_product,
+                    to_int(count_reviews) or 0,
+                    args.review_retries,
+                    str(target.get("product_id") or detail.get("fsn") or detail.get("review_url")),
+                )
+            except Exception as exc:
+                return detail, [], local_detail_retry_lines, [], {
+                    "stage": "review",
+                    "product_id": target.get("product_id"),
+                    "url": url,
+                    "review_url": detail.get("review_url"),
+                    "review_pages": args.review_pages,
+                    "review_short_max_pages": args.review_short_max_pages,
+                    "attempts": max(args.review_retries, 0) + 1,
+                    "retry_phase": "final" if final_retry else "initial",
+                    "error": repr(exc),
+                }
+        for review in review_rows:
+            review["product_id"] = target.get("product_id")
+            review["fsn"] = detail.get("fsn")
+        return detail, review_rows, local_detail_retry_lines, local_review_retry_lines, None
+
+    def append_detail_once(detail: dict[str, Any]) -> None:
+        key = key_for_row(detail)
+        if key and any(key_for_row(row) == key for row in details):
+            return
+        details.append(detail)
+
+    if args.max_detail >= 0:
+        targets = detail_targets(main_final, bsr_final, args.max_detail)
+        for idx, target in enumerate(targets, 1):
+            url = target["product_url"]
+            safe_print(f"[detail] {idx}/{len(targets)} {target.get('product_id')} {url}")
+            detail, review_rows, retry_lines, review_lines, error = fetch_target_detail_reviews(target)
+            for line in retry_lines:
+                safe_print(line)
+            detail_retry_lines.extend(retry_lines)
+            for line in review_lines:
+                safe_print(line)
+            review_retry_lines.extend(review_lines)
+            if detail:
+                append_detail_once(detail)
+            reviews.extend(review_rows)
+            if error:
+                errors.append(error)
+                safe_print(f"[error] {error.get('stage')} {target.get('product_id')} {error.get('error')}")
+
+        if errors:
+            safe_print(f"[final_retry] start unresolved={len(errors)}")
+            target_by_key = {key_for_row(row): row for row in targets if key_for_row(row)}
+            target_by_url = {row.get("product_url"): row for row in targets if row.get("product_url")}
+            next_errors: list[dict[str, Any]] = []
+            for error in errors:
+                target = (
+                    target_by_key.get(str(error.get("product_id") or ""))
+                    or target_by_url.get(error.get("url"))
+                )
+                if not target:
+                    next_errors.append(error)
                     continue
+                detail_key = key_for_row(target)
+                existing_detail = None
+                if error.get("stage") == "review" and detail_key:
+                    existing_detail = next((row for row in details if key_for_row(row) == detail_key), None)
+                safe_print(f"[final_retry] {error.get('stage')} {error.get('url')}")
+                detail, review_rows, retry_lines, review_lines, retry_error = fetch_target_detail_reviews(
+                    target,
+                    existing_detail=existing_detail,
+                    final_retry=True,
+                )
                 for line in retry_lines:
                     safe_print(line)
-                review_retry_lines.extend(retry_lines)
-                for review in review_rows:
-                    review["product_id"] = target.get("product_id")
-                    review["fsn"] = detail.get("fsn")
-                    reviews.append(review)
+                detail_retry_lines.extend(retry_lines)
+                for line in review_lines:
+                    safe_print(line)
+                review_retry_lines.extend(review_lines)
+                if detail:
+                    append_detail_once(detail)
+                reviews.extend(review_rows)
+                if retry_error:
+                    next_errors.append(retry_error)
+                    safe_print(f"[final_retry] failed {retry_error.get('stage')} {retry_error.get('url')} {retry_error.get('error')}")
+                else:
+                    safe_print(f"[final_retry] recovered {error.get('url')}")
+            errors = next_errors
+            safe_print(f"[final_retry] remaining={len(errors)}")
+
+    failed_keys = {str(row.get("product_id")) for row in errors if row.get("product_id")}
+    if failed_keys:
+        lines.append(f"[schema_filter] excluded_failed_items={len(failed_keys)}")
+        main_for_schema = [row for row in main_final if str(key_for_row(row)) not in failed_keys]
+        bsr_for_schema = [row for row in bsr_final if str(key_for_row(row)) not in failed_keys]
+        details_for_schema = [row for row in details if str(key_for_row(row)) not in failed_keys]
+        reviews_for_schema = [row for row in reviews if str(key_for_row(row)) not in failed_keys]
+    else:
+        main_for_schema = main_final
+        bsr_for_schema = bsr_final
+        details_for_schema = details
+        reviews_for_schema = reviews
 
     write_csv(out_dir / "detail.csv", details)
     write_csv(out_dir / "review.csv", reviews)
@@ -1822,7 +1905,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     db_query_view_cols = DB_QUERY_VIEW_COLS_BY_PRODUCT[product_key]
     api_run_path = out_dir / "api_run.jsonl"
     retail_rows, product_list_rows, jsonl_rows = build_schema_outputs(
-        args.product, main_final, bsr_final, details, reviews, crawl_dt, batch_id
+        args.product, main_for_schema, bsr_for_schema, details_for_schema, reviews_for_schema, crawl_dt, batch_id
     )
     write_csv_fields(out_dir / f"{product_key}_retail_com_preview.csv", retail_rows, retail_cols)
     write_csv_fields(out_dir / f"{product_key}_product_list_preview.csv", product_list_rows, product_list_cols)
@@ -1831,7 +1914,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     write_csv_fields(out_dir / "output.csv", retail_rows, retail_cols)
     write_csv_fields(out_dir / "db_query_view.csv", retail_rows, db_query_view_cols)
     write_jsonl(api_run_path, jsonl_rows)
-    qa_issues, qa_summary = validate_schema_outputs(args.product, retail_rows, reviews, args.max_reviews_per_product)
+    qa_issues, qa_summary = validate_schema_outputs(args.product, retail_rows, reviews_for_schema, args.max_reviews_per_product)
     write_csv(out_dir / "qa_issues.csv", qa_issues)
     lines.append(
         f"[schema:{product_key}_retail_com] rows={len(retail_rows)} "
@@ -1849,12 +1932,8 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     lines.extend(qa_summary)
     if args.db_insert:
         if errors:
-            lines.append(f"[db_insert] skipped: detail/review errors={len(errors)}")
-            db_status = f"skipped: detail/review errors={len(errors)}"
-            retail_db_ok = False
-            product_list_db_ok = False
-            exit_code = 1
-        elif qa_issues and not args.allow_qa_insert:
+            lines.append(f"[db_insert] excluded detail/review errors={len(errors)}")
+        if qa_issues and not args.allow_qa_insert:
             lines.append(f"[db_insert] skipped: qa_issues={len(qa_issues)} (use --allow-qa-insert to force)")
             db_status = f"skipped: qa_issues={len(qa_issues)}"
             retail_db_ok = False
@@ -1943,6 +2022,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             args.bsr_target,
             retail_rows,
             retail_cols,
+            product_list_rows,
             errors,
             retail_db_ok,
             product_list_db_ok,
