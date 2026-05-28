@@ -1345,6 +1345,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     write_csv_fields(out_dir / f"{product_key}_product_list_preview.csv", product_list_rows, product_list_cols)
     write_csv_fields(out_dir / f"out_{product_key}_retail_com.csv", retail_rows, retail_cols)
     write_csv_fields(out_dir / f"out_{product_key}_product_list.csv", product_list_rows, product_list_cols)
+    write_csv_fields(out_dir / "output.csv", retail_rows, retail_cols)
     write_csv_fields(out_dir / "db_query_view.csv", retail_rows, db_query_view_cols)
     write_jsonl(api_run_path, jsonl_rows)
     qa_issues, qa_summary = validate_schema_outputs(args.product, retail_rows, reviews, args.max_reviews_per_product)
@@ -1399,6 +1400,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         f"{product_key}_product_list_preview.csv",
         f"out_{product_key}_retail_com.csv",
         f"out_{product_key}_product_list.csv",
+        "output.csv",
         "qa_issues.csv",
         "api_run.jsonl",
         "db_query_view.csv",
