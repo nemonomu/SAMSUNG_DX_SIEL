@@ -1046,21 +1046,31 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def insert_into_db(jsonl_path: Path, max_n: int) -> tuple[int, list[str]]:
+def insert_into_db(jsonl_path: Path, max_n: int, dry_run: bool = False) -> tuple[int, list[str]]:
     script = ROOT / "insert_test_retail_com.py"
     if not script.exists():
         return 2, [f"[db_insert] missing insert script: {script}"]
     command = [sys.executable, str(script), str(jsonl_path), str(max_n)]
+    if dry_run:
+        command.append("--dry-run")
+    env = os.environ.copy()
+    if dry_run:
+        env["SIEL_INSERT_DRY_RUN"] = "1"
     proc = subprocess.run(
         command,
         cwd=str(ROOT),
+        env=env,
         text=True,
         encoding="utf-8",
         errors="replace",
         capture_output=True,
         timeout=1200,
     )
-    lines = [f"[db_insert] command={' '.join(command)}", f"[db_insert] returncode={proc.returncode}"]
+    lines = [
+        f"[db_insert] command={' '.join(command)}",
+        f"[db_insert] dry_run={str(dry_run).lower()}",
+        f"[db_insert] returncode={proc.returncode}",
+    ]
     if proc.stdout.strip():
         lines.extend(f"[db_insert][stdout] {line}" for line in proc.stdout.strip().splitlines())
     if proc.stderr.strip():
@@ -1093,6 +1103,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
 
     lines: list[str] = [
         f"db_insert={str(bool(args.db_insert)).lower()}",
+        f"db_dry_run={str(bool(args.db_dry_run)).lower()}",
         "command: " + " ".join(sys.argv),
         "api_dir: " + str(args.api_dir),
         "output_dir: " + str(out_dir),
@@ -1194,7 +1205,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
                 lines.append(f"[db_insert] skipped: qa_issues={len(qa_issues)} (use --allow-qa-insert to force)")
                 exit_code = 1
             else:
-                insert_code, insert_lines = insert_into_db(api_run_path, args.insert_max_n)
+                insert_code, insert_lines = insert_into_db(api_run_path, args.insert_max_n, args.db_dry_run)
                 lines.extend(insert_lines)
                 if insert_code != 0:
                     lines.append("[db_insert] FAIL")
@@ -1267,6 +1278,7 @@ def main() -> int:
     parser.add_argument("--insecure", action="store_true")
     parser.add_argument("--real-batch-id", action="store_true", help="Use the normal f_YYYYMMDD_NNNNNN batch counter")
     parser.add_argument("--db-insert", action="store_true", help="Insert into existing dx_siel_* tables after output validation")
+    parser.add_argument("--db-dry-run", action="store_true", help="Execute DB insert SQL and roll it back")
     parser.add_argument("--insert-max-n", type=int, default=0, help="Rows cap passed to insert_test_retail_com.py; 0=unlimited")
     parser.add_argument("--allow-qa-insert", action="store_true", help="Insert even when QA issues are present")
     args = parser.parse_args()

@@ -175,15 +175,24 @@ def make_row(main_rec, bsr_rec, detail_rec):
     return rows[0] if rows else None
 
 
-def make_row_listing(main_rec, bsr_rec):
+def make_row_listing(main_rec, bsr_rec, detail_rec=None):
     """단일 main + bsr only → 1 row dict (detail 출처 컬럼은 NULL). product_list 용.
     사용자 룰 (5/10): product_list = main + bsr 단계 raw 데이터만, detail 출처 X."""
     listing_one = {'_': {'main': main_rec, 'bsr': bsr_rec}}
-    rows = merge(listing_one, {}, max_n=1)  # detail dict empty → detail 출처 컬럼 NULL
+    redirect_by_key = None
+    if detail_rec is not None:
+        redirect_by_key = {'_': detail_rec.get('redirect')}
+    rows = merge(
+        listing_one,
+        {},
+        max_n=1,
+        redirect_by_key=redirect_by_key,
+    )  # detail dict empty → detail 출처 컬럼 NULL
     return rows[0] if rows else None
 
 
-def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
+def merge(listing: dict, detail: dict, max_n: int = 10,
+          redirect_by_key=None, exclude_keys=None) -> list:
     """listing[key] = {'main': rec or None, 'bsr': rec or None} + detail merge → row list.
     main_rank / bsr_rank 둘 다 set (같은 SKU 가 main+bsr 양쪽에 있으면).
     page_type: main 우선, 없으면 bsr.
@@ -193,6 +202,8 @@ def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
     if max_n and max_n > 0:
         items = items[:max_n]
     for key, entry in items:
+        if exclude_keys and key in exclude_keys:
+            continue
         m = entry.get('main') or {}
         b = entry.get('bsr') or {}
         primary = m or b  # 정보량 main >= bsr 가정
@@ -215,6 +226,8 @@ def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
             'page_type':         page_type,
             'retailer_sku_name': primary.get('retailer_sku_name') or d.get('retailer_sku_name'),
             'product_url':       primary.get('product_url') or d.get('source_url'),
+            'redirect':          d.get('redirect') if d.get('redirect') is not None
+                                 else ((redirect_by_key or {}).get(key)),
             'calendar_week':     calendar_week_iso(cdt),
             'crawl_datetime':    cdt,
             'batch_id':          primary.get('batch_id') or d.get('batch_id'),
@@ -267,10 +280,17 @@ def merge(listing: dict, detail: dict, max_n: int = 10) -> list:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print('usage: python insert_test_retail_com.py <jsonl_path> [max_n=10|0=unlimited]', file=sys.stderr)
+        print('usage: python insert_test_retail_com.py <jsonl_path> [max_n=10|0=unlimited] [--dry-run]', file=sys.stderr)
         return 2
-    jsonl_path = sys.argv[1]
-    max_n = int(sys.argv[2]) if len(sys.argv) > 2 else 10
+    args = sys.argv[1:]
+    jsonl_path = args[0]
+    max_n = 10
+    dry_run = os.environ.get('SIEL_INSERT_DRY_RUN', '').lower() in ('1', 'true', 'yes', 'y')
+    for arg in args[1:]:
+        if arg == '--dry-run':
+            dry_run = True
+        else:
+            max_n = int(arg)
 
     if not os.path.exists(jsonl_path):
         print(f'[insert_test] file not found: {jsonl_path}', file=sys.stderr)
@@ -278,6 +298,8 @@ def main() -> int:
 
     listing_by_url = {}  # key → {'main': rec or None, 'bsr': rec or None}
     detail_by_url = {}
+    redirect_by_key = {}
+    detail_skip_keys = set()
     n_main = n_bsr = n_detail = n_other = 0
     n_dup_main = n_dup_bsr = 0
 
@@ -308,7 +330,12 @@ def main() -> int:
                 else:
                     n_bsr += 1
             elif stage == 'detail':
-                detail_by_url[key] = rec
+                if rec.get('_detail_skip'):
+                    detail_skip_keys.add(key)
+                else:
+                    detail_by_url[key] = rec
+                if 'redirect' in rec:
+                    redirect_by_key[key] = rec.get('redirect')
                 n_detail += 1
             else:
                 n_other += 1
@@ -317,11 +344,15 @@ def main() -> int:
           file=sys.stderr)
 
     # retail_com 용 — main + bsr + detail merge (full)
-    rows_full = merge(listing_by_url, detail_by_url, max_n=max_n)
+    rows_full = merge(listing_by_url, detail_by_url, max_n=max_n,
+                      exclude_keys=detail_skip_keys)
     # product_list 용 — main + bsr only (detail 출처 컬럼 NULL, 사용자 룰 5/10)
-    rows_listing = merge(listing_by_url, {}, max_n=max_n)
+    rows_listing = merge(listing_by_url, {}, max_n=max_n,
+                         redirect_by_key=redirect_by_key)
     print(f'[insert] merge: {len(rows_full)} rows (full) / {len(rows_listing)} rows (listing-only)',
           file=sys.stderr)
+    if dry_run:
+        print('[insert] dry_run=true: SQL will be executed and rolled back', file=sys.stderr)
 
     if not rows_full and not rows_listing:
         print('[insert] no rows to insert', file=sys.stderr)
@@ -354,12 +385,19 @@ def main() -> int:
                     psycopg2.extras.execute_batch(cur, sql_retail, rows_full_prod, page_size=50)
                 if rows_listing_prod:
                     psycopg2.extras.execute_batch(cur, sql_list, rows_listing_prod, page_size=50)
-            conn.commit()
             total_inserted += len(rows_full_prod) + len(rows_listing_prod)
+            if dry_run:
+                conn.rollback()
+            else:
+                conn.commit()
             print(f'[insert] OK: {prod_lower} retail={len(rows_full_prod)} list={len(rows_listing_prod)}',
                   file=sys.stderr)
-        print(f'[insert] DONE: total {total_inserted} rows inserted across 8 tables',
-              file=sys.stderr)
+        if dry_run:
+            print(f'[insert] DRY_RUN DONE: total {total_inserted} rows tested and rolled back',
+                  file=sys.stderr)
+        else:
+            print(f'[insert] DONE: total {total_inserted} rows inserted across 8 tables',
+                  file=sys.stderr)
         return 0
     except Exception as e:
         conn.rollback()
