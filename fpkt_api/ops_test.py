@@ -1400,7 +1400,7 @@ def build_schema_outputs(
             "sku": detail.get("sku"),
             "account_name": "Flipkart",
             "page_type": page_type,
-            "retailer_sku_name": primary.get("product_name") or detail.get("retailer_sku_name"),
+            "retailer_sku_name": detail.get("retailer_sku_name") or primary.get("product_name"),
             "product_url": primary.get("product_url") or detail.get("source_url"),
             "calendar_week": calendar_week(datetime.fromisoformat(crawl_dt)),
             "crawl_datetime": crawl_dt,

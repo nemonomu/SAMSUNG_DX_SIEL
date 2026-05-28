@@ -267,7 +267,7 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             'sku':               sku,
             'account_name':      account or None,
             'page_type':         page_type,
-            'retailer_sku_name': primary.get('retailer_sku_name') or d.get('retailer_sku_name'),
+            'retailer_sku_name': d.get('retailer_sku_name') or primary.get('retailer_sku_name'),
             'product_url':       primary.get('product_url') or d.get('source_url'),
             'redirect':          d.get('redirect') if d.get('redirect') is not None
                                  else ((redirect_by_key or {}).get(key)),
