@@ -81,6 +81,17 @@ TV_PRODUCT_LIST_COLS = [
     "number_of_units_purchased_past_month",
 ]
 
+DB_QUERY_VIEW_COLS = [
+    "country", "product", "item", "sku", "account_name", "page_type",
+    "retailer_sku_name", "product_url", "calendar_week", "crawl_datetime", "batch_id",
+    "star_rating", "count_of_star_ratings", "count_of_reviews",
+    "detailed_review_content", "retailer_sku_name_similar",
+    "final_sku_price", "original_sku_price", "savings", "discount_type",
+    "delivery_availability", "available_quantity_for_purchase",
+    "sku_popularity", "sku_status", "main_rank", "bsr_rank",
+    "screen_size", "model_year", "estimated_annual_electricity_use",
+]
+
 
 def safe_print(value: str) -> None:
     encoding = sys.stdout.encoding or "utf-8"
@@ -241,6 +252,7 @@ def listing_until(
             if meta:
                 row["sku_status"] = row.get("sku_status") or meta.get("sku_status")
                 row["sku_popularity"] = row.get("sku_popularity") or meta.get("sku_popularity")
+                row["discount_type"] = row.get("discount_type") or meta.get("discount_type")
             raw = dict(row)
             raw["stage"] = stage
             raw["duplicate"] = bool(key in seen)
@@ -312,6 +324,22 @@ def spotlight_label_from_href(href: str) -> str | None:
     return known.get(raw, re.sub(r"Id$", "", raw))
 
 
+def deal_label_from_text(text: str) -> str | None:
+    label = normalize_text(text)
+    if not label or len(label) > 50:
+        return None
+    lowered = label.lower()
+    if lowered in {"upto", "bank offer", "bank offers"}:
+        return None
+    if "bank offer" in lowered or "exchange" in lowered:
+        return None
+    if "only" in lowered and "left" in lowered:
+        return None
+    if "deal" in lowered or "special price" in lowered or "lowest price" in lowered:
+        return label
+    return None
+
+
 def listing_html_metadata(text: str) -> dict[str, dict[str, str | None]]:
     try:
         doc = html.fromstring(text)
@@ -334,10 +362,17 @@ def listing_html_metadata(text: str) -> dict[str, dict[str, str | None]]:
             if label and label.lower() not in {"sponsored", "flipkart assured"} and label not in labels:
                 labels.append(label)
 
+        deal_labels: list[str] = []
+        for text in card.xpath(".//text()"):
+            deal_label = deal_label_from_text(text)
+            if deal_label and deal_label not in deal_labels:
+                deal_labels.append(deal_label)
+
         sponsored = bool(card.xpath('.//*[contains(concat(" ", normalize-space(@class), " "), " t7gRps ")]'))
         metadata[product_id] = {
             "sku_status": "Sponsored" if sponsored else None,
             "sku_popularity": ", ".join(labels) if labels else None,
+            "discount_type": ", ".join(deal_labels) if deal_labels else None,
         }
     return metadata
 
@@ -595,7 +630,7 @@ def similar_product_names(response: dict[str, Any]) -> str | None:
             name = json_text(((card_value.get("label_2") or {}).get("value") if isinstance(card_value.get("label_2"), dict) else None))
             if name and name not in names:
                 names.append(name)
-    return ", ".join(names) if names else None
+    return " ||| ".join(names) if names else None
 
 
 def detail_api_response(api_dir: Path, product_url: str) -> dict[str, Any]:
@@ -1108,6 +1143,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str]]:
         write_csv_fields(out_dir / "tv_product_list_preview.csv", product_list_rows, TV_PRODUCT_LIST_COLS)
         write_csv_fields(out_dir / "out_tv_retail_com.csv", retail_rows, TV_RETAIL_COM_COLS)
         write_csv_fields(out_dir / "out_tv_product_list.csv", product_list_rows, TV_PRODUCT_LIST_COLS)
+        write_csv_fields(out_dir / "db_query_view.csv", retail_rows, DB_QUERY_VIEW_COLS)
         write_jsonl(out_dir / "api_run.jsonl", jsonl_rows)
         qa_issues, qa_summary = validate_tv_outputs(retail_rows, reviews, args.max_reviews_per_product)
         write_csv(out_dir / "qa_issues.csv", qa_issues)
