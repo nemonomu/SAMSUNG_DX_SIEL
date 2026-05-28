@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS dx_siel_ldy_product_list (
   page_type         TEXT,
   retailer_sku_name TEXT,
   product_url       TEXT,
+  redirect          BOOLEAN,
   calendar_week     TEXT,
   crawl_datetime    TIMESTAMPTZ,
   batch_id          TEXT,

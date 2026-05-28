@@ -212,8 +212,8 @@ def maybe_save_html_post(driver) -> None:
 
 
 def asin_from_url(url: str):
-    m = re.search(r'/(?:dp|gp/product)/([A-Z0-9]{10})', url)
-    return m.group(1) if m else None
+    m = re.search(r'/(?:dp|gp/product)/([A-Z0-9]{10})', url or '', re.IGNORECASE)
+    return m.group(1).upper() if m else None
 
 
 def try_click_expand(driver, xpath: str) -> None:
@@ -303,6 +303,7 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
         'source_url':     url,
         'asin':           asin,
         'item':           asin,
+        'redirect':       None,
         'batch_id':       batch_id,
         'crawl_datetime': now_ist_iso(),
     }
@@ -321,6 +322,27 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             _logger.warning('goto failed: %s', rec['_error'])
         return rec
 
+    try:
+        landing_url = driver.current_url or ''
+    except WebDriverException:
+        landing_url = ''
+    landing_asin = asin_from_url(landing_url)
+    if asin:
+        if landing_asin == asin:
+            rec['redirect'] = True
+        else:
+            rec.update({
+                '_detail_skip': 'asin_mismatch',
+                'landing_url': landing_url,
+                'landing_asin': landing_asin,
+            })
+            if _logger:
+                _logger.warning(
+                    'detail skip: listed ASIN != landing ASIN listed=%s landing=%s landing_url=%s',
+                    asin, landing_asin, landing_url)
+            maybe_save_html(driver)
+            return rec
+
     maybe_save_html(driver)
 
     for trigger_field in EXPAND_FIELDS:
@@ -334,7 +356,9 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
     maybe_save_html_post(driver)
 
     for field, sel in selectors.items():
-        if field in EXPAND_FIELDS or field in ('base_container', 'sku_assurance'):
+        if field in EXPAND_FIELDS or field == 'base_container':
+            continue
+        if field == 'sku_assurance' and product == 'tv':
             continue
         xpath = sel.get('xpath')
         if not xpath:
@@ -426,6 +450,11 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec[field] = siel_log.parse_delivery_availability(extract_single(driver, xpath))
         elif field == 'fastest_delivery':
             rec[field] = siel_log.parse_fastest_delivery(extract_single(driver, xpath))
+        elif field == 'sku_assurance':
+            v = extract_single(driver, xpath)
+            if v is None and sel.get('fallback'):
+                v = extract_single(driver, sel['fallback'])
+            rec[field] = siel_log.parse_sku_assurance(v)
         elif field == 'trade_in':
             rec[field] = siel_log.parse_trade_in(extract_single(driver, xpath))
         elif field == 'ldy_loading_type':

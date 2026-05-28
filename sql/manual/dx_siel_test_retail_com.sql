@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS dx_siel_test_retail_com (
   -- 메타
   retailer_sku_name TEXT,
   product_url       TEXT,
+  redirect          BOOLEAN,
   calendar_week     TEXT,                         -- e.g. '2026-W18'
   crawl_datetime    TIMESTAMPTZ,
   batch_id          TEXT,

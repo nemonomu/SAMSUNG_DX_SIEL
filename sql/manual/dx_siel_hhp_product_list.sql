@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS dx_siel_hhp_product_list (
   -- 메타
   retailer_sku_name TEXT,
   product_url       TEXT,
+  redirect          BOOLEAN,
   calendar_week     TEXT,
   crawl_datetime    TIMESTAMPTZ,
   batch_id          TEXT,

@@ -78,8 +78,9 @@ def _setup_db():
             placeholders_join = ', '.join(f'%({c})s' for c in cols_p)
             _retail_sqls[p] = f'INSERT INTO dx_siel_{p}_retail_com ({cols_join}) VALUES ({placeholders_join})'
         # product_list — 4 product 동일 컬럼
-        cols_list = ', '.join(ITR.COLUMNS_LIST)
-        placeholders_list = ', '.join(f'%({c})s' for c in ITR.COLUMNS_LIST)
+        columns_list = getattr(ITR, 'COLUMNS_LIST_AMZN', ITR.COLUMNS_LIST)
+        cols_list = ', '.join(columns_list)
+        placeholders_list = ', '.join(f'%({c})s' for c in columns_list)
         _list_sqls = {p: f'INSERT INTO dx_siel_{p}_product_list ({cols_list}) VALUES ({placeholders_list})'
                       for p in ITR.PRODUCT_LOWERS}
         _streaming_enabled = True
@@ -119,10 +120,11 @@ def _stream_insert(detail_rec: dict) -> None:
     key = _rec_key(detail_rec)
     main_rec = _main_cache.get(key)
     bsr_rec = _bsr_cache.get(key)
-    # retail_com — full merge (main + bsr + detail)
-    row_full = ITR.make_row(main_rec, bsr_rec, detail_rec)
-    # product_list — main + bsr only (사용자 룰 5/10: detail 출처 컬럼 NULL)
-    row_listing = ITR.make_row_listing(main_rec, bsr_rec)
+    detail_skipped = bool(detail_rec.get('_detail_skip'))
+    # retail_com — full merge (main + bsr + detail). ASIN mismatch detail is not trusted.
+    row_full = None if detail_skipped else ITR.make_row(main_rec, bsr_rec, detail_rec)
+    # product_list — main + bsr only. redirect records the ASIN comparison result.
+    row_listing = ITR.make_row_listing(main_rec, bsr_rec, detail_rec)
     if not row_full and not row_listing:
         return
     prod_lower = (row_full or row_listing or {}).get('product', '').lower()

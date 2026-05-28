@@ -53,6 +53,29 @@ BEGIN
 END $$;
 
 
+-- Output schema migration: ASIN comparison result for Amazon detail navigation.
+DO $$
+DECLARE
+  tbl TEXT;
+  tables TEXT[] := ARRAY[
+    'dx_siel_hhp_retail_com',
+    'dx_siel_tv_retail_com',
+    'dx_siel_ref_retail_com',
+    'dx_siel_ldy_retail_com',
+    'dx_siel_hhp_product_list',
+    'dx_siel_tv_product_list',
+    'dx_siel_ref_product_list',
+    'dx_siel_ldy_product_list'
+  ];
+BEGIN
+  FOREACH tbl IN ARRAY tables LOOP
+    IF to_regclass('dx_siel.' || tbl) IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE dx_siel.%I ADD COLUMN IF NOT EXISTS redirect BOOLEAN', tbl);
+    END IF;
+  END LOOP;
+END $$;
+
+
 CREATE INDEX IF NOT EXISTS idx_dx_siel_xpath_lookup ON dx_siel_xpath_selectors
   (site_account, page_type, domain, is_active);
 
@@ -139,7 +162,23 @@ BEGIN
       ('Amazon','bsr',d,'product_url',
        './/a[contains(@class,"a-link-normal") and contains(@href,"/dp/")]',
        './/a[contains(@href,"/dp/")]',
-       'href attr — BSR 의 ASIN 은 url 에서 추출 가능')
+       'href attr — BSR 의 ASIN 은 url 에서 추출 가능'),
+      ('Amazon','bsr',d,'retailer_sku_name',
+       './/div[contains(@class,"p13n-sc-css-line-clamp") and normalize-space(text())] | .//div[contains(@class,"p13n-sc-truncate") and normalize-space(text())]',
+       './/a[contains(@href,"/dp/")]//*[self::span or self::div][normalize-space(text()) and string-length(normalize-space(text()))>10][1]',
+       'BSR card product title. Used as listing-only fallback when detail is skipped.'),
+      ('Amazon','bsr',d,'final_sku_price',
+       './/span[contains(@class,"p13n-sc-price")] | .//span[contains(@class,"a-price")]//span[@class="a-offscreen"]',
+       './/span[contains(@class,"a-color-price") and contains(text(),"₹")]',
+       'BSR card visible price when present.'),
+      ('Amazon','bsr',d,'star_rating',
+       './/i[contains(@class,"a-icon-star")]//span',
+       './/*[@aria-label and contains(@aria-label,"out of 5 stars")]',
+       'BSR card rating text when present.'),
+      ('Amazon','bsr',d,'count_of_star_ratings',
+       './/a[contains(@href,"customerReviews")]//span[normalize-space(text())]',
+       './/span[contains(@class,"a-size-small") and normalize-space(text())][1]',
+       'BSR card rating count when present.')
     ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
       xpath_primary  = EXCLUDED.xpath_primary,
       fallback_xpath = EXCLUDED.fallback_xpath,
@@ -847,10 +886,11 @@ VALUES
 --  GROUP BY page_type, domain
 --  ORDER BY page_type, domain;
 
--- Policy: sku_assurance is no longer collected. Keep existing DB columns; leave new rows NULL.
+-- Policy: TV sku_assurance is not collected. HHP/REF/LDY remain active.
 UPDATE dx_siel_xpath_selectors
    SET is_active = FALSE,
        updated_at = NOW()
  WHERE site_account = 'Amazon'
    AND page_type = 'detail'
+   AND domain = 'tv'
    AND data_field = 'sku_assurance';
