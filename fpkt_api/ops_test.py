@@ -224,13 +224,23 @@ def listing_until(
     seen: set[str] = set()
     previous_response = None
     pages_used = 0
+    html_meta_headers: dict[str, str] | None = None
+    try:
+        html_meta_headers = html_headers(api_dir)
+    except Exception:
+        html_meta_headers = None
 
     for page in range(1, max_pages + 1):
         pages_used = page
         response = listing_page(har_path, query, page, sort, previous_response)
         previous_response = response
+        html_meta = listing_html_metadata_for_page(api_dir, query, stage, page, html_meta_headers)
         for row in extract_products(response, page=page):
             key = row.get("product_id") or row.get("item_id") or row.get("product_url")
+            meta = html_meta.get(str(key or ""))
+            if meta:
+                row["sku_status"] = row.get("sku_status") or meta.get("sku_status")
+                row["sku_popularity"] = row.get("sku_popularity") or meta.get("sku_popularity")
             raw = dict(row)
             raw["stage"] = stage
             raw["duplicate"] = bool(key in seen)
@@ -276,6 +286,82 @@ def fetch_text(url: str, headers: dict[str, str]) -> str:
     request = urllib.request.Request(url, headers=headers, method="GET")
     with urllib.request.urlopen(request, timeout=40, context=ssl_context()) as response:
         return response.read().decode("utf-8", errors="replace")
+
+
+def listing_html_url(query: str, stage: str, page: int) -> str:
+    url = (
+        f"https://www.flipkart.com/search?q={query}&otracker=search&otracker1=search"
+        "&marketplace=FLIPKART&as-show=on&as=off"
+    )
+    if stage == "bsr":
+        url += "&sort=popularity"
+    if page > 1:
+        url += f"&page={page}"
+    return url
+
+
+def spotlight_label_from_href(href: str) -> str | None:
+    match = re.search(r"spotlightTagId=default_([^&_]+)", href or "")
+    if not match:
+        return None
+    raw = match.group(1).strip()
+    known = {
+        "BestsellerId": "Bestseller",
+        "TrendingId": "Trending",
+    }
+    return known.get(raw, re.sub(r"Id$", "", raw))
+
+
+def listing_html_metadata(text: str) -> dict[str, dict[str, str | None]]:
+    try:
+        doc = html.fromstring(text)
+    except Exception:
+        return {}
+
+    metadata: dict[str, dict[str, str | None]] = {}
+    for card in doc.xpath('//*[@data-id]'):
+        product_id = (card.get("data-id") or "").strip()
+        if not product_id:
+            continue
+
+        labels: list[str] = []
+        for href in card.xpath('.//a[contains(@href,"spotlightTagId=")]/@href'):
+            label = spotlight_label_from_href(href)
+            if label and label not in labels:
+                labels.append(label)
+        for text in card.xpath('.//*[contains(@class,"o2uEoz")]//text()'):
+            label = normalize_text(text)
+            if label and label.lower() not in {"sponsored", "flipkart assured"} and label not in labels:
+                labels.append(label)
+
+        sponsored = bool(card.xpath('.//*[contains(concat(" ", normalize-space(@class), " "), " t7gRps ")]'))
+        metadata[product_id] = {
+            "sku_status": "Sponsored" if sponsored else None,
+            "sku_popularity": ", ".join(labels) if labels else None,
+        }
+    return metadata
+
+
+def listing_html_metadata_for_page(
+    api_dir: Path,
+    query: str,
+    stage: str,
+    page: int,
+    headers: dict[str, str] | None,
+) -> dict[str, dict[str, str | None]]:
+    text: str | None = None
+    if headers:
+        try:
+            text = fetch_text(listing_html_url(query, stage, page), headers)
+        except Exception:
+            text = None
+
+    if not text and stage == "main" and page == 1:
+        saved_html = api_dir / "main_html.txt"
+        if saved_html.exists():
+            text = read_text(saved_html)
+
+    return listing_html_metadata(text) if text else {}
 
 
 def same_pid(source_url: str, href: str) -> bool:
@@ -927,9 +1013,12 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 def summarize_listing(stage: str, raw: list[dict[str, Any]], final: list[dict[str, Any]], pages: int, target: int) -> str:
     missing_reviews = sum(row.get("count_of_reviews") in (None, "") for row in final)
     duplicates = sum(1 for row in raw if row.get("duplicate"))
+    sponsored = sum(row.get("sku_status") == "Sponsored" for row in final)
+    popularity = sum(row.get("sku_popularity") not in (None, "") for row in final)
     return (
         f"[{stage}] target={target} final_unique={len(final)} raw_rows={len(raw)} "
-        f"pages={pages} duplicates_skipped={duplicates} missing_reviews={missing_reviews}"
+        f"pages={pages} duplicates_skipped={duplicates} missing_reviews={missing_reviews} "
+        f"sponsored={sponsored} popularity={popularity}"
     )
 
 
