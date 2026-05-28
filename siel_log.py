@@ -367,12 +367,23 @@ def parse_trade_in(v):
     return s if s else None
 
 
+def _clean_review_text(value) -> str | None:
+    if value is None:
+        return None
+    text = re.sub(r'\s+', ' ', str(value)).strip()
+    return text or None
+
+
 def format_review_content(parts) -> str | None:
     """[review_text, ...] → 'review1 - X ||| review2 - Y ||| ...'"""
     if not parts:
         return None
+    cleaned = [_clean_review_text(t) for t in parts]
+    cleaned = [t for t in cleaned if t]
+    if not cleaned:
+        return None
     return REVIEW_SEP.join(REVIEW_PREFIX_FMT.format(n=i + 1, text=t)
-                           for i, t in enumerate(parts))
+                           for i, t in enumerate(cleaned))
 
 
 def format_similar_names(parts) -> str | None:
