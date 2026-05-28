@@ -16,11 +16,13 @@ import csv
 import json
 import os
 import re
+import smtplib
 import ssl
 import subprocess
 import sys
 import urllib.request
 from datetime import datetime, timezone
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -1204,7 +1206,7 @@ REQUIRED_DETAIL_FIELDS_BY_PRODUCT = {
     "hhp": ["sku", "hhp_storage", "hhp_color"],
     "tv": ["sku", "screen_size", "model_year"],
     "ref": ["sku", "ref_refrigerator_type", "ref_capacity"],
-    "ldy": ["sku", "ldy_loading_type", "ldy_capacity"],
+    "ldy": ["sku", "ldy_capacity"],
 }
 
 
@@ -1512,6 +1514,137 @@ def insert_into_db(jsonl_path: Path, max_n: int, dry_run: bool = False) -> tuple
     return proc.returncode, lines
 
 
+def is_null_value(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value.strip() == "")
+
+
+def schema_null_report(name: str, rows: list[dict[str, Any]], cols: list[str]) -> list[str]:
+    total = len(rows)
+    lines = [f"{name} null ratio (rows={total})"]
+    if total == 0:
+        lines.append("- no rows")
+        return lines
+    for col in cols:
+        nulls = sum(1 for row in rows if is_null_value(row.get(col)))
+        pct = nulls * 100.0 / total
+        lines.append(f"- {col}: {nulls}/{total} ({pct:.1f}%)")
+    return lines
+
+
+def email_config_value(cfg: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    for key in keys:
+        value = cfg.get(key)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def email_recipients(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in re.split(r"[;,]", value) if part.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(part).strip() for part in value if str(part).strip()]
+    return [str(value).strip()]
+
+
+def build_email_report(
+    product: str,
+    batch_id: str,
+    crawl_dt: str,
+    out_dir: Path,
+    db_status: str,
+    main_final: list[dict[str, Any]],
+    bsr_final: list[dict[str, Any]],
+    details: list[dict[str, Any]],
+    reviews: list[dict[str, Any]],
+    retail_rows: list[dict[str, Any]],
+    retail_cols: list[str],
+    product_list_rows: list[dict[str, Any]],
+    product_list_cols: list[str],
+    qa_issues: list[dict[str, Any]],
+) -> str:
+    title = product.upper()
+    lines = [
+        f"[SIEL] {title} crawling report",
+        "",
+        f"product: {title}",
+        f"batch_id: {batch_id}",
+        f"crawl_datetime: {crawl_dt}",
+        f"db_insert: {db_status}",
+        f"output_dir: {out_dir}",
+        "",
+        "총 수집개수",
+        f"- main listing unique: {len(main_final)}",
+        f"- bsr listing unique: {len(bsr_final)}",
+        f"- detail products: {len(details)}",
+        f"- review rows: {len(reviews)}",
+        f"- retail_com rows: {len(retail_rows)}",
+        f"- product_list rows: {len(product_list_rows)}",
+        f"- qa issues: {len(qa_issues)}",
+        "",
+        "수집스키마별 null 비율",
+    ]
+    lines.extend(schema_null_report("retail_com", retail_rows, retail_cols))
+    lines.append("")
+    lines.extend(schema_null_report("product_list", product_list_rows, product_list_cols))
+    return "\n".join(lines) + "\n"
+
+
+def send_email_report(subject: str, body: str) -> tuple[bool, list[str]]:
+    try:
+        import config  # type: ignore
+    except Exception as exc:
+        return False, [f"[email] skipped: config import failed: {repr(exc)}"]
+
+    cfg = dict(getattr(config, "EMAIL_CONFIG", {}) or {})
+    server = email_config_value(cfg, "smtp_server", "smtp_host", "host")
+    port = int(email_config_value(cfg, "smtp_port", "port", default=587))
+    sender = email_config_value(cfg, "sender_email", "from_email", "username", "user")
+    password = email_config_value(cfg, "sender_password", "password")
+    recipients = email_recipients(email_config_value(cfg, "receiver_email", "receiver_emails", "to_email", "to"))
+    use_ssl = bool(email_config_value(cfg, "use_ssl", "smtp_ssl", default=(port == 465)))
+    use_tls = bool(email_config_value(cfg, "use_tls", "starttls", default=(not use_ssl)))
+    username = email_config_value(cfg, "smtp_username", "username", "user", default=sender)
+
+    missing = [
+        name
+        for name, value in (
+            ("smtp_server", server),
+            ("sender_email", sender),
+            ("receiver_email", recipients),
+        )
+        if not value
+    ]
+    if missing:
+        return False, [f"[email] skipped: missing EMAIL_CONFIG keys: {', '.join(missing)}"]
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = str(sender)
+    message["To"] = ", ".join(recipients)
+    message.set_content(body)
+
+    try:
+        if use_ssl:
+            with smtplib.SMTP_SSL(str(server), port, timeout=60) as smtp:
+                if password:
+                    smtp.login(str(username), str(password))
+                smtp.send_message(message)
+        else:
+            with smtplib.SMTP(str(server), port, timeout=60) as smtp:
+                if use_tls:
+                    smtp.starttls()
+                if password:
+                    smtp.login(str(username), str(password))
+                smtp.send_message(message)
+    except Exception as exc:
+        return False, [f"[email] failed: {repr(exc)}"]
+
+    return True, [f"[email] sent: {subject} -> {', '.join(recipients)}"]
+
+
 def summarize_listing(stage: str, raw: list[dict[str, Any]], final: list[dict[str, Any]], pages: int, target: int) -> str:
     missing_reviews = sum(row.get("count_of_reviews") in (None, "") for row in final)
     duplicates = sum(1 for row in raw if row.get("duplicate"))
@@ -1534,6 +1667,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     crawl_dt = run_dt.isoformat(timespec="seconds")
     batch_id = schema_batch_id(run_dt, args.real_batch_id)
     exit_code = 0
+    db_status = "not requested"
 
     lines: list[str] = [
         f"db_insert={str(bool(args.db_insert)).lower()}",
@@ -1657,18 +1791,22 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     if args.db_insert:
         if errors:
             lines.append(f"[db_insert] skipped: detail/review errors={len(errors)}")
+            db_status = f"skipped: detail/review errors={len(errors)}"
             exit_code = 1
         elif qa_issues and not args.allow_qa_insert:
             lines.append(f"[db_insert] skipped: qa_issues={len(qa_issues)} (use --allow-qa-insert to force)")
+            db_status = f"skipped: qa_issues={len(qa_issues)}"
             exit_code = 1
         else:
             insert_code, insert_lines = insert_into_db(api_run_path, args.insert_max_n, args.db_dry_run)
             lines.extend(insert_lines)
             if insert_code != 0:
                 lines.append("[db_insert] FAIL")
+                db_status = f"FAIL returncode={insert_code}"
                 exit_code = insert_code or 1
             else:
                 lines.append("[db_insert] OK")
+                db_status = "DRY_RUN OK" if args.db_dry_run else "OK"
     lines.append("")
 
     lines.append(
@@ -1725,6 +1863,28 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             f"{row.get('final_price')}\t{row.get('product_name')}"
         )
 
+    if args.email_report:
+        subject = f"[SIEL] {product_key.upper()} crawling report"
+        body = build_email_report(
+            args.product,
+            batch_id,
+            crawl_dt,
+            out_dir,
+            db_status,
+            main_final,
+            bsr_final,
+            details,
+            reviews,
+            retail_rows,
+            retail_cols,
+            product_list_rows,
+            product_list_cols,
+            qa_issues,
+        )
+        (out_dir / "email_report.txt").write_text(body, encoding="utf-8")
+        _sent, email_lines = send_email_report(subject, body)
+        lines.extend(email_lines)
+
     (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (out_dir / "command.txt").write_text(" ".join(sys.argv) + "\n", encoding="utf-8")
     return out_dir, lines, exit_code
@@ -1753,6 +1913,7 @@ def main() -> int:
     parser.add_argument("--db-dry-run", action="store_true", help="Execute DB insert SQL and roll it back")
     parser.add_argument("--insert-max-n", type=int, default=0, help="Rows cap passed to insert_test_retail_com.py; 0=unlimited")
     parser.add_argument("--allow-qa-insert", action="store_true", help="Insert even when QA issues are present")
+    parser.add_argument("--email-report", action="store_true", help="Send per-product crawl report email using config.EMAIL_CONFIG")
     args = parser.parse_args()
 
     out_dir, lines, exit_code = run(args)

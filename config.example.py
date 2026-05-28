@@ -36,7 +36,12 @@ EMAIL_CONFIG = {
     'smtp_port': 587,
     'sender_email': 'TBD',
     'sender_password': 'TBD',
+    # String or list. Examples:
+    # 'receiver_email': 'ops@example.com',
+    # 'receiver_email': ['ops@example.com', 'owner@example.com'],
     'receiver_email': 'TBD',
+    'use_tls': True,
+    'use_ssl': False,
 }
 
 OPENAI_API_KEY = 'TBD'
