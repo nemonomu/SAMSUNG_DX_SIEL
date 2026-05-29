@@ -318,14 +318,32 @@ def value_text(value: Any) -> str | None:
     return text or None
 
 
+def review_text_from_value(value: dict[str, Any]) -> str | None:
+    candidates: list[str] = []
+    for key in (
+        "text",
+        "fullText",
+        "fullReviewText",
+        "expandedText",
+        "reviewText",
+    ):
+        raw_value = value.get(key)
+        if raw_value in (None, ""):
+            continue
+        if isinstance(raw_value, str):
+            text = raw_value.strip()
+        else:
+            text = value_text(raw_value)
+        if text:
+            candidates.append(text)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: len(normalize_text(item) or ""))
+
+
 def review_row_from_value(value: dict[str, Any]) -> dict[str, Any] | None:
     rating = value.get("rating") or value.get("reviewRating") or value.get("ratingValue")
-    text = (
-        value_text(value.get("text"))
-        or value_text(value.get("reviewText"))
-        or value_text(value.get("description"))
-        or value_text(value.get("content"))
-    )
+    text = review_text_from_value(value)
     title = (
         value_text(value.get("title"))
         or value_text(value.get("reviewTitle"))
@@ -361,18 +379,9 @@ def review_rows_from_response(response: dict[str, Any]) -> list[dict[str, Any]]:
         components = (widget.get("data") or {}).get("renderableComponents") or []
         for component in components:
             value = component.get("value") or {}
-            rows.append(
-                {
-                    "id": value.get("id"),
-                    "rating": value.get("rating"),
-                    "title": value.get("title"),
-                    "text": value.get("text"),
-                    "author": value.get("author"),
-                    "created": value.get("created"),
-                    "helpful_count": value.get("helpfulCount"),
-                    "certified_buyer": value.get("certifiedBuyer"),
-                }
-            )
+            row = review_row_from_value(value)
+            if row:
+                rows.append(row)
     if rows:
         return rows
 
