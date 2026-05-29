@@ -471,6 +471,25 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec[field] = siel_log.parse_amzn_apex_price(v)
         else:
             rec[field] = extract_single(driver, xpath)
+    # post-process: "No customer reviews" 감지 — star_rating + count_of_star_ratings
+    # 둘 다 추출 실패 + review 섹션 텍스트에 sentinel → 의도적 0건임을 명시.
+    # 검색 범위는 #cr-top-reviews / #reviewsMedley 한정 (FAQ/추천 위젯 false positive 회피).
+    # 실제 0건 sentinel "There are 0 customer reviews." 는 #cr-top-reviews 안.
+    if not rec.get('star_rating') and not rec.get('count_of_star_ratings'):
+        page_text = ''
+        for review_id in ('cr-top-reviews', 'reviewsMedley'):
+            try:
+                section_text = driver.find_element(By.ID, review_id).text.lower()
+            except (WebDriverException, NoSuchElementException):
+                continue
+            if section_text:
+                page_text = section_text
+                break
+        if 'no customer reviews' in page_text or 'there are 0 customer reviews' in page_text:
+            rec['star_rating'] = 'No customer reviews'
+            rec['count_of_star_ratings'] = '0'
+            if _logger:
+                _logger.info('detail no_customer_reviews: url=%s', url)
     return rec
 
 
