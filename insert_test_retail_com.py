@@ -243,14 +243,37 @@ def list_columns_for_row(row: dict) -> list[str]:
     return COLUMNS_LIST
 
 
+def rank_maps_for_listing(items: list) -> tuple[dict, dict]:
+    def build(stage: str, rank_field: str) -> dict:
+        ranked = []
+        unranked = []
+        for idx, (key, entry) in enumerate(items):
+            rec = entry.get(stage) or {}
+            if not rec:
+                continue
+            rank = parse_int_safe(rec.get(rank_field))
+            if rank is None:
+                unranked.append((idx, key))
+            else:
+                ranked.append((rank, idx, key))
+        ranked.sort(key=lambda x: (x[0], x[1]))
+        ordered = [(idx, key) for _rank, idx, key in ranked] + unranked
+        return {key: pos for pos, (_idx, key) in enumerate(ordered, start=1)}
+
+    return build('main', 'main_rank'), build('bsr', 'bsr_rank')
+
+
 def merge(listing: dict, detail: dict, max_n: int = 10,
-          redirect_by_key=None, exclude_keys=None) -> list:
+          redirect_by_key=None, exclude_keys=None, renumber_ranks: bool = False) -> list:
     """listing[key] = {'main': rec or None, 'bsr': rec or None} + detail merge → row list.
     main_rank / bsr_rank 둘 다 set (같은 SKU 가 main+bsr 양쪽에 있으면).
     page_type: main 우선, 없으면 bsr.
     max_n=0 → 무제한, >0 이면 cap."""
     rows = []
     items = list(listing.items())
+    main_rank_by_key, bsr_rank_by_key = ({}, {})
+    if renumber_ranks:
+        main_rank_by_key, bsr_rank_by_key = rank_maps_for_listing(items)
     if max_n and max_n > 0:
         items = items[:max_n]
     for key, entry in items:
@@ -303,8 +326,10 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             'sku_popularity': primary.get('sku_popularity') or d.get('sku_popularity'),
             'sku_status':     primary.get('sku_status'),
             # 순위 — main + bsr 둘 다 보존 (같은 SKU 가 양쪽에 있으면 함께 set)
-            'main_rank': parse_int_safe(m.get('main_rank')) if m else None,
-            'bsr_rank':  parse_int_safe(b.get('bsr_rank')) if b else None,
+            'main_rank': (main_rank_by_key.get(key) if (renumber_ranks and m)
+                          else (parse_int_safe(m.get('main_rank')) if m else None)),
+            'bsr_rank':  (bsr_rank_by_key.get(key) if (renumber_ranks and b)
+                          else (parse_int_safe(b.get('bsr_rank')) if b else None)),
             # TV
             'screen_size':                      d.get('screen_size'),
             'model_year':                       d.get('model_year'),
@@ -398,10 +423,12 @@ def main() -> int:
 
     # retail_com 용 — main + bsr + detail merge (full)
     rows_full = merge(listing_by_url, detail_by_url, max_n=max_n,
-                      exclude_keys=detail_skip_keys)
+                      exclude_keys=detail_skip_keys,
+                      renumber_ranks=True)
     # product_list 용 — main + bsr only (detail 출처 컬럼 NULL, 사용자 룰 5/10)
     rows_listing = merge(listing_by_url, {}, max_n=max_n,
-                         redirect_by_key=redirect_by_key)
+                         redirect_by_key=redirect_by_key,
+                         renumber_ranks=True)
     print(f'[insert] merge: {len(rows_full)} rows (full) / {len(rows_listing)} rows (listing-only)',
           file=sys.stderr)
     if dry_run:

@@ -350,6 +350,16 @@ def extract_card(card, selectors: dict) -> dict:
     return rec
 
 
+def listing_record_key(rec: dict):
+    asin = rec.get('asin') or asin_from_text(rec.get('product_url') or '')
+    if asin:
+        rec['asin'] = asin
+        rec['product_url'] = canonical_product_url(asin)
+        return asin
+    url = rec.get('product_url') or ''
+    return url.split('?', 1)[0].rstrip('/') or None
+
+
 def crawl_main(driver, product: str, selectors: dict, batch_id: str,
                max_rank: int, max_pages: int) -> int:
     container_xpath = (selectors.get('base_container') or {}).get('xpath')
@@ -359,6 +369,8 @@ def crawl_main(driver, product: str, selectors: dict, batch_id: str,
         return 0
     template = MAIN_URL_TEMPLATES[product]
     rank = 0
+    seen_keys = set()
+    duplicate_count = 0
     for page in range(1, max_pages + 1):
         if rank >= max_rank:
             break
@@ -393,11 +405,16 @@ def crawl_main(driver, product: str, selectors: dict, batch_id: str,
                         _logger.warning('page=%d refresh %d failed: %s', page, attempt, e)
             if not cards:
                 break
-        for card in cards:
+        for raw_pos, card in enumerate(cards, start=1):
             if rank >= max_rank:
                 break
-            rank += 1
             rec = extract_card(card, selectors)
+            key = listing_record_key(rec) or f'__no_key_main_{page}_{raw_pos}'
+            if key in seen_keys:
+                duplicate_count += 1
+                continue
+            seen_keys.add(key)
+            rank += 1
             rec.update({
                 'account_name':   ACCOUNT_NAME,
                 'product':        product,
@@ -411,6 +428,8 @@ def crawl_main(driver, product: str, selectors: dict, batch_id: str,
                 'crawl_datetime': now_ist_iso(),
             })
             emit(rec)
+    if duplicate_count and _logger:
+        _logger.info('[main] duplicate cards skipped=%d unique_emitted=%d', duplicate_count, rank)
     return rank
 
 
@@ -457,6 +476,8 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
               'product': product, 'stage': 'bsr', 'batch_id': batch_id})
         return 0
     rank = 0
+    seen_keys = set()
+    duplicate_count = 0
     for page_no, url in enumerate(BSR_URL_TEMPLATES[product], start=1):
         if max_rank and rank >= max_rank:
             break
@@ -489,11 +510,16 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
             if _logger:
                 _logger.info('page=%d cards=%d (after second primary-grid pass)',
                              page_no, len(cards))
-        for card in cards:
+        for raw_pos, card in enumerate(cards, start=1):
             if max_rank and rank >= max_rank:
                 break
-            rank += 1
             rec = extract_card(card, selectors)
+            key = listing_record_key(rec) or f'__no_key_bsr_{page_no}_{raw_pos}'
+            if key in seen_keys:
+                duplicate_count += 1
+                continue
+            seen_keys.add(key)
+            rank += 1
             rec.update({
                 'account_name':   ACCOUNT_NAME,
                 'product':        product,
@@ -507,6 +533,8 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
                 'crawl_datetime': now_ist_iso(),
             })
             emit(rec)
+    if duplicate_count and _logger:
+        _logger.info('[bsr] duplicate cards skipped=%d unique_emitted=%d', duplicate_count, rank)
     return rank
 
 def main() -> int:
