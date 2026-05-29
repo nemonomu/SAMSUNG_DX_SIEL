@@ -145,7 +145,19 @@ def email_recipients(value: Any) -> list:
     return [str(value).strip()]
 
 
-def collect_url_issues(jsonl_path: str) -> tuple[dict, int]:
+# 제품군별 valid-NULL field — 페이지 layout 상 정보 자체가 없는 의도된 NULL.
+# all_null_fields 검사에서 제외해 false positive 회피.
+# HHP (인도 모바일): 'fastest delivery' 표기 없음, 'Amazon Fulfilled' badge 별도 노출 없음
+# (URL param isAmazonFulfilled 로만 확인 가능). 5/29 HHP 362건 100% NULL 검증.
+_VALID_NULL_BY_PRODUCT = {
+    'HHP': {'fastest_delivery', 'sku_assurance'},
+    'TV': set(),
+    'REF': set(),
+    'LDY': set(),
+}
+
+
+def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
     """jsonl 을 1 pass 로 읽어 main(가격 보정) + detail 검사.
     return: (issues, detail_count)
       issues:
@@ -256,7 +268,10 @@ def collect_url_issues(jsonl_path: str) -> tuple[dict, int]:
                 slot = field_counts.setdefault(k, [0, 0])
                 slot[0] += int(v not in (None, ''))
                 slot[1] += 1
+        valid_null_set = _VALID_NULL_BY_PRODUCT.get((product or '').upper(), set())
         for k, (non_null, total) in sorted(field_counts.items()):
+            if k in valid_null_set:
+                continue
             if total >= 2 and non_null == 0:
                 issues['all_null_fields'].append({'field': k, 'total': total})
 
@@ -264,7 +279,7 @@ def collect_url_issues(jsonl_path: str) -> tuple[dict, int]:
 
 
 def build_email_report(product: str, jsonl_path: str) -> tuple[str, bool]:
-    issues, detail_count = collect_url_issues(jsonl_path)
+    issues, detail_count = collect_url_issues(jsonl_path, product)
     redirects = issues['redirect']
     sku_nulls = issues['sku_null']
     price_inv = issues['price_inversion']
