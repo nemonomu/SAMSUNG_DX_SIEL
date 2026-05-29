@@ -164,6 +164,21 @@ def main():
     cfg.setdefault('database', 'postgres')
     conn = psycopg2.connect(**cfg)
     try:
+        # mst fallback — 이전 run 의 mst 값으로 NULL spec 채움. 실패해도 INSERT 진행.
+        mst_fb_total = 0
+        mst_fb_errs = []
+        for prod_lower in ('hhp', 'tv', 'ref', 'ldy'):
+            rows_prod = [r for r in rows if (r.get('product') or '').lower() == prod_lower]
+            if not rows_prod:
+                continue
+            with conn.cursor() as sp_cur:
+                sp_cur.execute('SAVEPOINT mst_fb_sp')
+                try:
+                    mst_fb_total += siel_item_mst.fill_from_mst(conn, prod_lower, rows_prod)
+                    sp_cur.execute('RELEASE SAVEPOINT mst_fb_sp')
+                except Exception as e:
+                    sp_cur.execute('ROLLBACK TO SAVEPOINT mst_fb_sp')
+                    mst_fb_errs.append(f'{prod_lower}: {type(e).__name__}: {e}')
         with conn.cursor() as cur:
             placeholders = ', '.join(['%s'] * len(COLS))
             sql = f'INSERT INTO {args.table} ({", ".join(COLS)}) VALUES ({placeholders})'
@@ -186,9 +201,10 @@ def main():
                     mst_errs.append(f'{prod_lower}: {type(e).__name__}: {e}')
         conn.commit()
         mst_log = f'mst={mst_total}' if not mst_errs else f'mst={mst_total} FAIL=[{"; ".join(mst_errs)}]'
+        fb_log = f'mst_fb={mst_fb_total}' if not mst_fb_errs else f'mst_fb={mst_fb_total} FAIL=[{"; ".join(mst_fb_errs)}]'
         print(f'inserted {len(rows)} rows into {args.table} '
               f'(main_n={len(main_by_url)} bsr_n={len(bsr_by_url)} detail_n={len(detail_by_url)}) '
-              f'{mst_log}')
+              f'{fb_log} {mst_log}')
     finally:
         conn.close()
     return 0

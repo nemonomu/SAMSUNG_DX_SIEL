@@ -458,6 +458,18 @@ def main() -> int:
                 continue
             table_retail = f'dx_siel_{prod_lower}_retail_com'
             table_list = f'dx_siel_{prod_lower}_product_list'
+            # mst fallback — 이전 run 의 mst 값으로 NULL spec 채움. 실패해도 INSERT 진행.
+            mst_filled = 0
+            mst_fb_err = None
+            if rows_full_prod:
+                with conn.cursor() as sp_cur:
+                    sp_cur.execute('SAVEPOINT mst_fb_sp')
+                    try:
+                        mst_filled = siel_item_mst.fill_from_mst(conn, prod_lower, rows_full_prod)
+                        sp_cur.execute('RELEASE SAVEPOINT mst_fb_sp')
+                    except Exception as e:
+                        sp_cur.execute('ROLLBACK TO SAVEPOINT mst_fb_sp')
+                        mst_fb_err = f'{type(e).__name__}: {e}'
             rows_full_by_cols = {}
             for row in rows_full_prod:
                 cols_key = tuple(retail_columns_for_row(prod_lower, row))
@@ -494,7 +506,8 @@ def main() -> int:
             else:
                 conn.commit()
             mst_log = f'mst={mst_upserted}' if not mst_err else f'mst=FAIL ({mst_err})'
-            print(f'[insert] OK: {prod_lower} retail={len(rows_full_prod)} list={len(rows_listing_prod)} {mst_log}',
+            fb_log = f'mst_fb={mst_filled}' if not mst_fb_err else f'mst_fb=FAIL ({mst_fb_err})'
+            print(f'[insert] OK: {prod_lower} retail={len(rows_full_prod)} list={len(rows_listing_prod)} {fb_log} {mst_log}',
                   file=sys.stderr)
         if dry_run:
             print(f'[insert] DRY_RUN DONE: total {total_inserted} rows tested and rolled back',

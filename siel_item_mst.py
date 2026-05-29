@@ -88,3 +88,65 @@ def upsert_item_mst_batch(conn, product_lower: str, rows: Iterable[dict]) -> int
         psycopg2.extras.execute_batch(cur, sql, values_list, page_size=50)
 
     return len(values_list)
+
+
+def fill_from_mst(conn, product_lower: str, rows: list) -> int:
+    """rows 의 NULL / 공백 spec 컬럼을 dx_siel_{product}_item_mst 의 기존 값으로 채움.
+
+    fallback 대상: sku + 제품군별 spec 컬럼 (item_mst DDL 의 NULL fillable 컬럼).
+    row 자체는 in-place 수정. 반환: 채운 (cell-level) 수.
+    """
+    product_lower = (product_lower or '').lower()
+    if product_lower not in _VALID_PRODUCTS or not rows:
+        return 0
+
+    fill_cols = _NULL_FILL_BASE + _SPEC_COLS[product_lower]
+    keys: list = []
+    for row in rows:
+        item = row.get('item')
+        account = row.get('account_name')
+        item = item.strip() if isinstance(item, str) else item
+        account = account.strip() if isinstance(account, str) else account
+        if item and account:
+            keys.append((item, account))
+    if not keys:
+        return 0
+
+    table = f'dx_siel_{product_lower}_item_mst'
+    select_cols = ['item', 'account_name'] + fill_cols
+    select_csv = ', '.join(select_cols)
+    placeholders = ', '.join(['(%s, %s)'] * len(keys))
+    flat_keys: list = []
+    for k in keys:
+        flat_keys.extend(k)
+    sql = (
+        f'SELECT {select_csv} FROM {table} '
+        f'WHERE (item, account_name) IN ({placeholders})'
+    )
+
+    mst_data: dict = {}
+    with conn.cursor() as cur:
+        cur.execute(sql, flat_keys)
+        for r in cur.fetchall():
+            item, account = r[0], r[1]
+            specs = {col: r[2 + i] for i, col in enumerate(fill_cols)}
+            mst_data[(item, account)] = specs
+
+    filled = 0
+    for row in rows:
+        key = (row.get('item'), row.get('account_name'))
+        mst_specs = mst_data.get(key)
+        if not mst_specs:
+            continue
+        for col in fill_cols:
+            v = row.get(col)
+            if isinstance(v, str):
+                v = v.strip()
+            if v in (None, ''):
+                mst_v = mst_specs.get(col)
+                if isinstance(mst_v, str):
+                    mst_v = mst_v.strip() or None
+                if mst_v not in (None, ''):
+                    row[col] = mst_v
+                    filled += 1
+    return filled
