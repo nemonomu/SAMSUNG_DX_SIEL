@@ -30,7 +30,7 @@
 |---|---|
 | HHP | https://www.amazon.in/gp/bestsellers/electronics/1805560031/ |
 | TV  | https://www.amazon.in/gp/bestsellers/electronics/1389396031/ |
-| REF | https://www.amazon.in/gp/bestsellers/kitchen/1380365031/ |
+| REF | https://www.amazon.in/gp/bestsellers/kitchen/219651163031/ |
 | LDY | https://www.amazon.in/gp/bestsellers/kitchen/1380373031/ |
 
 각 카테고리 page 2: `?ie=UTF8&pg=2` 추가. 1·2 page 모두 **끝까지 스크롤** 필요 (lazy render).

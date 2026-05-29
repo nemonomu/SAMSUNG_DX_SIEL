@@ -70,8 +70,8 @@ BSR_URL_TEMPLATES = {
         'https://www.amazon.in/gp/bestsellers/electronics/1389396031/ref=zg_bs_pg_2_electronics?ie=UTF8&pg=2',
     ],
     'ref': [
-        'https://www.amazon.in/gp/bestsellers/kitchen/1380365031/ref=zg_bs_nav_kitchen_2_1380263031',
-        'https://www.amazon.in/gp/bestsellers/kitchen/1380365031/ref=zg_bs_pg_2_kitchen?ie=UTF8&pg=2',
+        'https://www.amazon.in/gp/bestsellers/kitchen/219651163031/ref=zg_bs_nav_kitchen_2_1380263031',
+        'https://www.amazon.in/gp/bestsellers/kitchen/219651163031/ref=zg_bs_pg_2_kitchen?ie=UTF8&pg=2',
     ],
     'ldy': [
         'https://www.amazon.in/gp/bestsellers/kitchen/1380373031/ref=zg_bs_nav_kitchen_3_1380369031',
