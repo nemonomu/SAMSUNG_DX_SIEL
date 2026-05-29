@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -292,6 +293,48 @@ def extract_text_or_value(driver, xpath: str):
     return (v or '').strip() or None
 
 
+_SORRY_TITLE_HINTS = ('sorry', 'robot check')
+_SORRY_BODY_HINTS = (
+    "sorry! we couldn't find",
+    'sorry, we just need to make sure',
+    '/error/logo',
+    'dogsofamazon',
+)
+
+
+def check_and_recover_sorry(driver, url: str, max_retries: int = 3) -> bool:
+    """Sorry / Robot check 페이지 감지 + refresh 재시도.
+    정상 페이지 도달 시 True, 끝까지 sorry 면 False.
+    retail.com amazon_tv_item_mst.py:check_and_handle_sorry_page 패턴 차용.
+    """
+    for attempt in range(max_retries):
+        try:
+            title = (driver.title or '').lower()
+        except WebDriverException:
+            title = ''
+        try:
+            src = (driver.page_source or '').lower()
+        except WebDriverException:
+            src = ''
+        is_sorry = (
+            any(h in title for h in _SORRY_TITLE_HINTS)
+            or any(h in src for h in _SORRY_BODY_HINTS)
+        )
+        if not is_sorry:
+            return True
+        if _logger:
+            _logger.warning('detail sorry_page attempt %d/%d url=%s',
+                            attempt + 1, max_retries, url)
+        if attempt < max_retries - 1:
+            try:
+                time.sleep(random.uniform(2, 3))
+                driver.refresh()
+                time.sleep(random.uniform(3, 5))
+            except WebDriverException:
+                pass
+    return False
+
+
 def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str) -> dict:
     asin = asin_from_url(url)
     rec: dict = {
@@ -320,6 +363,14 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
         rec['_error'] = f'goto_exception: {type(e).__name__}: {str(e)[:200]}'
         if _logger:
             _logger.warning('goto failed: %s', rec['_error'])
+        return rec
+
+    # Sorry / Robot check 페이지 감지 + refresh 재시도. 끝까지 sorry 면 skip.
+    if not check_and_recover_sorry(driver, url):
+        rec['_detail_skip'] = 'sorry_page'
+        if _logger:
+            _logger.warning('detail skip: sorry_page url=%s', url)
+        maybe_save_html(driver)
         return rec
 
     try:
