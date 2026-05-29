@@ -134,7 +134,7 @@ def emit(rec: dict) -> None:
 
 
 def make_batch_id(product: str) -> str:
-    return next_batch_id('f', _ROOT, datetime.now(IST))
+    return next_batch_id('f', _ROOT, datetime.now())
 
 
 def now_server_ts() -> str:
