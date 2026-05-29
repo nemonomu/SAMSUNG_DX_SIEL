@@ -27,6 +27,7 @@ if _HERE not in sys.path:
 import psycopg2
 import psycopg2.extras
 import config
+import siel_item_mst
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -476,12 +477,24 @@ def main() -> int:
                     placeholders_list = ', '.join(f'%({c})s' for c in cols_key)
                     sql_list = f'INSERT INTO {table_list} ({cols_list}) VALUES ({placeholders_list})'
                     psycopg2.extras.execute_batch(cur, sql_list, rows_for_cols, page_size=50)
+            # mst upsert 실패해도 retail/list INSERT 는 commit. SAVEPOINT 로 격리.
+            mst_upserted = 0
+            mst_err = None
+            with conn.cursor() as sp_cur:
+                sp_cur.execute('SAVEPOINT mst_sp')
+                try:
+                    mst_upserted = siel_item_mst.upsert_item_mst_batch(conn, prod_lower, rows_full_prod)
+                    sp_cur.execute('RELEASE SAVEPOINT mst_sp')
+                except Exception as e:
+                    sp_cur.execute('ROLLBACK TO SAVEPOINT mst_sp')
+                    mst_err = f'{type(e).__name__}: {e}'
             total_inserted += len(rows_full_prod) + len(rows_listing_prod)
             if dry_run:
                 conn.rollback()
             else:
                 conn.commit()
-            print(f'[insert] OK: {prod_lower} retail={len(rows_full_prod)} list={len(rows_listing_prod)}',
+            mst_log = f'mst={mst_upserted}' if not mst_err else f'mst=FAIL ({mst_err})'
+            print(f'[insert] OK: {prod_lower} retail={len(rows_full_prod)} list={len(rows_listing_prod)} {mst_log}',
                   file=sys.stderr)
         if dry_run:
             print(f'[insert] DRY_RUN DONE: total {total_inserted} rows tested and rolled back',

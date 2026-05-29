@@ -20,6 +20,7 @@ import psycopg2
 import psycopg2.extras
 
 import config
+import siel_item_mst
 
 COLS = [
     'country', 'product', 'item', 'sku', 'account_name', 'page_type',
@@ -168,9 +169,26 @@ def main():
             sql = f'INSERT INTO {args.table} ({", ".join(COLS)}) VALUES ({placeholders})'
             data = [tuple(row[c] for c in COLS) for row in rows]
             psycopg2.extras.execute_batch(cur, sql, data)
+        # mst upsert 실패해도 retail INSERT 는 commit. SAVEPOINT 로 격리.
+        mst_total = 0
+        mst_errs = []
+        for prod_lower in ('hhp', 'tv', 'ref', 'ldy'):
+            rows_prod = [r for r in rows if (r.get('product') or '').lower() == prod_lower]
+            if not rows_prod:
+                continue
+            with conn.cursor() as sp_cur:
+                sp_cur.execute('SAVEPOINT mst_sp')
+                try:
+                    mst_total += siel_item_mst.upsert_item_mst_batch(conn, prod_lower, rows_prod)
+                    sp_cur.execute('RELEASE SAVEPOINT mst_sp')
+                except Exception as e:
+                    sp_cur.execute('ROLLBACK TO SAVEPOINT mst_sp')
+                    mst_errs.append(f'{prod_lower}: {type(e).__name__}: {e}')
         conn.commit()
+        mst_log = f'mst={mst_total}' if not mst_errs else f'mst={mst_total} FAIL=[{"; ".join(mst_errs)}]'
         print(f'inserted {len(rows)} rows into {args.table} '
-              f'(main_n={len(main_by_url)} bsr_n={len(bsr_by_url)} detail_n={len(detail_by_url)})')
+              f'(main_n={len(main_by_url)} bsr_n={len(bsr_by_url)} detail_n={len(detail_by_url)}) '
+              f'{mst_log}')
     finally:
         conn.close()
     return 0
