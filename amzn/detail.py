@@ -179,8 +179,8 @@ def make_batch_id(product: str) -> str:
     return next_batch_id('a', _ROOT, datetime.now(IST))
 
 
-def now_ist_iso() -> str:
-    return datetime.now(IST).isoformat(timespec='seconds')
+def now_server_ts() -> str:
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 
 def init_logging(product: str):
@@ -303,9 +303,9 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
         'source_url':     url,
         'asin':           asin,
         'item':           asin,
-        'redirect':       None,
+        'redirect':       False,
         'batch_id':       batch_id,
-        'crawl_datetime': now_ist_iso(),
+        'crawl_datetime': now_server_ts(),
     }
     # HHP sku = url 의 ASIN (stable). input[@id="ASIN"] 은 default variant 따라 dynamic 이라 unsafe.
     # TV/REF/LDY 는 SQL selector (Manufacturer Part Number) 사용 — 분기 X.
@@ -329,10 +329,11 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
     landing_asin = asin_from_url(landing_url)
     if asin:
         if landing_asin == asin:
-            rec['redirect'] = True
+            rec['redirect'] = False
         else:
             rec.update({
                 '_detail_skip': 'asin_mismatch',
+                'redirect': True,
                 'landing_url': landing_url,
                 'landing_asin': landing_asin,
             })

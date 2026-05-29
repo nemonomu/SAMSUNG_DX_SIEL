@@ -292,6 +292,11 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
         sku = d.get('sku') or primary.get('sku')
         cdt = d.get('crawl_datetime') or primary.get('crawl_datetime')
         page_type = 'main' if m else 'bsr'
+        redirect_value = d.get('redirect')
+        if redirect_value is None and redirect_by_key and key in redirect_by_key:
+            redirect_value = redirect_by_key.get(key)
+        if (account or '').lower() == 'amazon' and redirect_value is None:
+            redirect_value = False
         row = {
             'country':           'siel',
             'product':           prod or None,
@@ -301,8 +306,7 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             'page_type':         page_type,
             'retailer_sku_name': d.get('retailer_sku_name') or primary.get('retailer_sku_name'),
             'product_url':       primary.get('product_url') or d.get('source_url'),
-            'redirect':          d.get('redirect') if d.get('redirect') is not None
-                                 else ((redirect_by_key or {}).get(key)),
+            'redirect':          redirect_value,
             'calendar_week':     calendar_week_iso(cdt),
             'crawl_datetime':    cdt,
             'batch_id':          primary.get('batch_id') or d.get('batch_id'),

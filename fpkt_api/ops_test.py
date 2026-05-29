@@ -21,7 +21,7 @@ import ssl
 import subprocess
 import sys
 import urllib.request
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
@@ -59,8 +59,6 @@ PRODUCT_QUERY = {
     "ref": "refrigerator",
     "ldy": "washing+machine",
 }
-
-CRAWL_TZ = timezone(timedelta(hours=5, minutes=30))
 
 RETAIL_BASE_COLS = [
     "country", "product", "item", "sku", "account_name", "page_type",
@@ -213,15 +211,15 @@ def sku_popularity_from_url(url: Any) -> str | None:
 
 
 def now_crawl() -> datetime:
-    return datetime.now(CRAWL_TZ)
+    return datetime.now()
 
 
 def now_ist() -> datetime:
     return now_crawl()
 
 
-def crawl_iso() -> str:
-    return now_crawl().isoformat(timespec="seconds")
+def crawl_ts() -> str:
+    return now_crawl().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def calendar_week(dt: datetime) -> str:
@@ -284,7 +282,7 @@ def listing_until(
             raw = dict(row)
             raw["stage"] = stage
             raw["duplicate"] = bool(key in seen)
-            raw["crawl_datetime"] = crawl_iso()
+            raw["crawl_datetime"] = crawl_ts()
             raw_rows.append(raw)
             if key in seen:
                 continue
@@ -1859,7 +1857,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     out_dir = args.out_dir or output_dir(args.product)
     out_dir.mkdir(parents=True, exist_ok=True)
     run_dt = now_crawl()
-    crawl_dt = run_dt.isoformat(timespec="seconds")
+    crawl_dt = run_dt.strftime("%Y-%m-%d %H:%M:%S")
     batch_id = schema_batch_id(run_dt, args.real_batch_id)
     exit_code = 0
     db_status = "not requested"
@@ -1927,7 +1925,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             detail["product_id"] = target.get("product_id")
             detail["main_rank"] = target.get("main_rank")
             detail["bsr_rank"] = target.get("bsr_rank")
-            detail["crawl_datetime"] = crawl_iso()
+            detail["crawl_datetime"] = crawl_ts()
             if detail.get("star_rating") in (None, ""):
                 detail["star_rating"] = target.get("star_rating")
             if detail.get("count_of_star_ratings") in (None, ""):

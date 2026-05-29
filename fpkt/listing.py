@@ -162,8 +162,8 @@ def make_batch_id(stage: str, product: str) -> str:
     return next_batch_id('f', _ROOT, datetime.now(IST))
 
 
-def now_ist_iso() -> str:
-    return datetime.now(IST).isoformat(timespec='seconds')
+def now_server_ts() -> str:
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 
 def init_logging(product: str, stage: str):
@@ -331,7 +331,7 @@ def crawl_paged(driver, product: str, stage: str, base_url: str, selectors: dict
                 'division':       DIVISION,
                 'source_url':     url,
                 'batch_id':       batch_id,
-                'crawl_datetime': now_ist_iso(),
+                'crawl_datetime': now_server_ts(),
             })
             emit(rec)
     return rank
