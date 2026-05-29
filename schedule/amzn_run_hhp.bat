@@ -1,3 +1,3 @@
 @echo off
 cd /d c:\siel
-python amzn\run.py --product hhp
+python amzn\run.py --product hhp --email-report

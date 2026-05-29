@@ -391,6 +391,29 @@ def run_detail(driver, product: str, urls: list, sleep_s: float) -> int:
     return n
 
 
+def _send_product_email_report(product: str, jsonl_path: str | None) -> None:
+    """product 별 jsonl 을 읽어 이메일 리포트 발송. 실패해도 run 진행."""
+    if not jsonl_path:
+        return
+    try:
+        from amzn import email_report as ER
+        body, has_warn = ER.build_email_report(product, jsonl_path)
+        try:
+            txt_path = os.path.splitext(jsonl_path)[0] + '.email.txt'
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(body)
+        except Exception as e:
+            print(f'[run.py] email_report write failed: {type(e).__name__}: {e}', file=sys.stderr)
+        subject = f'[SIEL] AMZN {product.upper()} crawling report'
+        if has_warn:
+            subject = 'WARNING ' + subject
+        _sent, em_lines = ER.send_email_report(subject, body)
+        for ln in em_lines:
+            print(ln, file=sys.stderr)
+    except Exception as e:
+        print(f'[run.py] email_report failed: {type(e).__name__}: {e}', file=sys.stderr)
+
+
 def _run_one_product(driver, product: str, args) -> None:
     """단일 product 의 main/bsr/detail 처리 — driver 공유, cache reset, jsonl/INSERT 별개."""
     _reset_caches()
@@ -422,7 +445,10 @@ def _run_one_product(driver, product: str, args) -> None:
                       file=sys.stderr)
                 run_detail(driver, product, use_urls, args.detail_sleep)
     finally:
+        results_path_snapshot = _results_path
         _close_results()
+        if getattr(args, 'email_report', False):
+            _send_product_email_report(product, results_path_snapshot)
 
 
 def main() -> int:
@@ -445,6 +471,9 @@ def main() -> int:
     ap.add_argument('--headless', action='store_true')
     ap.add_argument('--no-auto-insert', action='store_true',
                     help='streaming INSERT 비활성 (jsonl 만)')
+    ap.add_argument('--email-report', action='store_true',
+                    help='product 별 크롤링 리포트 이메일 발송 (config.EMAIL_CONFIG). '
+                         'final_sku_price>=original_sku_price, sku null, redirect=true URL 포함')
     args = ap.parse_args()
 
     # dual emit (stdout + jsonl + streaming INSERT) — emit monkey-patch 1번만
