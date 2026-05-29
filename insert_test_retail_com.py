@@ -150,9 +150,18 @@ def url_path(url: str) -> str:
     return (url or '').split('?', 1)[0].rstrip('/')
 
 
+def fpkt_pid_from_record(rec: dict) -> str | None:
+    url = rec.get('product_url') or rec.get('source_url') or rec.get('review_url') or rec.get('url') or ''
+    m = _FPKT_PID_RE.search(str(url))
+    return m.group(1) if m else None
+
+
 def listing_key(rec: dict) -> str:
     """main/bsr/detail 공통 dedupe key — Amazon ASIN / Flipkart fsn / fallback url path.
     같은 ASIN 의 main+bsr/detail URL 이 ref=sr_... vs ref=zg_bs_... 로 path 가 달라도 매칭."""
+    fpkt_pid = fpkt_pid_from_record(rec)
+    if fpkt_pid:
+        return fpkt_pid
     asin = rec.get('asin') or rec.get('fsn')
     if asin:
         return asin
@@ -256,7 +265,7 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
         # account/product 정규화 (primary 기준)
         account = (primary.get('account_name') or d.get('account_name') or '').capitalize()
         prod = (primary.get('product') or d.get('product') or '').upper()
-        item = d.get('fsn') or d.get('asin') or primary.get('fsn') or primary.get('asin')
+        item = fpkt_pid_from_record(primary) or fpkt_pid_from_record(d) or d.get('fsn') or d.get('asin') or primary.get('fsn') or primary.get('asin')
         sku = d.get('sku') or primary.get('sku')
         cdt = d.get('crawl_datetime') or primary.get('crawl_datetime')
         page_type = 'main' if m else 'bsr'

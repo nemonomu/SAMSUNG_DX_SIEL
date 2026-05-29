@@ -268,7 +268,7 @@ def listing_until(
         previous_response = response
         html_meta = listing_html_metadata_for_page(api_dir, query, stage, page, html_meta_headers)
         for row in extract_products(response, page=page):
-            key = row.get("product_id") or row.get("item_id") or row.get("product_url")
+            key = row_url_pid(row) or row.get("product_id") or row.get("item_id") or row.get("product_url")
             meta = html_meta.get(str(key or ""))
             api_discount = deal_label_from_text(str(row.get("discount_type") or ""))
             if meta:
@@ -475,8 +475,7 @@ def detail_from_html(text: str, source_url: str) -> dict[str, Any]:
     return {
         "source_url": source_url,
         "retailer_sku_name": ld.get("name") or first_text(doc, "string(//h1[1])"),
-        "fsn": ld.get("sku") or (re.search(r"[?&]pid=([A-Z0-9]+)", source_url or "").group(1)
-                                  if re.search(r"[?&]pid=([A-Z0-9]+)", source_url or "") else None),
+        "fsn": url_pid(source_url) or ld.get("sku"),
         "brand": ((ld.get("brand") or {}).get("name") if isinstance(ld.get("brand"), dict) else None),
         "final_sku_price": offers.get("price"),
         "original_sku_price": first_text(doc, '(//div[contains(@style,"line-through")])[1]'),
@@ -940,8 +939,7 @@ def detail_from_api_response(response: dict[str, Any], source_url: str, product:
     detail = {
         "source_url": source_url,
         "retailer_sku_name": first_json_key(response, "prependingText"),
-        "fsn": (re.search(r"[?&]pid=([A-Z0-9]+)", source_url or "").group(1)
-                if re.search(r"[?&]pid=([A-Z0-9]+)", source_url or "") else None),
+        "fsn": url_pid(source_url),
         "final_sku_price": None,
         "original_sku_price": None,
         "savings": None,
@@ -1113,7 +1111,7 @@ def listing_schema_record(
 ) -> dict[str, Any]:
     rank_field = "bsr_rank" if stage == "bsr" else "main_rank"
     rank = row.get(rank_field) or row.get("rank")
-    fsn = row.get("product_id") or row.get("item_id")
+    fsn = row_url_pid(row) or row.get("product_id") or row.get("item_id")
     return {
         "account_name": "flipkart",
         "product": product,
@@ -1147,7 +1145,7 @@ def detail_schema_record(
     batch_id: str,
     detailed_review_content: str | None,
 ) -> dict[str, Any]:
-    fsn = detail.get("fsn") or detail.get("product_id")
+    fsn = row_url_pid(detail) or detail.get("fsn") or detail.get("product_id")
     record = {
         "account_name": "flipkart",
         "product": product,
@@ -1187,6 +1185,15 @@ def format_detailed_review_content(rows: list[dict[str, Any]]) -> str | None:
 def url_pid(value: Any) -> str | None:
     match = re.search(r"[?&]pid=([A-Z0-9]+)", str(value or ""))
     return match.group(1) if match else None
+
+
+def row_url_pid(row: dict[str, Any]) -> str | None:
+    return (
+        url_pid(row.get("product_url"))
+        or url_pid(row.get("source_url"))
+        or url_pid(row.get("review_url"))
+        or url_pid(row.get("url"))
+    )
 
 
 def review_content_count(value: Any) -> int:
@@ -1340,7 +1347,7 @@ def validate_tv_outputs(
 
 
 def key_for_row(row: dict[str, Any]) -> str | None:
-    return row.get("product_id") or row.get("fsn") or row.get("item") or row.get("product_url")
+    return row_url_pid(row) or row.get("fsn") or row.get("item") or row.get("product_id") or row.get("product_url")
 
 
 def build_schema_outputs(
@@ -1391,7 +1398,7 @@ def build_schema_outputs(
             jsonl_rows.append(detail_schema_record(detail, product, crawl_dt, batch_id, detailed_reviews))
 
         page_type = "main" if main else "bsr"
-        item = detail.get("fsn") or primary.get("product_id") or primary.get("item_id")
+        item = row_url_pid(primary) or row_url_pid(detail) or detail.get("fsn") or primary.get("product_id") or primary.get("item_id")
         retail = {field: None for field in retail_cols}
         retail.update({
             "country": "siel",
