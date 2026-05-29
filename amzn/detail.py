@@ -434,6 +434,9 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec[field] = siel_log.parse_star_rating(extract_single(driver, xpath))
         elif field == 'count_of_star_ratings':
             rec[field] = siel_log.parse_count_of_ratings(extract_single(driver, xpath))
+        elif field == 'model_year':
+            # '2022/2023' → '2023' (큰 연도), 그 외 첫 4자리 연도 추출.
+            rec[field] = siel_log.parse_model_year(extract_single(driver, xpath))
         elif field == 'sku':
             # primary: Manufacturer Part Number. fallback union: Model Number /
             # Part Number / Item Model Number — 5/8 진단 발견 (REF Midea "Part Number",

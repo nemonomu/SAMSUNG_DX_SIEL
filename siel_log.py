@@ -247,6 +247,36 @@ def parse_amzn_apex_price(v):
     return None
 
 
+_MODEL_YEAR_4DIGIT_RE = re.compile(r'\b(\d{4})\b')
+
+
+def parse_model_year(v):
+    """Amazon model_year 추출 후처리.
+      'Model Year 2024' → '2024'
+      '2022/2023' (연도 범위) → '2023' (큰 연도)
+      '2022 / 2023' / '2022/abc' → '2023' / '2022'
+      '': None
+    """
+    if not v:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    # '/' separator 우선 (연도 범위 패턴) — 4자리 valid 값들 중 최대
+    if '/' in s:
+        years = [
+            int(p.strip()) for p in s.split('/')
+            if p.strip().isdigit() and len(p.strip()) == 4
+        ]
+        if years:
+            return str(max(years))
+    # 첫 4자리 연도 fallback
+    m = _MODEL_YEAR_4DIGIT_RE.search(s)
+    if m:
+        return m.group(1)
+    return None
+
+
 _RATINGS_RE = re.compile(r'(\d[\d,]*)\s*(?:global\s+)?[Rr]atings?\b')
 
 
