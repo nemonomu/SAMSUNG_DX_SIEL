@@ -195,8 +195,13 @@ def price_text(value: Any) -> str | None:
 def original_price_text(original: Any, final: Any = None) -> str | None:
     original_value = to_int(original)
     final_value = to_int(final)
-    if original_value is not None and final_value is not None and original_value == final_value:
-        return None
+    if original_value is not None and final_value is not None:
+        if original_value == final_value:
+            return None
+        # XPath itertext 가 자손 텍스트를 합쳐 비현실적 큰 값을 만들 때 차단
+        # (예: line-through div 안에 광고/EMI/banner 텍스트가 섞여 ₹21,490,739 같이 나옴)
+        if final_value > 0 and original_value > final_value * 10:
+            return None
     return price_text(original)
 
 
