@@ -596,6 +596,150 @@ def scalar_texts(value: Any) -> list[str]:
     return found
 
 
+def rupee_amounts_from_text(value: Any, allow_plain: bool = False) -> list[int]:
+    text = normalize_text(str(value or ""))
+    if not text:
+        return []
+    patterns = [
+        r"(?:\u20b9|Rs\.?|INR)\s*([0-9][0-9,]*(?:\.\d+)?)",
+    ]
+    if allow_plain:
+        patterns.append(r"\b([0-9]{1,3}(?:,[0-9]{3})+(?:\.\d+)?)\b")
+    amounts: list[int] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, re.I):
+            try:
+                amount = int(float(match.group(1).replace(",", "")))
+            except ValueError:
+                continue
+            if amount >= 1000 and amount not in amounts:
+                amounts.append(amount)
+    return amounts
+
+
+def percent_text_from_text(value: Any) -> str | None:
+    text = normalize_text(str(value or ""))
+    match = re.search(r"\b([0-9]{1,2}(?:\.\d+)?)\s*%\s*(?:off)?", text, re.I)
+    if not match:
+        return None
+    try:
+        number = float(match.group(1))
+    except ValueError:
+        return None
+    return f"{int(number)}%" if number == int(number) else f"{number:g}%"
+
+
+def detail_price_from_keyed_fields(slot: dict[str, Any]) -> dict[str, int | str | None]:
+    final_keys = {
+        "finalprice", "final_price", "sellingprice", "selling_price", "specialprice",
+        "special_price", "currentprice", "current_price", "discountedprice", "discounted_price",
+    }
+    original_keys = {"mrp", "originalprice", "original_price", "listprice", "list_price"}
+    final_price = None
+    original_price = None
+    savings = None
+    for item in iter_dicts(slot):
+        for key, value in item.items():
+            lowered = str(key).replace("-", "_").lower()
+            compact = lowered.replace("_", "")
+            amounts = []
+            if isinstance(value, (int, float)):
+                amounts = [int(value)]
+            else:
+                amounts = rupee_amounts_from_text(value, allow_plain=True)
+                if not amounts and isinstance(value, dict):
+                    for text in scalar_texts(value):
+                        amounts.extend(rupee_amounts_from_text(text, allow_plain=True))
+            if compact in final_keys and amounts and final_price is None:
+                final_price = amounts[0]
+            elif compact in original_keys and amounts and original_price is None:
+                original_price = amounts[0]
+            if savings is None and ("discount" in compact or "saving" in compact):
+                savings = percent_text_from_text(value)
+        if final_price is not None and original_price is not None and savings:
+            break
+    return {
+        "final_sku_price": final_price,
+        "original_sku_price": original_price,
+        "savings": savings,
+    }
+
+
+def detail_price_from_pricing_texts(slot: dict[str, Any]) -> dict[str, int | str | None]:
+    top_texts: list[str] = []
+    for text in scalar_texts(slot):
+        lowered = text.lower()
+        if any(stop in lowered for stop in (
+            "apply offers",
+            "bank offers",
+            "exchange offer",
+            "change pincode",
+            "view emi offers",
+        )):
+            break
+        if any(skip in lowered for skip in (
+            "lowest price",
+            "protect promise",
+            "no cost emi",
+            "emi",
+            "month",
+            "x ",
+            "pay ",
+            "exchange",
+            "bank offer",
+            "coupon",
+            "cashback",
+        )):
+            continue
+        top_texts.append(text)
+
+    amounts: list[int] = []
+    savings = None
+    for text in top_texts:
+        savings = savings or percent_text_from_text(text)
+        for amount in rupee_amounts_from_text(text, allow_plain=True):
+            if amount not in amounts:
+                amounts.append(amount)
+
+    if not amounts:
+        return {"final_sku_price": None, "original_sku_price": None, "savings": savings}
+    if savings and len(amounts) >= 2:
+        final_price = min(amounts)
+        original_price = max(amounts)
+    else:
+        final_price = amounts[0]
+        original_price = next((amount for amount in amounts[1:] if amount > final_price), None)
+    return {
+        "final_sku_price": final_price,
+        "original_sku_price": original_price,
+        "savings": savings,
+    }
+
+
+def detail_price_values(response: dict[str, Any]) -> dict[str, int | str | None]:
+    slots = (response.get("RESPONSE") or {}).get("slots") or []
+    price_slots: list[dict[str, Any]] = []
+    fallback_slots: list[dict[str, Any]] = []
+    for slot in slots:
+        widget = slot.get("widget") or {}
+        if widget.get("viewType") == "pp_pricing_price_summary":
+            price_slots.append(slot)
+        elif widget.get("type") == "ATLAS_NEP_V2":
+            fallback_slots.append(slot)
+
+    for slot in price_slots + fallback_slots:
+        keyed = detail_price_from_keyed_fields(slot)
+        text_based = detail_price_from_pricing_texts(slot)
+        final_price = keyed.get("final_sku_price") or text_based.get("final_sku_price")
+        if final_price:
+            return {
+                "final_sku_price": final_price,
+                "original_sku_price": keyed.get("original_sku_price") or text_based.get("original_sku_price"),
+                "savings": keyed.get("savings") or text_based.get("savings"),
+            }
+    return {"final_sku_price": None, "original_sku_price": None, "savings": None}
+
+
 def first_json_key(value: Any, key: str) -> str | None:
     for item in iter_dicts(value):
         if key in item:
@@ -926,6 +1070,7 @@ def detail_api_response(api_dir: Path, product_url: str) -> dict[str, Any]:
 
 def detail_from_api_response(response: dict[str, Any], source_url: str, product: str = "tv") -> dict[str, Any]:
     texts = json_texts(response)
+    price_values = detail_price_values(response)
     rating_value = None
     rating_count = None
     for item in iter_dicts(response):
@@ -945,9 +1090,9 @@ def detail_from_api_response(response: dict[str, Any], source_url: str, product:
         "source_url": source_url,
         "retailer_sku_name": first_json_key(response, "prependingText"),
         "fsn": url_pid(source_url),
-        "final_sku_price": None,
-        "original_sku_price": None,
-        "savings": None,
+        "final_sku_price": price_values.get("final_sku_price"),
+        "original_sku_price": price_values.get("original_sku_price"),
+        "savings": price_values.get("savings"),
         "discount_type": None,
         "availability": None,
         "star_rating": rating_value,
