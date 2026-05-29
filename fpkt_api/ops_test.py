@@ -21,7 +21,7 @@ import ssl
 import subprocess
 import sys
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
@@ -60,7 +60,7 @@ PRODUCT_QUERY = {
     "ldy": "washing+machine",
 }
 
-CRAWL_TZ = timezone.utc
+CRAWL_TZ = timezone(timedelta(hours=5, minutes=30))
 
 RETAIL_BASE_COLS = [
     "country", "product", "item", "sku", "account_name", "page_type",
@@ -220,6 +220,10 @@ def now_ist() -> datetime:
     return now_crawl()
 
 
+def crawl_iso() -> str:
+    return now_crawl().isoformat(timespec="seconds")
+
+
 def calendar_week(dt: datetime) -> str:
     return f"w{dt.isocalendar().week:02d}"
 
@@ -280,6 +284,7 @@ def listing_until(
             raw = dict(row)
             raw["stage"] = stage
             raw["duplicate"] = bool(key in seen)
+            raw["crawl_datetime"] = crawl_iso()
             raw_rows.append(raw)
             if key in seen:
                 continue
@@ -1112,6 +1117,7 @@ def listing_schema_record(
     rank_field = "bsr_rank" if stage == "bsr" else "main_rank"
     rank = row.get(rank_field) or row.get("rank")
     fsn = row_url_pid(row) or row.get("product_id") or row.get("item_id")
+    row_crawl_dt = row.get("crawl_datetime") or crawl_dt
     return {
         "account_name": "flipkart",
         "product": product,
@@ -1134,7 +1140,7 @@ def listing_schema_record(
         "sku_status": row.get("sku_status"),
         "available_quantity_for_purchase": row.get("available_quantity_for_purchase"),
         "batch_id": batch_id,
-        "crawl_datetime": crawl_dt,
+        "crawl_datetime": row_crawl_dt,
     }
 
 
@@ -1146,6 +1152,7 @@ def detail_schema_record(
     detailed_review_content: str | None,
 ) -> dict[str, Any]:
     fsn = row_url_pid(detail) or detail.get("fsn") or detail.get("product_id")
+    detail_crawl_dt = detail.get("crawl_datetime") or crawl_dt
     record = {
         "account_name": "flipkart",
         "product": product,
@@ -1167,7 +1174,7 @@ def detail_schema_record(
         "detailed_review_content": detailed_review_content,
         "delivery_availability": text_or_none(detail.get("delivery_availability")),
         "batch_id": batch_id,
-        "crawl_datetime": crawl_dt,
+        "crawl_datetime": detail_crawl_dt,
     }
     for field in PRODUCT_SPECIFIC_COLS[product.lower()]:
         record[field] = text_or_none(detail.get(field))
@@ -1399,6 +1406,8 @@ def build_schema_outputs(
 
         page_type = "main" if main else "bsr"
         item = row_url_pid(primary) or row_url_pid(detail) or detail.get("fsn") or primary.get("product_id") or primary.get("item_id")
+        retail_crawl_dt = detail.get("crawl_datetime") or primary.get("crawl_datetime") or crawl_dt
+        listing_crawl_dt = primary.get("crawl_datetime") or retail_crawl_dt
         retail = {field: None for field in retail_cols}
         retail.update({
             "country": "siel",
@@ -1409,8 +1418,8 @@ def build_schema_outputs(
             "page_type": page_type,
             "retailer_sku_name": detail.get("retailer_sku_name") or primary.get("product_name"),
             "product_url": primary.get("product_url") or detail.get("source_url"),
-            "calendar_week": calendar_week(datetime.fromisoformat(crawl_dt)),
-            "crawl_datetime": crawl_dt,
+            "calendar_week": calendar_week(datetime.fromisoformat(retail_crawl_dt)),
+            "crawl_datetime": retail_crawl_dt,
             "batch_id": batch_id,
             "star_rating": text_or_none(detail.get("star_rating") or primary.get("star_rating")),
             "count_of_star_ratings": best_count_text(
@@ -1449,8 +1458,8 @@ def build_schema_outputs(
             "page_type": retail["page_type"],
             "retailer_sku_name": retail["retailer_sku_name"],
             "product_url": retail["product_url"],
-            "calendar_week": retail["calendar_week"],
-            "crawl_datetime": retail["crawl_datetime"],
+            "calendar_week": calendar_week(datetime.fromisoformat(listing_crawl_dt)),
+            "crawl_datetime": listing_crawl_dt,
             "batch_id": retail["batch_id"],
             "star_rating": text_or_none(primary.get("star_rating")),
             "count_of_star_ratings": count_text(primary.get("count_of_star_ratings")),
@@ -1773,6 +1782,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             detail["product_id"] = target.get("product_id")
             detail["main_rank"] = target.get("main_rank")
             detail["bsr_rank"] = target.get("bsr_rank")
+            detail["crawl_datetime"] = crawl_iso()
             if detail.get("star_rating") in (None, ""):
                 detail["star_rating"] = target.get("star_rating")
             if detail.get("count_of_star_ratings") in (None, ""):
