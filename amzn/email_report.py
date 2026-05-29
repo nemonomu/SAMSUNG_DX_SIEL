@@ -96,14 +96,35 @@ _FIELD_PATTERNS = {
 }
 
 
+# 정상 추출 sentinel — siel_log.parse_amzn_apex_price + detail.py No-reviews 후처리에서
+# 의도적으로 통과시키는 값. 형 검사에서 통과시켜 false positive 방지.
+_PRICE_SENTINELS = (
+    'Currently unavailable',
+    'No featured offers',
+    'See price in cart',
+    'Temporarily out of stock',
+    'Price higher than typical',
+)
+_STAR_SENTINELS = ('No customer reviews',)
+
+
 def _check_field_pattern(field: str, value) -> bool:
-    """value 가 field 의 형 패턴과 일치하는지. null 은 항상 True (별 검사가 담당)."""
+    """value 가 field 의 형 패턴과 일치하는지. null 은 항상 True (별 검사가 담당).
+    정상 sentinel (재고 부재 / 리뷰 0건) 도 통과.
+    """
     pat = _FIELD_PATTERNS.get(field)
     if pat is None:
         return True
     if value in (None, ''):
         return True
-    return bool(pat.match(str(value).strip()))
+    s = str(value).strip()
+    if field in ('final_sku_price', 'original_sku_price'):
+        if any(sen in s for sen in _PRICE_SENTINELS):
+            return True
+    if field == 'star_rating':
+        if any(sen in s for sen in _STAR_SENTINELS):
+            return True
+    return bool(pat.match(s))
 
 
 def email_config_value(cfg: dict, *keys: str, default: Any = None) -> Any:
