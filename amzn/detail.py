@@ -493,6 +493,51 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec['count_of_star_ratings'] = '0'
             if _logger:
                 _logger.info('detail no_customer_reviews: url=%s', url)
+    # post-process: 결과 요약 로그 — stdout 은 JSONL channel 이라 _logger 사용.
+    # 4 제품군 (HHP/TV/REF/LDY) 별 spec 분기 출력.
+    if _logger:
+        lines = [
+            '──── detail 결과 요약 ────',
+            f"  ├─ item:                  {rec.get('item') or '-'}",
+            f"  ├─ sku:                   {rec.get('sku') or '-'}",
+            f"  ├─ final_sku_price:       {rec.get('final_sku_price') or '-'}",
+            f"  ├─ original_sku_price:    {rec.get('original_sku_price') or '-'}",
+            f"  ├─ star_rating:           {rec.get('star_rating') or '-'}",
+            f"  ├─ count_of_star_ratings: {rec.get('count_of_star_ratings') or '-'}",
+            f"  ├─ sku_popularity:        {rec.get('sku_popularity') or '-'}",
+            f"  ├─ discount_type:         {rec.get('discount_type') or '-'}",
+            f"  ├─ delivery_availability: {rec.get('delivery_availability') or '-'}",
+            f"  ├─ fastest_delivery:      {rec.get('fastest_delivery') or '-'}",
+        ]
+        if product == 'tv':
+            lines += [
+                f"  ├─ screen_size:           {rec.get('screen_size') or '-'}",
+                f"  ├─ model_year:            {rec.get('model_year') or '-'}",
+                f"  ├─ est_annual_elec_use:   {rec.get('estimated_annual_electricity_use') or '-'}",
+            ]
+        elif product == 'hhp':
+            lines += [
+                f"  ├─ hhp_storage:           {rec.get('hhp_storage') or '-'}",
+                f"  ├─ hhp_color:             {rec.get('hhp_color') or '-'}",
+                f"  ├─ hhp_memory_ram:        {rec.get('hhp_memory_ram') or '-'}",
+                f"  ├─ trade_in:              {rec.get('trade_in') or '-'}",
+            ]
+        elif product == 'ref':
+            lines += [
+                f"  ├─ ref_refrigerator_type: {rec.get('ref_refrigerator_type') or '-'}",
+                f"  ├─ ref_capacity:          {rec.get('ref_capacity') or '-'}",
+            ]
+        elif product == 'ldy':
+            lines += [
+                f"  ├─ ldy_loading_type:      {rec.get('ldy_loading_type') or '-'}",
+                f"  ├─ ldy_capacity:          {rec.get('ldy_capacity') or '-'}",
+            ]
+        lines += [
+            f"  ├─ summarized_review:     {'있음' if rec.get('summarized_review_content') else '-'}",
+            f"  ├─ detailed_review:       {'있음' if rec.get('detailed_review_content') else '-'}",
+            f"  └─ url: {url}",
+        ]
+        _logger.info('\n' + '\n'.join(lines))
     return rec
 
 
