@@ -314,7 +314,8 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             # 평점/리뷰: detail 우선, main fallback (양방향 보강 5/8). count 는 서양식 콤마 정규화 (5/10).
             'star_rating':               d.get('star_rating') or primary.get('star_rating'),
             'count_of_star_ratings':     normalize_count(d.get('count_of_star_ratings') or primary.get('count_of_star_ratings')),
-            'count_of_reviews':          normalize_count(d.get('count_of_reviews') or primary.get('count_of_reviews')),
+            # 고객사 spec: count_of_reviews 는 listing(primary) 단계 값 우선. detail fallback.
+            'count_of_reviews':          normalize_count(primary.get('count_of_reviews') or d.get('count_of_reviews')),
             'detailed_review_content':   d.get('detailed_review_content'),
             'retailer_sku_name_similar': d.get('retailer_sku_name_similar'),
             # 가격: primary (main 우선, 없으면 bsr) → detail fallback
