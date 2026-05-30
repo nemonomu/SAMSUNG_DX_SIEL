@@ -135,6 +135,21 @@ def _stream_insert(detail_rec: dict) -> None:
             _db_cursor.execute(_retail_sqls[prod_lower], row_full)
         if row_listing:
             _db_cursor.execute(_list_sqls[prod_lower], row_listing)
+        # item_mst upsert — retail_com 적재된 row 만 대상. 실패해도 retail/list 는 commit.
+        if row_full:
+            try:
+                import siel_item_mst
+            except ImportError:
+                siel_item_mst = None
+            if siel_item_mst is not None:
+                _db_cursor.execute('SAVEPOINT mst_sp')
+                try:
+                    siel_item_mst.upsert_item_mst_batch(_db_conn, prod_lower, [row_full])
+                    _db_cursor.execute('RELEASE SAVEPOINT mst_sp')
+                except Exception as mst_e:
+                    _db_cursor.execute('ROLLBACK TO SAVEPOINT mst_sp')
+                    print(f'[run.py] streaming mst upsert failed: {type(mst_e).__name__}: {mst_e}',
+                          file=sys.stderr)
         _db_conn.commit()
     except Exception as e:
         try:
