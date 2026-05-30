@@ -1574,10 +1574,10 @@ def build_schema_outputs(
                 detail.get("count_of_star_ratings"),
                 primary.get("count_of_star_ratings"),
             ),
-            "count_of_reviews": best_count_text(
-                detail.get("count_of_reviews"),
-                primary.get("count_of_reviews"),
-            ),
+            # 고객사 spec: count_of_reviews 는 listing 단계 값을 사용.
+            # detail (JSON-LD aggregateRating.reviewCount) 는 product page 헤더와
+            # 일치할 수 있지만 spec 상 검색 결과 카드(=listing) 값이 기준.
+            "count_of_reviews": count_text(primary.get("count_of_reviews")),
             "detailed_review_content": detailed_reviews,
             "retailer_sku_name_similar": text_or_none(detail.get("retailer_sku_name_similar")),
             "final_sku_price": price_text(final_price_value),
