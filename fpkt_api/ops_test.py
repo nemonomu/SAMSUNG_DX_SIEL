@@ -1447,18 +1447,20 @@ def validate_schema_outputs(
                                        "ldy_loading_type should be Top Load or Front Load",
                                        ldy_loading_type=loading_type))
 
-        review_total = to_int(row.get("count_of_reviews")) or 0
+        # Listing count_of_reviews 와 review page (detail JSON-LD) 카운트는 Flipkart 측
+        # 인덱싱 정책 차이로 자연히 다를 수 있음. spec 상 listing 값 저장이 기준이므로
+        # 차이를 fatal 로 처리하지 않고 DIFF (정보) 로만 기록.
+        listing_review_count = to_int(row.get("count_of_reviews")) or 0
+        detail_review_count = to_int(row.get("_review_count_review_page")) or 0
         content_count = review_content_count(row.get("detailed_review_content"))
         api_count = review_counts.get(str(item), 0)
-        expected = min(review_total, max_reviews_per_product)
-        if expected > 0 and content_count < expected:
-            issues.append(qa_issue("review_content_short", item,
-                                   "detailed_review_content has fewer reviews than expected",
-                                   count_of_reviews=review_total, content_count=content_count, expected=expected))
-        if expected > 0 and api_count < expected:
-            issues.append(qa_issue("review_api_short", item,
-                                   "review.csv has fewer review rows than expected",
-                                   count_of_reviews=review_total, review_rows=api_count, expected=expected))
+        if listing_review_count != detail_review_count:
+            issues.append(qa_issue("review_count_diff", item,
+                                   "listing count_of_reviews differs from review page count",
+                                   listing_count=listing_review_count,
+                                   review_page_count=detail_review_count,
+                                   content_count=content_count,
+                                   review_rows=api_count))
 
     missing_summary = " ".join(
         f"missing_{field}={sum(row['check'] == f'missing_{field}' for row in issues)}"
@@ -1482,8 +1484,7 @@ def validate_schema_outputs(
         f"pid_mismatch={sum(row['check'] == 'pid_mismatch' for row in issues)} "
         f"price_inversion={sum(row['check'] == 'price_inversion' for row in issues)} "
         f"savings_mismatch={sum(row['check'] == 'savings_mismatch' for row in issues)} "
-        f"review_content_short={sum(row['check'] == 'review_content_short' for row in issues)} "
-        f"review_api_short={sum(row['check'] == 'review_api_short' for row in issues)}",
+        f"review_count_diff={sum(row['check'] == 'review_count_diff' for row in issues)}",
         "[qa] " + " ".join(part for part in (missing_summary, format_summary) if part).strip(),
         "[qa_fill] "
         f"sku_status={sum(bool(row.get('sku_status')) for row in retail_rows)} "
@@ -1578,6 +1579,8 @@ def build_schema_outputs(
             # detail (JSON-LD aggregateRating.reviewCount) 는 product page 헤더와
             # 일치할 수 있지만 spec 상 검색 결과 카드(=listing) 값이 기준.
             "count_of_reviews": count_text(primary.get("count_of_reviews")),
+            # DB INSERT 컬럼 아님 — DIFF 검사용 stash (listing vs review page 카운트 병기)
+            "_review_count_review_page": count_text(detail.get("count_of_reviews")),
             "detailed_review_content": detailed_reviews,
             "retailer_sku_name_similar": text_or_none(detail.get("retailer_sku_name_similar")),
             "final_sku_price": price_text(final_price_value),
@@ -1741,9 +1744,19 @@ def build_email_report(
     errors: list[dict[str, Any]],
     retail_db_ok: bool | None,
     product_list_db_ok: bool | None,
+    qa_issues: list[dict[str, Any]] | None = None,
 ) -> tuple[str, bool]:
     required_cols = ["retailer_sku_name", "final_sku_price", "product_url"]
     warnings: list[str] = []
+    diffs: list[str] = []
+    if qa_issues:
+        for row in qa_issues:
+            if row.get('check') == 'review_count_diff':
+                diffs.append(
+                    f"{row.get('item')} listing={row.get('listing_count')} "
+                    f"review_page={row.get('review_page_count')} "
+                    f"content={row.get('content_count')} review_rows={row.get('review_rows')}"
+                )
 
     if len(main_final) < main_target:
         warnings.append(f"listing 수집 부족: main {len(main_final)}/{main_target}")
@@ -1784,7 +1797,14 @@ def build_email_report(
         lines.append("")
         lines.append("WARNING")
         lines.extend(f"- {warning}" for warning in warnings)
-    else:
+    if diffs:
+        lines.append("")
+        lines.append(f"DIFF (review count — listing vs review page): {len(diffs)}건")
+        for d in diffs[:30]:
+            lines.append(f"- {d}")
+        if len(diffs) > 30:
+            lines.append(f"- 외 {len(diffs) - 30}건 생략")
+    if not warnings and not diffs:
         lines.append("")
         lines.append("특이사항 없음")
     return "\n".join(lines) + "\n", bool(warnings)
@@ -2089,9 +2109,12 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     if args.db_insert:
         if errors:
             lines.append(f"[db_insert] excluded detail/review errors={len(errors)}")
-        if qa_issues and not args.allow_qa_insert:
-            lines.append(f"[db_insert] skipped: qa_issues={len(qa_issues)} (use --allow-qa-insert to force)")
-            db_status = f"skipped: qa_issues={len(qa_issues)}"
+        # DIFF (review_count_diff 등 informational) 는 INSERT 차단 X — fatal 만 차단.
+        fatal_qa = [row for row in qa_issues if row.get('check') != 'review_count_diff']
+        diff_qa = [row for row in qa_issues if row.get('check') == 'review_count_diff']
+        if fatal_qa and not args.allow_qa_insert:
+            lines.append(f"[db_insert] skipped: fatal_qa={len(fatal_qa)} diff_qa={len(diff_qa)} (use --allow-qa-insert to force)")
+            db_status = f"skipped: fatal_qa={len(fatal_qa)}"
             retail_db_ok = False
             product_list_db_ok = False
             exit_code = 1
@@ -2182,6 +2205,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             errors,
             retail_db_ok,
             product_list_db_ok,
+            qa_issues=qa_issues,
         )
         if has_email_warning:
             subject = f"WARNING {subject}"
