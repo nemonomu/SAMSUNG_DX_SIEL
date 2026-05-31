@@ -346,16 +346,27 @@ def parse_hhp_storage(v):
     return m.group(1).replace(' ', ' ').strip() if m else None
 
 
-_LDY_CAPACITY_RE = re.compile(r'(\d+(?:\.\d+)?)\s*(?:kg|kilogram)', re.I)
+_LDY_CAPACITY_RE = re.compile(
+    r'(\d+(?:\.\d+)?)\s*(kg|kilograms?|l(?:itres?|iters?)?)\b',
+    re.I,
+)
 
 
 def parse_ldy_capacity(v):
-    """'7.5 Kilograms' / '7.5 Kg' / '8kg' / '8 kg' → '7.5 kg' / '8 kg'.
-    숫자+kg 통일 (단위 lowercase, 공백 1개)."""
+    """세탁기 capacity 정규화.
+      kg 계열 ('7.5 Kilograms' / '7.5 Kg' / '8kg' / '8 kg') → '7.5 kg' / '8 kg'
+      L  계열 ('16 litres' / '16 liters' / '16 L' / '16 l')   → '16 L'
+    숫자+단위 통일 (kg=소문자, L=대문자, 공백 1개).
+    """
     if not v:
         return None
     m = _LDY_CAPACITY_RE.search(str(v))
-    return f"{m.group(1)} kg" if m else None
+    if not m:
+        return None
+    num = m.group(1)
+    unit_token = m.group(2).lower()
+    unit = 'kg' if unit_token.startswith('k') else 'L'
+    return f'{num} {unit}'
 
 
 def parse_delivery(v):
