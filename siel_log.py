@@ -313,14 +313,22 @@ def parse_count_of_reviews(v):
 
 
 _SAVINGS_OFF_RE = re.compile(r'\s*off\s*$', re.I)
+_SAVINGS_ZERO_RE = re.compile(r'^0+(?:\.0+)?\s*%$')
 
 
 def parse_savings(v):
-    """'20% off' / '37 % off' / '20%' → '20%'. trailing 'off' 제거 + 공백 정리."""
+    """'20% off' / '37 % off' / '20%' → '20%'. trailing 'off' 제거 + 공백 정리.
+    '0%' / '0 %' / '0.0%' → None — page 미노출 (EMI/coupon false positive).
+    """
     if not v:
         return None
     s = _SAVINGS_OFF_RE.sub('', str(v).strip()).strip()
-    return s if s else None
+    if not s:
+        return None
+    # 0% 형태 drop (EMI '0% interest' 같은 false positive 제거)
+    if _SAVINGS_ZERO_RE.match(s.replace(' ', '')):
+        return None
+    return s
 
 
 def parse_sku_assurance(v):
