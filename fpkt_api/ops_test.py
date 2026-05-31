@@ -2192,7 +2192,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         )
 
     if args.email_report:
-        subject = f"[SIEL] {product_key.upper()} crawling report"
+        subject = f"[SIEL] FPKT {product_key.upper()} crawling report"
         body, has_email_warning = build_email_report(
             args.product,
             main_final,
