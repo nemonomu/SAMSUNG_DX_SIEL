@@ -21,6 +21,7 @@ import ssl
 import subprocess
 import sys
 import time
+import traceback
 import urllib.request
 from datetime import datetime
 from email.message import EmailMessage
@@ -253,7 +254,7 @@ def listing_until(
     query: str,
     target_unique: int,
     max_pages: int,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, list[dict[str, Any]]]:
     har_path = api_dir / "main_page2_page1_har.txt"
     if not har_path.exists():
         har_path = api_dir / "main_har.txt"
@@ -261,6 +262,7 @@ def listing_until(
 
     raw_rows: list[dict[str, Any]] = []
     final_rows: list[dict[str, Any]] = []
+    listing_errors: list[dict[str, Any]] = []
     seen: set[str] = set()
     previous_response = None
     pages_used = 0
@@ -272,7 +274,20 @@ def listing_until(
 
     for page in range(1, max_pages + 1):
         pages_used = page
-        response = listing_page(har_path, query, page, sort, previous_response)
+        try:
+            response = listing_page(har_path, query, page, sort, previous_response)
+        except Exception as exc:
+            error = {
+                "stage": "listing",
+                "listing_stage": stage,
+                "page": page,
+                "query": query,
+                "url": listing_html_url(query, stage, page),
+                "error": repr(exc),
+            }
+            listing_errors.append(error)
+            safe_print(f"[listing_error] {stage} page={page} error={repr(exc)}")
+            break
         previous_response = response
         html_meta = listing_html_metadata_for_page(api_dir, query, stage, page, html_meta_headers)
         for row in extract_products(response, page=page):
@@ -300,8 +315,8 @@ def listing_until(
             final[f"{stage}_rank"] = final["unique_rank"]
             final_rows.append(final)
             if len(final_rows) >= target_unique:
-                return raw_rows, final_rows, pages_used
-    return raw_rows, final_rows, pages_used
+                return raw_rows, final_rows, pages_used, listing_errors
+    return raw_rows, final_rows, pages_used, listing_errors
 
 
 def html_headers(api_dir: Path) -> dict[str, str]:
@@ -1787,10 +1802,13 @@ def build_email_report(
     retail_db_ok: bool | None,
     product_list_db_ok: bool | None,
     qa_issues: list[dict[str, Any]] | None = None,
-) -> tuple[str, bool]:
+    listing_errors: list[dict[str, Any]] | None = None,
+) -> tuple[str, bool, bool]:
     required_cols = ["retailer_sku_name", "final_sku_price", "product_url"]
     warnings: list[str] = []
     diffs: list[str] = []
+    listing_errors = listing_errors or []
+    is_sos = len(retail_rows) == 0
     if qa_issues:
         for row in qa_issues:
             if row.get('check') == 'review_count_diff':
@@ -1800,13 +1818,21 @@ def build_email_report(
                     f"content={row.get('content_count')} review_rows={row.get('review_rows')}"
                 )
 
-    if len(main_final) < main_target:
-        warnings.append(f"listing 수집 부족: main {len(main_final)}/{main_target}")
-    if len(bsr_final) < bsr_target:
-        warnings.append(f"listing 수집 부족: bsr {len(bsr_final)}/{bsr_target}")
-    if retail_db_ok is False:
+    if is_sos:
+        warnings.append("최종 DB 적재 대상 row 0건")
+    if listing_errors:
+        warnings.append(f"{len(listing_errors)}건 listing page 로딩 실패")
+        for row in listing_errors[:10]:
+            stage = row.get("listing_stage") or row.get("stage") or "listing"
+            page = row.get("page") or "-"
+            location = row.get("url") or "-"
+            reason = row.get("error") or "-"
+            warnings.append(f"{stage} page={page} {location} {reason}")
+        if len(listing_errors) > 10:
+            warnings.append(f"listing page 로딩 실패 {len(listing_errors) - 10}건 추가 생략")
+    if retail_db_ok is False and len(retail_rows) > 0:
         warnings.append(f"{len(retail_rows)}건 retail_com DB insert 실패")
-    if product_list_db_ok is False:
+    if product_list_db_ok is False and len(product_list_rows) > 0:
         warnings.append(f"{len(product_list_rows)}건 product_list DB insert 실패")
     if errors:
         warnings.append(f"{len(errors)}건 DB insert 제외: detail/review 오류")
@@ -1837,7 +1863,7 @@ def build_email_report(
     ]
     if warnings:
         lines.append("")
-        lines.append("WARNING")
+        lines.append("SOS" if is_sos else "WARNING")
         lines.extend(f"- {warning}" for warning in warnings)
     if diffs:
         lines.append("")
@@ -1849,7 +1875,7 @@ def build_email_report(
     if not warnings and not diffs:
         lines.append("")
         lines.append("특이사항 없음")
-    return "\n".join(lines) + "\n", bool(warnings)
+    return "\n".join(lines) + "\n", bool(warnings), is_sos
 
 
 def send_email_report(subject: str, body: str) -> tuple[bool, list[str]]:
@@ -1941,19 +1967,31 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         "schema_calendar_week: " + calendar_week(run_dt),
         "",
     ]
+    (out_dir / "command.txt").write_text(" ".join(sys.argv) + "\n", encoding="utf-8")
 
-    main_raw, main_final, main_pages = listing_until(
+    main_raw, main_final, main_pages, main_listing_errors = listing_until(
         args.api_dir, "main", query, args.main_target, args.max_pages_main
     )
-    bsr_raw, bsr_final, bsr_pages = listing_until(
+    bsr_raw, bsr_final, bsr_pages, bsr_listing_errors = listing_until(
         args.api_dir, "bsr", query, args.bsr_target, args.max_pages_bsr
     )
+    listing_errors = main_listing_errors + bsr_listing_errors
     write_csv(out_dir / "main_raw.csv", main_raw)
     write_csv(out_dir / "main_final.csv", main_final)
     write_csv(out_dir / "bsr_raw.csv", bsr_raw)
     write_csv(out_dir / "bsr_final.csv", bsr_final)
+    write_csv(out_dir / "listing_errors.csv", listing_errors)
     lines.append(summarize_listing("main", main_raw, main_final, main_pages, args.main_target))
     lines.append(summarize_listing("bsr", bsr_raw, bsr_final, bsr_pages, args.bsr_target))
+    if listing_errors:
+        lines.append(f"[listing_error] count={len(listing_errors)}")
+        for row in listing_errors[:50]:
+            lines.append(
+                f"[listing_error] {row.get('listing_stage')} page={row.get('page')} "
+                f"url={row.get('url')} error={row.get('error')}"
+            )
+        if len(listing_errors) > 50:
+            lines.append(f"[listing_error] omitted={len(listing_errors) - 50}")
     lines.append("")
 
     details: list[dict[str, Any]] = []
@@ -2154,7 +2192,13 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         # DIFF (review_count_diff 등 informational) 는 INSERT 차단 X — fatal 만 차단.
         fatal_qa = [row for row in qa_issues if row.get('check') != 'review_count_diff']
         diff_qa = [row for row in qa_issues if row.get('check') == 'review_count_diff']
-        if fatal_qa and not args.allow_qa_insert:
+        if not retail_rows and not product_list_rows:
+            lines.append("[db_insert] skipped: no schema rows")
+            db_status = "skipped: no schema rows"
+            retail_db_ok = False
+            product_list_db_ok = False
+            exit_code = 1
+        elif fatal_qa and not args.allow_qa_insert:
             lines.append(f"[db_insert] skipped: fatal_qa={len(fatal_qa)} diff_qa={len(diff_qa)} (use --allow-qa-insert to force)")
             db_status = f"skipped: fatal_qa={len(fatal_qa)}"
             retail_db_ok = False
@@ -2203,7 +2247,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             lines.append(f"[review_retry] omitted={len(review_retry_lines) - 50}")
     lines.append("")
     lines.append("files:")
-    file_names = ["main_final.csv", "bsr_final.csv", "detail.csv", "review.csv", "errors.csv"]
+    file_names = ["main_final.csv", "bsr_final.csv", "listing_errors.csv", "detail.csv", "review.csv", "errors.csv"]
     file_names += [
         f"{product_key}_retail_com_preview.csv",
         f"{product_key}_product_list_preview.csv",
@@ -2235,7 +2279,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
 
     if args.email_report:
         subject = f"[SIEL] FPKT {product_key.upper()} crawling report"
-        body, has_email_warning = build_email_report(
+        body, has_email_warning, has_email_sos = build_email_report(
             args.product,
             main_final,
             bsr_final,
@@ -2248,8 +2292,11 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             retail_db_ok,
             product_list_db_ok,
             qa_issues=qa_issues,
+            listing_errors=listing_errors,
         )
-        if has_email_warning:
+        if has_email_sos:
+            subject = f"SOS {subject}"
+        elif has_email_warning:
             subject = f"WARNING {subject}"
         (out_dir / "email_report.txt").write_text(body, encoding="utf-8")
         _sent, email_lines = send_email_report(subject, body)
@@ -2258,6 +2305,43 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (out_dir / "command.txt").write_text(" ".join(sys.argv) + "\n", encoding="utf-8")
     return out_dir, lines, exit_code
+
+
+def write_fatal_outputs(args: argparse.Namespace, exc: Exception) -> tuple[Path, list[str]]:
+    out_dir = args.out_dir or output_dir(args.product)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tb = traceback.format_exc()
+    product_key = str(args.product).lower()
+    lines = [
+        f"db_insert={str(bool(args.db_insert)).lower()}",
+        f"db_dry_run={str(bool(args.db_dry_run)).lower()}",
+        "command: " + " ".join(sys.argv),
+        "api_dir: " + str(args.api_dir),
+        "output_dir: " + str(out_dir),
+        "",
+        "[fatal] unhandled exception",
+        f"product={product_key}",
+        f"error={repr(exc)}",
+        "",
+        tb,
+    ]
+    body = (
+        "최종 수집대상개수: 0\n\n"
+        "SOS\n"
+        "- 실행 중 치명 오류 발생\n"
+        f"- 원인: {repr(exc)}\n"
+        f"- 로그: {out_dir / 'fatal.log'}\n"
+    )
+    (out_dir / "fatal.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (out_dir / "command.txt").write_text(" ".join(sys.argv) + "\n", encoding="utf-8")
+    (out_dir / "email_report.txt").write_text(body, encoding="utf-8")
+    if args.email_report:
+        subject = f"SOS [SIEL] FPKT {product_key.upper()} crawling report"
+        _sent, email_lines = send_email_report(subject, body)
+        lines.extend(email_lines)
+        (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out_dir, lines
 
 
 def main() -> int:
@@ -2286,7 +2370,17 @@ def main() -> int:
     parser.add_argument("--email-report", action="store_true", help="Send per-product crawl report email using config.EMAIL_CONFIG")
     args = parser.parse_args()
 
-    out_dir, lines, exit_code = run(args)
+    if args.out_dir is None:
+        args.out_dir = output_dir(args.product)
+    try:
+        out_dir, lines, exit_code = run(args)
+    except Exception as exc:
+        out_dir, lines = write_fatal_outputs(args, exc)
+        for line in lines:
+            safe_print(line)
+        safe_print(f"[saved] {out_dir}")
+        safe_print(f"[summary] {out_dir / 'summary.txt'}")
+        return 1
     for line in lines:
         safe_print(line)
     safe_print(f"[saved] {out_dir}")
