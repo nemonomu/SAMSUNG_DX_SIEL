@@ -180,7 +180,7 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
         'detail_zero': [],
         'stage_counts': {},
         'stage_summaries': {},
-        'listing_short': [],
+        'listing_page_failure': [],
     }
     if not jsonl_path or not os.path.exists(jsonl_path):
         return issues, 0
@@ -200,26 +200,30 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
             if stage:
                 issues['stage_counts'][stage] = issues['stage_counts'].get(stage, 0) + 1
             if rec.get('_error'):
-                issues['run_error'].append({
-                    'stage': stage or rec.get('error_stage') or 'unknown',
-                    'message': rec.get('message') or rec.get('_error'),
-                })
+                error_stage = rec.get('error_stage') or stage or 'unknown'
+                is_listing_page_failure = (
+                    error_stage in ('main', 'bsr')
+                    and rec.get('page_no') not in (None, '')
+                    and rec.get('_error') in (
+                        'listing page load failed',
+                        'listing page has no cards',
+                    )
+                )
+                if is_listing_page_failure:
+                    issues['listing_page_failure'].append({
+                        'stage': error_stage,
+                        'page_no': rec.get('page_no'),
+                        'url': rec.get('source_url') or rec.get('product_url') or '',
+                        'message': rec.get('message') or rec.get('_error'),
+                    })
+                else:
+                    issues['run_error'].append({
+                        'stage': error_stage,
+                        'message': rec.get('message') or rec.get('_error'),
+                    })
             if rec.get('_summary') and rec.get('summary_stage'):
                 summary_stage = rec.get('summary_stage')
                 issues['stage_summaries'][summary_stage] = rec
-                try:
-                    target_records = int(rec.get('target_records') or 0)
-                    unique_records = int(rec.get('unique_records') or 0)
-                except Exception:
-                    target_records = 0
-                    unique_records = 0
-                if target_records and unique_records < target_records:
-                    issues['listing_short'].append({
-                        'stage': summary_stage,
-                        'actual': unique_records,
-                        'target': target_records,
-                        'message': rec.get('stage_error'),
-                    })
             if stage == 'main':
                 key = rec.get('asin')
                 if key:
@@ -324,11 +328,11 @@ def build_email_report(product: str, jsonl_path: str) -> tuple[str, bool]:
     run_errors = issues.get('run_error', [])
     detail_zero = issues.get('detail_zero', [])
     stage_counts = issues.get('stage_counts', {})
-    listing_short = issues.get('listing_short', [])
+    listing_page_failures = issues.get('listing_page_failure', [])
     has_warning = bool(
         redirects or sku_nulls or price_inv
         or rating_mis or review_mis or all_null or type_mis
-        or run_errors or detail_zero or listing_short
+        or run_errors or detail_zero or listing_page_failures
     )
 
     lines = [
@@ -353,13 +357,12 @@ def build_email_report(product: str, jsonl_path: str) -> tuple[str, bool]:
         lines.append(f'- run errors: {len(run_errors)}건')
         for item in run_errors[:20]:
             lines.append(f"  - stage={item.get('stage')} message={item.get('message')}")
-    if listing_short:
-        lines.append(f'- listing target short: {len(listing_short)}건')
-        for item in listing_short[:20]:
-            msg = item.get('message')
-            suffix = f" reason={msg}" if msg else ''
+    if listing_page_failures:
+        lines.append(f'- listing page failures: {len(listing_page_failures)}건')
+        for item in listing_page_failures[:20]:
             lines.append(
-                f"  - {item.get('stage')}: {item.get('actual')}/{item.get('target')}{suffix}"
+                f"  - {item.get('stage')} page={item.get('page_no')} "
+                f"url={item.get('url')} reason={item.get('message')}"
             )
     if redirects:
         lines.append(f'- redirect=true: {len(redirects)}건')
