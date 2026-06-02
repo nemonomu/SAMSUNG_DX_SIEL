@@ -181,6 +181,8 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
         'stage_counts': {},
         'stage_summaries': {},
         'listing_page_failure': [],
+        'db_insert_summary': None,
+        'db_insert_zero': [],
     }
     if not jsonl_path or not os.path.exists(jsonl_path):
         return issues, 0
@@ -224,6 +226,8 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
             if rec.get('_summary') and rec.get('summary_stage'):
                 summary_stage = rec.get('summary_stage')
                 issues['stage_summaries'][summary_stage] = rec
+            if stage == 'db_insert_summary':
+                issues['db_insert_summary'] = rec
             if stage == 'main':
                 key = rec.get('asin')
                 if key:
@@ -312,11 +316,36 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
             'main_records': issues['stage_counts'].get('main', 0),
             'bsr_records': issues['stage_counts'].get('bsr', 0),
         })
+    db_insert_summary = issues.get('db_insert_summary') or {}
+    if db_insert_summary:
+        inserted_total = db_insert_summary.get('inserted_total')
+        returncode = db_insert_summary.get('returncode')
+        inserted_int = None
+        try:
+            inserted_int = int(inserted_total)
+        except Exception:
+            pass
+        if inserted_int == 0 or (returncode not in (None, 0) and not inserted_int):
+            issues['db_insert_zero'].append({
+                'inserted_total': inserted_total,
+                'returncode': returncode,
+                'rows_full': db_insert_summary.get('rows_full'),
+                'rows_listing': db_insert_summary.get('rows_listing'),
+                'message': db_insert_summary.get('message'),
+            })
+    elif detail_count == 0:
+        issues['db_insert_zero'].append({
+            'inserted_total': None,
+            'returncode': None,
+            'rows_full': None,
+            'rows_listing': None,
+            'message': 'detail records = 0 and no db_insert_summary found',
+        })
 
     return issues, detail_count
 
 
-def build_email_report(product: str, jsonl_path: str) -> tuple[str, bool]:
+def build_email_report_with_severity(product: str, jsonl_path: str) -> tuple[str, str]:
     issues, detail_count = collect_url_issues(jsonl_path, product)
     redirects = issues['redirect']
     sku_nulls = issues['sku_null']
@@ -329,11 +358,15 @@ def build_email_report(product: str, jsonl_path: str) -> tuple[str, bool]:
     detail_zero = issues.get('detail_zero', [])
     stage_counts = issues.get('stage_counts', {})
     listing_page_failures = issues.get('listing_page_failure', [])
+    db_insert_zero = issues.get('db_insert_zero', [])
+    db_insert_summary = issues.get('db_insert_summary') or {}
     has_warning = bool(
         redirects or sku_nulls or price_inv
         or rating_mis or review_mis or all_null or type_mis
         or run_errors or detail_zero or listing_page_failures
     )
+    has_sos = bool(db_insert_zero)
+    severity = 'sos' if has_sos else ('warning' if has_warning else 'ok')
 
     lines = [
         f'product: {product.upper()}',
@@ -342,11 +375,22 @@ def build_email_report(product: str, jsonl_path: str) -> tuple[str, bool]:
         f'detail records: {detail_count}',
         '',
     ]
-    if not has_warning:
+    if db_insert_summary:
+        lines.insert(-1, f"db insert rows: {db_insert_summary.get('inserted_total')}")
+    if severity == 'ok':
         lines.append('특이사항 없음')
-        return '\n'.join(lines) + '\n', False
+        return '\n'.join(lines) + '\n', severity
 
-    lines.append('WARNING')
+    lines.append('SOS' if severity == 'sos' else 'WARNING')
+    if db_insert_zero:
+        item = db_insert_zero[0]
+        lines.append(
+            '- db insert rows = 0 '
+            f"(returncode={item.get('returncode')}, "
+            f"rows_full={item.get('rows_full')}, rows_listing={item.get('rows_listing')})"
+        )
+        if item.get('message'):
+            lines.append(f"  - reason={item.get('message')}")
     if detail_zero:
         item = detail_zero[0]
         lines.append(
@@ -408,7 +452,12 @@ def build_email_report(product: str, jsonl_path: str) -> tuple[str, bool]:
             v = item['value']
             v_disp = str(v) if len(str(v)) <= 80 else str(v)[:80] + '...'
             lines.append(f"  - {item['url']} field={item['field']} value={v_disp!r}")
-    return '\n'.join(lines) + '\n', True
+    return '\n'.join(lines) + '\n', severity
+
+
+def build_email_report(product: str, jsonl_path: str) -> tuple[str, bool]:
+    body, severity = build_email_report_with_severity(product, jsonl_path)
+    return body, severity != 'ok'
 
 
 def send_email_report(subject: str, body: str) -> tuple[bool, list]:

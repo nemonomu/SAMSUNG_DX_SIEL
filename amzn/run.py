@@ -194,18 +194,63 @@ def _reset_caches() -> None:
     _bsr_cache.clear()
 
 
-def _auto_insert(jsonl_path: str | None) -> None:
+def _append_results_record(jsonl_path: str | None, rec: dict) -> None:
+    if not jsonl_path:
+        return
+    try:
+        with open(jsonl_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+    except Exception:
+        pass
+
+
+def _auto_insert(jsonl_path: str | None) -> dict | None:
     """Run batch INSERT after crawling has finished and the JSONL file is closed."""
     insert_script = os.path.join(_ROOT, 'insert_test_retail_com.py')
     if not (jsonl_path and os.path.exists(jsonl_path)
             and os.path.exists(insert_script)):
-        return
+        return None
     print(f'[run.py] auto INSERT (batch) from {jsonl_path}', file=sys.stderr)
+    summary = {
+        '_summary': 'db insert summary',
+        'stage': 'db_insert_summary',
+        'jsonl_path': jsonl_path,
+        'returncode': None,
+        'rows_full': None,
+        'rows_listing': None,
+        'inserted_total': None,
+    }
     try:
-        subprocess.run([sys.executable, insert_script, jsonl_path, '999999'],
-                       check=False, timeout=600)
+        proc = subprocess.run(
+            [sys.executable, insert_script, jsonl_path, '999999'],
+            check=False,
+            timeout=600,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+        )
+        summary['returncode'] = proc.returncode
+        for stream_text in (proc.stdout, proc.stderr):
+            if stream_text:
+                for line in stream_text.splitlines():
+                    print(line, file=sys.stderr)
+        combined = (proc.stdout or '') + '\n' + (proc.stderr or '')
+        import re as _re
+        m = _re.search(r'\[insert\] merge: (\d+) rows \(full\) / (\d+) rows', combined)
+        if m:
+            summary['rows_full'] = int(m.group(1))
+            summary['rows_listing'] = int(m.group(2))
+        m = _re.search(r'\[insert\] DONE: total (\d+) rows inserted', combined)
+        if m:
+            summary['inserted_total'] = int(m.group(1))
+        if proc.returncode != 0:
+            tail = combined.strip().splitlines()[-5:]
+            summary['message'] = ' | '.join(tail)
     except Exception as e:
         print(f'[run.py] auto INSERT failed: {type(e).__name__}: {e}', file=sys.stderr)
+        summary['message'] = f'{type(e).__name__}: {e}'
+    return summary
 
 
 def _auto_apply_sql():
@@ -444,7 +489,11 @@ def _send_product_email_report(product: str, jsonl_path: str | None) -> None:
         return
     try:
         from amzn import email_report as ER
-        body, has_warn = ER.build_email_report(product, jsonl_path)
+        if hasattr(ER, 'build_email_report_with_severity'):
+            body, severity = ER.build_email_report_with_severity(product, jsonl_path)
+        else:
+            body, has_warn = ER.build_email_report(product, jsonl_path)
+            severity = 'warning' if has_warn else 'ok'
         try:
             txt_path = os.path.splitext(jsonl_path)[0] + '.email.txt'
             with open(txt_path, 'w', encoding='utf-8') as f:
@@ -452,7 +501,9 @@ def _send_product_email_report(product: str, jsonl_path: str | None) -> None:
         except Exception as e:
             print(f'[run.py] email_report write failed: {type(e).__name__}: {e}', file=sys.stderr)
         subject = f'[SIEL] AMZN {product.upper()} crawling report'
-        if has_warn:
+        if severity == 'sos':
+            subject = 'SOS ' + subject
+        elif severity == 'warning':
             subject = 'WARNING ' + subject
         _sent, em_lines = ER.send_email_report(subject, body)
         for ln in em_lines:
@@ -512,7 +563,9 @@ def _run_one_product(driver, product: str, args) -> None:
         results_path_snapshot = _results_path
         _close_results()
         if not getattr(args, 'no_auto_insert', False) and not getattr(args, 'streaming_insert', False):
-            _auto_insert(results_path_snapshot)
+            insert_summary = _auto_insert(results_path_snapshot)
+            if insert_summary:
+                _append_results_record(results_path_snapshot, insert_summary)
         if getattr(args, 'email_report', False):
             _send_product_email_report(product, results_path_snapshot)
 
