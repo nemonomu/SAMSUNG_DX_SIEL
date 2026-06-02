@@ -179,6 +179,8 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
         'run_error': [],
         'detail_zero': [],
         'stage_counts': {},
+        'stage_summaries': {},
+        'listing_short': [],
     }
     if not jsonl_path or not os.path.exists(jsonl_path):
         return issues, 0
@@ -202,6 +204,22 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
                     'stage': stage or rec.get('error_stage') or 'unknown',
                     'message': rec.get('message') or rec.get('_error'),
                 })
+            if rec.get('_summary') and rec.get('summary_stage'):
+                summary_stage = rec.get('summary_stage')
+                issues['stage_summaries'][summary_stage] = rec
+                try:
+                    target_records = int(rec.get('target_records') or 0)
+                    unique_records = int(rec.get('unique_records') or 0)
+                except Exception:
+                    target_records = 0
+                    unique_records = 0
+                if target_records and unique_records < target_records:
+                    issues['listing_short'].append({
+                        'stage': summary_stage,
+                        'actual': unique_records,
+                        'target': target_records,
+                        'message': rec.get('stage_error'),
+                    })
             if stage == 'main':
                 key = rec.get('asin')
                 if key:
@@ -306,10 +324,11 @@ def build_email_report(product: str, jsonl_path: str) -> tuple[str, bool]:
     run_errors = issues.get('run_error', [])
     detail_zero = issues.get('detail_zero', [])
     stage_counts = issues.get('stage_counts', {})
+    listing_short = issues.get('listing_short', [])
     has_warning = bool(
         redirects or sku_nulls or price_inv
         or rating_mis or review_mis or all_null or type_mis
-        or run_errors or detail_zero
+        or run_errors or detail_zero or listing_short
     )
 
     lines = [
@@ -334,6 +353,14 @@ def build_email_report(product: str, jsonl_path: str) -> tuple[str, bool]:
         lines.append(f'- run errors: {len(run_errors)}건')
         for item in run_errors[:20]:
             lines.append(f"  - stage={item.get('stage')} message={item.get('message')}")
+    if listing_short:
+        lines.append(f'- listing target short: {len(listing_short)}건')
+        for item in listing_short[:20]:
+            msg = item.get('message')
+            suffix = f" reason={msg}" if msg else ''
+            lines.append(
+                f"  - {item.get('stage')}: {item.get('actual')}/{item.get('target')}{suffix}"
+            )
     if redirects:
         lines.append(f'- redirect=true: {len(redirects)}건')
         for u in redirects:

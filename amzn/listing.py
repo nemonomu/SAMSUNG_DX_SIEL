@@ -167,7 +167,45 @@ def make_driver(headless: bool = False) -> uc.Chrome:
     major = siel_log.detect_chrome_major()
     if major:
         kwargs['version_main'] = major
-    return uc.Chrome(**kwargs)
+    driver = uc.Chrome(**kwargs)
+    try:
+        driver.set_page_load_timeout(60)
+        driver.set_script_timeout(30)
+    except WebDriverException:
+        pass
+    return driver
+
+
+def load_page(driver, url: str, stage: str, product: str, page_no: int,
+              batch_id: str, max_attempts: int = 2) -> bool:
+    for attempt in range(1, max_attempts + 1):
+        try:
+            driver.get(url)
+            return True
+        except WebDriverException as e:
+            message = f'{type(e).__name__}: {str(e)[:240]}'
+            if _logger:
+                _logger.warning(
+                    '%s page=%d load failed attempt %d/%d: %s',
+                    stage, page_no, attempt, max_attempts, message,
+                )
+            try:
+                driver.execute_script('window.stop();')
+            except WebDriverException:
+                pass
+            time.sleep(2)
+    emit({
+        '_error': 'listing page load failed',
+        'stage': f'{stage}_error',
+        'error_stage': stage,
+        'product': product,
+        'page_no': page_no,
+        'source_url': url,
+        'batch_id': batch_id,
+        'message': message,
+        'crawl_datetime': now_server_ts(),
+    })
+    return False
 
 
 def scroll_to_bottom(driver, pause: float = 1.5, max_scrolls: int = 30) -> None:
@@ -377,7 +415,8 @@ def crawl_main(driver, product: str, selectors: dict, batch_id: str,
         url = template.format(page=page)
         if _logger:
             _logger.info('page=%d url=%s', page, url)
-        driver.get(url)
+        if not load_page(driver, url, 'main', product, page, batch_id):
+            break
         time.sleep(3)
         scroll_to_bottom(driver, pause=1.0, max_scrolls=8)
         if page == 1:
@@ -404,6 +443,17 @@ def crawl_main(driver, product: str, selectors: dict, batch_id: str,
                     if _logger:
                         _logger.warning('page=%d refresh %d failed: %s', page, attempt, e)
             if not cards:
+                emit({
+                    '_error': 'listing page has no cards',
+                    'stage': 'main_error',
+                    'error_stage': 'main',
+                    'product': product,
+                    'page_no': page,
+                    'source_url': url,
+                    'batch_id': batch_id,
+                    'message': 'cards=0 after refresh retries',
+                    'crawl_datetime': now_server_ts(),
+                })
                 break
         for raw_pos, card in enumerate(cards, start=1):
             if rank >= max_rank:
@@ -483,7 +533,8 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
             break
         if _logger:
             _logger.info('page=%d url=%s', page_no, url)
-        driver.get(url)
+        if not load_page(driver, url, 'bsr', product, page_no, batch_id):
+            continue
         time.sleep(3)
         cards = _load_bsr_cards(driver, container_xpath, expected_count=50)
         if page_no == 1:
@@ -503,6 +554,18 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
             except WebDriverException as e:
                 if _logger:
                     _logger.warning('page=%d refresh failed: %s', page_no, e)
+            if not cards:
+                emit({
+                    '_error': 'listing page has no cards',
+                    'stage': 'bsr_error',
+                    'error_stage': 'bsr',
+                    'product': product,
+                    'page_no': page_no,
+                    'source_url': url,
+                    'batch_id': batch_id,
+                    'message': 'cards=0 after refresh retry',
+                    'crawl_datetime': now_server_ts(),
+                })
         elif len(cards) < 50:
             if _logger:
                 _logger.info('page=%d cards=%d<50 -> second primary-grid pass', page_no, len(cards))

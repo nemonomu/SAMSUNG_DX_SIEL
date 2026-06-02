@@ -153,7 +153,13 @@ def make_driver(headless: bool = False) -> uc.Chrome:
     major = siel_log.detect_chrome_major()
     if major:
         kwargs['version_main'] = major
-    return uc.Chrome(**kwargs)
+    driver = uc.Chrome(**kwargs)
+    try:
+        driver.set_page_load_timeout(60)
+        driver.set_script_timeout(30)
+    except WebDriverException:
+        pass
+    return driver
 
 
 def scroll_to_bottom(driver, pause: float = 1.0, max_scrolls: int = 15) -> None:

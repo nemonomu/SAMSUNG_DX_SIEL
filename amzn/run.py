@@ -273,6 +273,7 @@ def run_listing_capture(driver, product: str, stage: str,
     stats = {'emitted': 0, 'with_id': 0, 'with_url': 0}
     missing_url_ranks: list = []
     duplicate_ranks: list = []
+    stage_error = None
     rank_field = 'bsr_rank' if stage == 'bsr' else 'main_rank'
     original_emit = L.emit
 
@@ -303,7 +304,8 @@ def run_listing_capture(driver, product: str, stage: str,
         sels = L.load_selectors(L.SITE_ACCOUNT, stage, product)
         if not sels:
             L.emit({'_error': 'no selectors loaded',
-                    'site': L.SITE_ACCOUNT, 'stage': stage, 'product': product})
+                    'site': L.SITE_ACCOUNT, 'stage': f'{stage}_error',
+                    'error_stage': stage, 'product': product})
             return captured
         batch_id = getattr(run_listing_capture, '_batch_id', None) or L.make_batch_id(stage, product)
         if stage == 'main':
@@ -311,8 +313,33 @@ def run_listing_capture(driver, product: str, stage: str,
                          max_rank=max_rank, max_pages=max_pages)
         else:
             L.crawl_bsr(driver, product, sels, batch_id, max_rank=max_rank)
+    except Exception as exc:
+        stage_error = f'{type(exc).__name__}: {str(exc)[:240]}'
+        try:
+            L.emit({
+                '_error': 'listing stage failed',
+                'stage': f'{stage}_error',
+                'error_stage': stage,
+                'product': product,
+                'message': stage_error,
+            })
+        except Exception:
+            pass
     finally:
         L.emit = original_emit
+        target_met = (len(seen_keys) >= max_rank) if max_rank else True
+        original_emit({
+            '_summary': 'listing stage summary',
+            'stage': f'{stage}_summary',
+            'summary_stage': stage,
+            'product': product,
+            'target_records': max_rank,
+            'captured_urls': len(captured),
+            'unique_records': len(seen_keys),
+            'emitted_records': stats['emitted'],
+            'target_met': target_met,
+            'stage_error': stage_error,
+        })
         print(
             f'[run] product={product} stage={stage} raw_summary '
             f'emitted={stats["emitted"]} id={stats["with_id"]} '
@@ -345,6 +372,11 @@ def _make_driver_tracked(headless: bool):
     """Track chrome.exe PIDs created by this crawler run."""
     before = _list_chrome_pids()
     drv = L.make_driver(headless=headless)
+    try:
+        drv.set_page_load_timeout(60)
+        drv.set_script_timeout(30)
+    except Exception:
+        pass
     time.sleep(3)
     after = _list_chrome_pids()
     drv._amzn_chrome_pids = after - before
