@@ -176,6 +176,9 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
         'review_count_no_review_text': [],
         'all_null_fields': [],
         'type_mismatch': [],
+        'run_error': [],
+        'detail_zero': [],
+        'stage_counts': {},
     }
     if not jsonl_path or not os.path.exists(jsonl_path):
         return issues, 0
@@ -192,6 +195,13 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
             except Exception:
                 continue
             stage = rec.get('stage')
+            if stage:
+                issues['stage_counts'][stage] = issues['stage_counts'].get(stage, 0) + 1
+            if rec.get('_error'):
+                issues['run_error'].append({
+                    'stage': stage or rec.get('error_stage') or 'unknown',
+                    'message': rec.get('message') or rec.get('_error'),
+                })
             if stage == 'main':
                 key = rec.get('asin')
                 if key:
@@ -275,6 +285,12 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
             if total >= 2 and non_null == 0:
                 issues['all_null_fields'].append({'field': k, 'total': total})
 
+    if detail_count == 0:
+        issues['detail_zero'].append({
+            'main_records': issues['stage_counts'].get('main', 0),
+            'bsr_records': issues['stage_counts'].get('bsr', 0),
+        })
+
     return issues, detail_count
 
 
@@ -287,13 +303,19 @@ def build_email_report(product: str, jsonl_path: str) -> tuple[str, bool]:
     review_mis = issues['review_count_no_review_text']
     all_null = issues['all_null_fields']
     type_mis = issues['type_mismatch']
+    run_errors = issues.get('run_error', [])
+    detail_zero = issues.get('detail_zero', [])
+    stage_counts = issues.get('stage_counts', {})
     has_warning = bool(
         redirects or sku_nulls or price_inv
         or rating_mis or review_mis or all_null or type_mis
+        or run_errors or detail_zero
     )
 
     lines = [
         f'product: {product.upper()}',
+        f"main records: {stage_counts.get('main', 0)}",
+        f"bsr records: {stage_counts.get('bsr', 0)}",
         f'detail records: {detail_count}',
         '',
     ]
@@ -302,6 +324,16 @@ def build_email_report(product: str, jsonl_path: str) -> tuple[str, bool]:
         return '\n'.join(lines) + '\n', False
 
     lines.append('WARNING')
+    if detail_zero:
+        item = detail_zero[0]
+        lines.append(
+            '- detail records = 0 '
+            f"(main={item.get('main_records', 0)}, bsr={item.get('bsr_records', 0)})"
+        )
+    if run_errors:
+        lines.append(f'- run errors: {len(run_errors)}건')
+        for item in run_errors[:20]:
+            lines.append(f"  - stage={item.get('stage')} message={item.get('message')}")
     if redirects:
         lines.append(f'- redirect=true: {len(redirects)}건')
         for u in redirects:

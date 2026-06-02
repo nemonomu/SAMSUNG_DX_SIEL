@@ -461,6 +461,17 @@ def _run_one_product(driver, product: str, args) -> None:
                 print(f'[run] product={product} stage=detail processing={len(use_urls)}',
                       file=sys.stderr)
                 run_detail(driver, product, use_urls, args.detail_sleep, product_batch_id)
+    except Exception as exc:
+        try:
+            D.emit({
+                '_error': 'product run failed',
+                'stage': 'run_error',
+                'product': product,
+                'message': repr(exc),
+            })
+        except Exception:
+            pass
+        raise
     finally:
         try:
             delattr(run_listing_capture, '_batch_id')
