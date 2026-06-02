@@ -318,6 +318,22 @@ def _scroll_to(driver, y: int) -> None:
     except WebDriverException:
         pass
 
+
+def _scroll_element_into_view(driver, css_selector: str) -> None:
+    try:
+        driver.execute_script(
+            """
+            const el = document.querySelector(arguments[0]);
+            if (el) {
+                el.scrollIntoView({block: 'center', inline: 'nearest'});
+            }
+            """,
+            css_selector,
+        )
+    except WebDriverException:
+        pass
+
+
 def emit(rec: dict) -> None:
     sys.stdout.write(json.dumps(rec, ensure_ascii=False) + '\n')
     sys.stdout.flush()
@@ -484,13 +500,15 @@ def crawl_main(driver, product: str, selectors: dict, batch_id: str,
 
 
 def _load_bsr_cards(driver, container_xpath: str, expected_count: int = 50,
-                    max_rounds: int = 4):
+                    max_rounds: int = 8):
     best_cards = []
     stable_rounds = 0
-    for _ in range(max_rounds):
+    last_height = 0
+    for round_no in range(1, max_rounds + 1):
         height = max(_page_height(driver), 1)
+        last_height = max(last_height, height)
         viewport = max(_viewport_height(driver), 600)
-        step = max(int(viewport * 0.7), 420)
+        step = max(int(viewport * 0.55), 320)
         positions = list(range(0, height + step, step))
         if positions[-1] != height:
             positions.append(height)
@@ -505,14 +523,30 @@ def _load_bsr_cards(driver, container_xpath: str, expected_count: int = 50,
             if len(cards) >= expected_count:
                 return cards
 
-        time.sleep(1.0)
+        for selector in ('#endOfList', 'nav[aria-label="pagination"]', '.a-pagination'):
+            _scroll_element_into_view(driver, selector)
+            time.sleep(0.8)
+            cards = _safe_find_elements(driver, container_xpath)
+            if len(cards) > len(best_cards):
+                best_cards = cards
+                stable_rounds = 0
+            if len(cards) >= expected_count:
+                return cards
+
+        _scroll_to(driver, max(last_height, _page_height(driver)))
+        time.sleep(1.2)
         cards = _safe_find_elements(driver, container_xpath)
         if len(cards) > len(best_cards):
             best_cards = cards
             stable_rounds = 0
         elif len(cards) == len(best_cards):
             stable_rounds += 1
-        if len(best_cards) >= expected_count or stable_rounds >= 2:
+
+        if _logger:
+            _logger.info('bsr lazy-load round=%d cards=%d best=%d height=%d',
+                         round_no, len(cards), len(best_cards), _page_height(driver))
+
+        if len(best_cards) >= expected_count or stable_rounds >= 3:
             break
     return best_cards or _safe_find_elements(driver, container_xpath)
 
