@@ -194,15 +194,15 @@ def _reset_caches() -> None:
     _bsr_cache.clear()
 
 
-def _auto_insert() -> None:
-    """streaming 비활성 시 fallback — run 끝난 후 jsonl → batch INSERT."""
+def _auto_insert(jsonl_path: str | None) -> None:
+    """Run batch INSERT after crawling has finished and the JSONL file is closed."""
     insert_script = os.path.join(_ROOT, 'insert_test_retail_com.py')
-    if not (_results_path and os.path.exists(_results_path)
+    if not (jsonl_path and os.path.exists(jsonl_path)
             and os.path.exists(insert_script)):
         return
-    print(f'[run.py] auto INSERT (batch) from {_results_path}', file=sys.stderr)
+    print(f'[run.py] auto INSERT (batch) from {jsonl_path}', file=sys.stderr)
     try:
-        subprocess.run([sys.executable, insert_script, _results_path, '999999'],
+        subprocess.run([sys.executable, insert_script, jsonl_path, '999999'],
                        check=False, timeout=600)
     except Exception as e:
         print(f'[run.py] auto INSERT failed: {type(e).__name__}: {e}', file=sys.stderr)
@@ -305,7 +305,7 @@ def run_listing_capture(driver, product: str, stage: str,
             L.emit({'_error': 'no selectors loaded',
                     'site': L.SITE_ACCOUNT, 'stage': stage, 'product': product})
             return captured
-        batch_id = L.make_batch_id(stage, product)
+        batch_id = getattr(run_listing_capture, '_batch_id', None) or L.make_batch_id(stage, product)
         if stage == 'main':
             L.crawl_main(driver, product, sels, batch_id,
                          max_rank=max_rank, max_pages=max_pages)
@@ -386,11 +386,11 @@ def _hard_kill_driver(driver) -> None:
             pass
 
 
-def run_detail(driver, product: str, urls: list, sleep_s: float) -> int:
+def run_detail(driver, product: str, urls: list, sleep_s: float, batch_id: str | None = None) -> int:
     D.init_logging(product)
     D.init_progress(len(urls))
     sels = D.load_selectors(D.SITE_ACCOUNT, D.STAGE, product)
-    batch_id = D.make_batch_id(product)
+    batch_id = batch_id or D.make_batch_id(product)
     if not sels:
         D.emit({'_error': 'no selectors loaded',
                 'site': D.SITE_ACCOUNT, 'stage': D.STAGE,
@@ -433,12 +433,14 @@ def _run_one_product(driver, product: str, args) -> None:
     """단일 product 의 main/bsr/detail 처리 — driver 공유, cache reset, jsonl/INSERT 별개."""
     _reset_caches()
     _setup_results(product)
+    product_batch_id = L.make_batch_id('run', product)
     captured: list = []
     seen = set()
     try:
         for stage in args.stages:
             if stage in ('main', 'bsr'):
                 stage_max = args.max_rank if stage == 'main' else args.bsr_max_rank
+                run_listing_capture._batch_id = product_batch_id
                 urls = run_listing_capture(driver, product, stage,
                                            stage_max, args.max_pages)
                 added = 0
@@ -458,10 +460,16 @@ def _run_one_product(driver, product: str, args) -> None:
                     continue
                 print(f'[run] product={product} stage=detail processing={len(use_urls)}',
                       file=sys.stderr)
-                run_detail(driver, product, use_urls, args.detail_sleep)
+                run_detail(driver, product, use_urls, args.detail_sleep, product_batch_id)
     finally:
+        try:
+            delattr(run_listing_capture, '_batch_id')
+        except AttributeError:
+            pass
         results_path_snapshot = _results_path
         _close_results()
+        if not getattr(args, 'no_auto_insert', False) and not getattr(args, 'streaming_insert', False):
+            _auto_insert(results_path_snapshot)
         if getattr(args, 'email_report', False):
             _send_product_email_report(product, results_path_snapshot)
 
@@ -485,7 +493,9 @@ def main() -> int:
     ap.add_argument('--detail-sleep', type=float, default=2.0)
     ap.add_argument('--headless', action='store_true')
     ap.add_argument('--no-auto-insert', action='store_true',
-                    help='streaming INSERT 비활성 (jsonl 만)')
+                    help='disable post-crawl batch INSERT (jsonl only)')
+    ap.add_argument('--streaming-insert', action='store_true',
+                    help='insert each detail row while crawling (legacy; can block crawler on DB/VPN waits)')
     ap.add_argument('--email-report', action='store_true',
                     help='product 별 크롤링 리포트 이메일 발송 (config.EMAIL_CONFIG). '
                          'final_sku_price>=original_sku_price, sku null, redirect=true URL 포함')
@@ -495,7 +505,7 @@ def main() -> int:
     L.emit = _make_dual(L.emit)
     D.emit = _make_dual(D.emit)
 
-    if not args.no_auto_insert:
+    if args.streaming_insert and not args.no_auto_insert:
         _setup_db()
 
     driver = _make_driver_tracked(args.headless)
@@ -515,9 +525,6 @@ def main() -> int:
         _close_results()
         _close_db()
         _sync_logs_to_retail_com()
-        # streaming 비활성 시만 batch fallback
-        if not _streaming_enabled and not args.no_auto_insert:
-            pass  # streaming setup 이 fail 했어도 jsonl 은 있음 — 사용자가 수동 INSERT
 
 
 if __name__ == '__main__':
