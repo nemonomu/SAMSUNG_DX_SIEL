@@ -31,6 +31,32 @@ import siel_item_mst
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
+
+def env_int(name: str, default: int, minimum: int = 0) -> int:
+    raw = os.environ.get(name)
+    if raw in (None, ''):
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
+def apply_pg_timeouts(cfg: dict) -> tuple[int, int]:
+    lock_timeout_ms = env_int('SIEL_DB_LOCK_TIMEOUT_MS', 30000)
+    statement_timeout_ms = env_int('SIEL_DB_STATEMENT_TIMEOUT_MS', 180000)
+    options = str(cfg.get('options') or '').strip()
+    chunks = [options] if options else []
+    if lock_timeout_ms:
+        chunks.append(f'-c lock_timeout={lock_timeout_ms}')
+    if statement_timeout_ms:
+        chunks.append(f'-c statement_timeout={statement_timeout_ms}')
+    if chunks:
+        cfg['options'] = ' '.join(chunks)
+    cfg.setdefault('application_name', 'siel_insert_test_retail_com')
+    return lock_timeout_ms, statement_timeout_ms
+
 # retail_com 컬럼 분류 — 5/10 사용자 룰: 제품별 retail_com 에 다른 product 의 전용 컬럼 제외.
 # 공통 (양 account 모두 채움) + amzn 전용 + fpkt 전용 + 해당 제품 전용.
 _COMMON_COLS = [
@@ -447,6 +473,12 @@ def main() -> int:
     cfg = dict(config.DB_CONFIG)
     cfg.setdefault('database', 'postgres')
     cfg.setdefault('client_encoding', 'utf8')
+    lock_timeout_ms, statement_timeout_ms = apply_pg_timeouts(cfg)
+    print(
+        f'[insert] db_timeouts lock_timeout_ms={lock_timeout_ms} '
+        f'statement_timeout_ms={statement_timeout_ms}',
+        file=sys.stderr,
+    )
     conn = psycopg2.connect(**cfg)
     # 본 운영 8 테이블 (4 retail_com + 4 product_list) — product 별 분기 INSERT.
     # 5/10 사용자 룰: 제품별 retail_com 은 해당 제품 전용 컬럼만 (다른 product 전용 X).

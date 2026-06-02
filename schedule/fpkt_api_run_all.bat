@@ -48,6 +48,7 @@ if "%FPKT_MAX_REVIEWS_PER_PRODUCT%"=="" set "FPKT_MAX_REVIEWS_PER_PRODUCT=20"
 if "%FPKT_INSERT_MAX_N%"=="" set "FPKT_INSERT_MAX_N=0"
 if "%FPKT_LOCK_STALE_HOURS%"=="" set "FPKT_LOCK_STALE_HOURS=18"
 if "%FPKT_INSECURE_SSL%"=="" set "FPKT_INSECURE_SSL=1"
+if "%FPKT_CONTINUE_ON_PRODUCT_FAIL%"=="" set "FPKT_CONTINUE_ON_PRODUCT_FAIL=1"
 if "%FPKT_EMAIL_REPORT%"=="" (
   set "FPKT_EMAIL_REPORT=0"
   if /I "%RUN_MODE%"=="insert" set "FPKT_EMAIL_REPORT=1"
@@ -65,6 +66,8 @@ echo [fpkt_api_run_all] email_report=%FPKT_EMAIL_REPORT%
 >> "%RUN_LOG%" echo [fpkt_api_run_all] email_report=%FPKT_EMAIL_REPORT%
 echo [fpkt_api_run_all] insecure_ssl=%FPKT_INSECURE_SSL%
 >> "%RUN_LOG%" echo [fpkt_api_run_all] insecure_ssl=%FPKT_INSECURE_SSL%
+echo [fpkt_api_run_all] continue_on_product_fail=%FPKT_CONTINUE_ON_PRODUCT_FAIL%
+>> "%RUN_LOG%" echo [fpkt_api_run_all] continue_on_product_fail=%FPKT_CONTINUE_ON_PRODUCT_FAIL%
 
 git status --short --untracked-files=no > "%RUN_DIR%\git_status_before.txt" 2>&1
 
@@ -124,6 +127,7 @@ if /I not "%FPKT_SKIP_LOCK%"=="1" (
 
 set "DB_FLAGS="
 set "EMAIL_FLAGS="
+set "FAILED_PRODUCTS="
 if /I "%RUN_MODE%"=="dry-run" set "DB_FLAGS=!DB_FLAGS! --db-insert --db-dry-run"
 if /I "%RUN_MODE%"=="insert" set "DB_FLAGS=!DB_FLAGS! --db-insert --real-batch-id"
 if /I "%FPKT_REAL_BATCH_ID%"=="1" set "DB_FLAGS=!DB_FLAGS! --real-batch-id"
@@ -146,12 +150,16 @@ for %%P in (%FPKT_PRODUCTS%) do (
   if not "!PRODUCT_CODE!"=="0" (
     echo [fpkt_api_run_all] failed %%P exit=!PRODUCT_CODE!
     >> "%RUN_LOG%" echo [fpkt_api_run_all] failed %%P exit=!PRODUCT_CODE!
-    set "EXIT_CODE=!PRODUCT_CODE!"
-    goto fail
+    if not defined EXIT_CODE set "EXIT_CODE=!PRODUCT_CODE!"
+    set "FAILED_PRODUCTS=!FAILED_PRODUCTS! %%P(!PRODUCT_CODE!)"
+    if /I not "%FPKT_CONTINUE_ON_PRODUCT_FAIL%"=="1" goto fail
+  ) else (
+    echo [fpkt_api_run_all] done %%P
+    >> "%RUN_LOG%" echo [fpkt_api_run_all] done %%P
   )
-  echo [fpkt_api_run_all] done %%P
-  >> "%RUN_LOG%" echo [fpkt_api_run_all] done %%P
 )
+
+if defined FAILED_PRODUCTS goto fail
 
 git status --short --untracked-files=no > "%RUN_DIR%\git_status_after.txt" 2>&1
 
@@ -166,6 +174,8 @@ exit /b 0
 if not defined EXIT_CODE set "EXIT_CODE=1"
 git status --short --untracked-files=no > "%RUN_DIR%\git_status_after.txt" 2>&1
 if defined LOCK_ACQUIRED rmdir /s /q "%LOCK_DIR%" >nul 2>nul
+if defined FAILED_PRODUCTS echo [fpkt_api_run_all] failed_products=%FAILED_PRODUCTS%
+if defined FAILED_PRODUCTS >> "%RUN_LOG%" echo [fpkt_api_run_all] failed_products=%FAILED_PRODUCTS%
 echo [fpkt_api_run_all] failed exit=%EXIT_CODE%
 >> "%RUN_LOG%" echo [fpkt_api_run_all] failed exit=%EXIT_CODE%
 echo [fpkt_api_run_all] result_folder=%RUN_DIR%

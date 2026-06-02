@@ -20,6 +20,7 @@ import smtplib
 import ssl
 import subprocess
 import sys
+import time
 import urllib.request
 from datetime import datetime
 from email.message import EmailMessage
@@ -1649,6 +1650,28 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def env_int(name: str, default: int, minimum: int = 0) -> int:
+    raw = os.environ.get(name)
+    if raw in (None, ""):
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
+def append_process_output(lines: list[str], prefix: str, output: str | bytes | None) -> None:
+    if output is None:
+        return
+    if isinstance(output, bytes):
+        text = output.decode("utf-8", errors="replace")
+    else:
+        text = output
+    if text.strip():
+        lines.extend(f"{prefix} {line}" for line in text.strip().splitlines())
+
+
 def insert_into_db(jsonl_path: Path, max_n: int, dry_run: bool = False) -> tuple[int, list[str]]:
     script = ROOT / "insert_test_retail_com.py"
     if not script.exists():
@@ -1659,26 +1682,45 @@ def insert_into_db(jsonl_path: Path, max_n: int, dry_run: bool = False) -> tuple
     env = os.environ.copy()
     if dry_run:
         env["SIEL_INSERT_DRY_RUN"] = "1"
-    proc = subprocess.run(
-        command,
-        cwd=str(ROOT),
-        env=env,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        timeout=1200,
-    )
+    timeout_seconds = env_int("FPKT_DB_INSERT_TIMEOUT_SECONDS", 300, minimum=30)
+    retries = env_int("FPKT_DB_INSERT_RETRIES", 3, minimum=1)
+    retry_delay = env_int("FPKT_DB_INSERT_RETRY_DELAY_SECONDS", 45, minimum=0)
     lines = [
         f"[db_insert] command={' '.join(command)}",
         f"[db_insert] dry_run={str(dry_run).lower()}",
-        f"[db_insert] returncode={proc.returncode}",
+        f"[db_insert] timeout_seconds={timeout_seconds} retries={retries} retry_delay_seconds={retry_delay}",
     ]
-    if proc.stdout.strip():
-        lines.extend(f"[db_insert][stdout] {line}" for line in proc.stdout.strip().splitlines())
-    if proc.stderr.strip():
-        lines.extend(f"[db_insert][stderr] {line}" for line in proc.stderr.strip().splitlines())
-    return proc.returncode, lines
+    last_returncode = 1
+    for attempt in range(1, retries + 1):
+        lines.append(f"[db_insert] attempt={attempt}/{retries}")
+        try:
+            proc = subprocess.run(
+                command,
+                cwd=str(ROOT),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            last_returncode = 124
+            lines.append(f"[db_insert] timeout after {timeout_seconds}s")
+            append_process_output(lines, "[db_insert][stdout]", exc.stdout)
+            append_process_output(lines, "[db_insert][stderr]", exc.stderr)
+            break
+
+        last_returncode = proc.returncode
+        lines.append(f"[db_insert] returncode={proc.returncode}")
+        append_process_output(lines, "[db_insert][stdout]", proc.stdout)
+        append_process_output(lines, "[db_insert][stderr]", proc.stderr)
+        if proc.returncode == 0:
+            return 0, lines
+        if attempt < retries and retry_delay:
+            lines.append(f"[db_insert] retrying after {retry_delay}s")
+            time.sleep(retry_delay)
+    return last_returncode, lines
 
 
 def is_null_value(value: Any) -> bool:
