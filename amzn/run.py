@@ -23,6 +23,7 @@ if _ROOT not in sys.path:
 _IST = timezone(timedelta(hours=5, minutes=30))
 _results_path = None
 _results_file = None
+_run_log_path = None
 
 # streaming insert state — main/bsr cache + DB connection
 _main_cache: dict = {}
@@ -86,8 +87,10 @@ def _setup_db():
         _streaming_enabled = True
         print('[run.py] streaming INSERT enabled — 8 운영 테이블 (4 retail_com + 4 product_list)',
               file=sys.stderr)
+        _run_log('streaming INSERT enabled')
     except Exception as e:
         print(f'[run.py] streaming INSERT setup failed: {type(e).__name__}: {e}', file=sys.stderr)
+        _run_log(f'streaming INSERT setup failed: {type(e).__name__}: {e}', 'ERROR')
         _streaming_enabled = False
 
 
@@ -150,6 +153,7 @@ def _stream_insert(detail_rec: dict) -> None:
                     _db_cursor.execute('ROLLBACK TO SAVEPOINT mst_sp')
                     print(f'[run.py] streaming mst upsert failed: {type(mst_e).__name__}: {mst_e}',
                           file=sys.stderr)
+                    _run_log(f'streaming mst upsert failed: {type(mst_e).__name__}: {mst_e}', 'WARNING')
         _db_conn.commit()
     except Exception as e:
         try:
@@ -157,15 +161,72 @@ def _stream_insert(detail_rec: dict) -> None:
         except Exception:
             pass
         print(f'[run.py] streaming INSERT row failed: {type(e).__name__}: {e}', file=sys.stderr)
+        _run_log(f'streaming INSERT row failed: {type(e).__name__}: {e}', 'ERROR')
+
+
+def _run_log(message: str, level: str = 'INFO') -> None:
+    if not _run_log_path:
+        return
+    try:
+        ts = datetime.now(_IST).strftime('%Y-%m-%d %H:%M:%S')
+        with open(_run_log_path, 'a', encoding='utf-8') as f:
+            f.write(f'{ts} [{level}] {message}\n')
+    except Exception:
+        pass
 
 
 def _setup_results(product: str) -> None:
-    global _results_path, _results_file
+    global _results_path, _results_file, _run_log_path
     ts = datetime.now(_IST).strftime('%Y%m%d%H%M%S')
     logs_dir = os.path.join(_ROOT, 'amzn', 'logs')
     os.makedirs(logs_dir, exist_ok=True)
-    _results_path = os.path.join(logs_dir, f'siel_amazon_{product}_run_{ts}.jsonl')
+    base = os.path.join(logs_dir, f'siel_amazon_{product}_run_{ts}')
+    _results_path = base + '.jsonl'
+    _run_log_path = base + '.log'
     _results_file = open(_results_path, 'w', encoding='utf-8')
+    _run_log(f'run log file={_run_log_path}')
+    _run_log(f'jsonl file={_results_path}')
+
+
+def _log_record_event(rec: dict) -> None:
+    if not isinstance(rec, dict):
+        return
+    stage = rec.get('stage') or rec.get('error_stage') or rec.get('summary_stage') or 'unknown'
+    product = rec.get('product') or ''
+    page = rec.get('page_no')
+    url = rec.get('source_url') or rec.get('product_url') or ''
+    page_part = f' page={page}' if page not in (None, '') else ''
+    url_part = f' url={url}' if url else ''
+    product_part = f' product={product}' if product else ''
+    if rec.get('_error'):
+        reason = rec.get('message') or rec.get('_error')
+        _run_log(
+            f'stage={stage}{page_part}{product_part}{url_part} '
+            f'error={rec.get("_error")} reason={reason}',
+            'ERROR',
+        )
+    elif rec.get('_warn'):
+        reason = rec.get('message') or rec.get('_warn')
+        _run_log(
+            f'stage={stage}{page_part}{product_part}{url_part} '
+            f'warning={rec.get("_warn")} reason={reason}',
+            'WARNING',
+        )
+    elif rec.get('_detail_skip'):
+        _run_log(
+            f'stage={stage}{product_part}{url_part} detail_skip={rec.get("_detail_skip")}',
+            'WARNING',
+        )
+    elif rec.get('_summary'):
+        fields = []
+        for key in (
+            'summary_stage', 'target_records', 'captured_urls', 'unique_records',
+            'emitted_records', 'target_met', 'stage_error', 'returncode',
+            'rows_full', 'rows_listing', 'inserted_total',
+        ):
+            if key in rec:
+                fields.append(f'{key}={rec.get(key)}')
+        _run_log(f'stage={stage} summary={rec.get("_summary")} ' + ' '.join(fields))
 
 
 def _write_results(rec: dict) -> None:
@@ -200,6 +261,7 @@ def _append_results_record(jsonl_path: str | None, rec: dict) -> None:
     try:
         with open(jsonl_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+        _log_record_event(rec)
     except Exception:
         pass
 
@@ -211,6 +273,7 @@ def _auto_insert(jsonl_path: str | None) -> dict | None:
             and os.path.exists(insert_script)):
         return None
     print(f'[run.py] auto INSERT (batch) from {jsonl_path}', file=sys.stderr)
+    _run_log(f'auto INSERT start jsonl={jsonl_path}')
     summary = {
         '_summary': 'db insert summary',
         'stage': 'db_insert_summary',
@@ -219,6 +282,7 @@ def _auto_insert(jsonl_path: str | None) -> dict | None:
         'rows_full': None,
         'rows_listing': None,
         'inserted_total': None,
+        'run_log_path': _run_log_path,
     }
     try:
         proc = subprocess.run(
@@ -235,6 +299,7 @@ def _auto_insert(jsonl_path: str | None) -> dict | None:
             if stream_text:
                 for line in stream_text.splitlines():
                     print(line, file=sys.stderr)
+                    _run_log(f'auto INSERT output: {line}')
         combined = (proc.stdout or '') + '\n' + (proc.stderr or '')
         import re as _re
         m = _re.search(r'\[insert\] merge: (\d+) rows \(full\) / (\d+) rows', combined)
@@ -247,9 +312,22 @@ def _auto_insert(jsonl_path: str | None) -> dict | None:
         if proc.returncode != 0:
             tail = combined.strip().splitlines()[-5:]
             summary['message'] = ' | '.join(tail)
+            _run_log(
+                f'auto INSERT failed returncode={proc.returncode} '
+                f'message={summary.get("message")}',
+                'ERROR',
+            )
+        else:
+            _run_log(
+                f'auto INSERT done returncode={proc.returncode} '
+                f'rows_full={summary.get("rows_full")} '
+                f'rows_listing={summary.get("rows_listing")} '
+                f'inserted_total={summary.get("inserted_total")}'
+            )
     except Exception as e:
         print(f'[run.py] auto INSERT failed: {type(e).__name__}: {e}', file=sys.stderr)
         summary['message'] = f'{type(e).__name__}: {e}'
+        _run_log(f'auto INSERT exception: {summary["message"]}', 'ERROR')
     return summary
 
 
@@ -294,6 +372,7 @@ def _make_dual(orig_emit):
     def dual(rec):
         orig_emit(rec)
         _write_results(rec)
+        _log_record_event(rec)
         if not _streaming_enabled:
             return
         stage = rec.get('stage')
@@ -427,6 +506,7 @@ def _make_driver_tracked(headless: bool):
     drv._amzn_chrome_pids = after - before
     print(f'[run] new driver chrome.exe PIDs tracked={sorted(drv._amzn_chrome_pids)}',
           file=sys.stderr)
+    _run_log(f'new driver chrome.exe PIDs tracked={sorted(drv._amzn_chrome_pids)}')
     return drv
 
 
@@ -434,6 +514,7 @@ def _hard_kill_driver(driver) -> None:
     """Close Selenium and force-kill Chrome processes that this driver started."""
     if driver is None:
         return
+    _run_log('driver shutdown start')
     pids = set()
     try:
         pids.update(getattr(driver, '_amzn_chrome_pids', set()) or set())
@@ -459,16 +540,19 @@ def _hard_kill_driver(driver) -> None:
         try:
             subprocess.run(['taskkill', '/F', '/PID', str(pid), '/T'],
                            capture_output=True, timeout=5)
+            _run_log(f'taskkill pid={pid}')
         except Exception:
-            pass
+            _run_log(f'taskkill failed pid={pid}: {traceback.format_exc()}', 'ERROR')
 
 
 def run_detail(driver, product: str, urls: list, sleep_s: float, batch_id: str | None = None) -> int:
+    _run_log(f'stage=detail product={product} start urls={len(urls)}')
     D.init_logging(product)
     D.init_progress(len(urls))
     sels = D.load_selectors(D.SITE_ACCOUNT, D.STAGE, product)
     batch_id = batch_id or D.make_batch_id(product)
     if not sels:
+        _run_log(f'stage=detail product={product} no selectors loaded', 'ERROR')
         D.emit({'_error': 'no selectors loaded',
                 'site': D.SITE_ACCOUNT, 'stage': D.STAGE,
                 'product': product, 'batch_id': batch_id})
@@ -480,6 +564,7 @@ def run_detail(driver, product: str, urls: list, sleep_s: float, batch_id: str |
         n += 1
         if sleep_s > 0:
             time.sleep(sleep_s)
+    _run_log(f'stage=detail product={product} done records={n}')
     return n
 
 
@@ -500,27 +585,33 @@ def _send_product_email_report(product: str, jsonl_path: str | None) -> None:
                 f.write(body)
         except Exception as e:
             print(f'[run.py] email_report write failed: {type(e).__name__}: {e}', file=sys.stderr)
+            _run_log(f'email_report write failed: {type(e).__name__}: {e}', 'ERROR')
         subject = f'[SIEL] AMZN {product.upper()} crawling report'
         if severity == 'sos':
             subject = 'SOS ' + subject
         elif severity == 'warning':
             subject = 'WARNING ' + subject
+        _run_log(f'email_report severity={severity} subject={subject}')
         _sent, em_lines = ER.send_email_report(subject, body)
         for ln in em_lines:
             print(ln, file=sys.stderr)
+            _run_log(ln, 'ERROR' if 'failed' in ln.lower() else 'INFO')
     except Exception as e:
         print(f'[run.py] email_report failed: {type(e).__name__}: {e}', file=sys.stderr)
+        _run_log(f'email_report failed: {type(e).__name__}: {e}', 'ERROR')
 
 
 def _run_one_product(driver, product: str, args) -> None:
     """단일 product 의 main/bsr/detail 처리 — driver 공유, cache reset, jsonl/INSERT 별개."""
     _reset_caches()
     _setup_results(product)
+    _run_log(f'product={product} start stages={args.stages}')
     product_batch_id = L.make_batch_id('run', product)
     captured: list = []
     seen = set()
     try:
         for stage in args.stages:
+            _run_log(f'stage={stage} product={product} start')
             if stage in ('main', 'bsr'):
                 stage_max = args.max_rank if stage == 'main' else args.bsr_max_rank
                 run_listing_capture._batch_id = product_batch_id
@@ -536,15 +627,23 @@ def _run_one_product(driver, product: str, args) -> None:
                     added += 1
                 print(f'[run] product={product} stage={stage} captured={len(urls)} unique_added={added} total={len(captured)}',
                       file=sys.stderr)
+                _run_log(
+                    f'stage={stage} product={product} captured={len(urls)} '
+                    f'unique_added={added} total={len(captured)}'
+                )
             else:  # detail
                 use_urls = captured if args.max_detail is None else captured[:args.max_detail]
                 if not use_urls:
+                    _run_log(f'stage=detail product={product} no product_urls captured', 'WARNING')
                     D.emit({'_warn': 'no product_urls captured', 'product': product})
                     continue
                 print(f'[run] product={product} stage=detail processing={len(use_urls)}',
                       file=sys.stderr)
+                _run_log(f'stage=detail product={product} processing={len(use_urls)}')
                 run_detail(driver, product, use_urls, args.detail_sleep, product_batch_id)
     except Exception as exc:
+        _run_log(f'product={product} failed: {type(exc).__name__}: {exc}', 'ERROR')
+        _run_log(traceback.format_exc(), 'ERROR')
         try:
             D.emit({
                 '_error': 'product run failed',
@@ -612,8 +711,11 @@ def main() -> int:
                 _run_one_product(driver, product, args)
             except Exception:
                 traceback.print_exc(file=sys.stderr)
+                _run_log(f'outer product failure product={product}', 'ERROR')
+                _run_log(traceback.format_exc(), 'ERROR')
                 _hard_kill_driver(driver)
                 driver = _make_driver_tracked(args.headless)
+                _run_log(f'product={product} failed; driver restarted; continuing next product', 'ERROR')
                 print(f'[run] product={product} failed — 다음 product 진행', file=sys.stderr)
         return 0
     finally:

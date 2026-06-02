@@ -375,6 +375,10 @@ def build_email_report_with_severity(product: str, jsonl_path: str) -> tuple[str
         f'detail records: {detail_count}',
         '',
     ]
+    run_log_path = (db_insert_summary.get('run_log_path') if db_insert_summary
+                    else os.path.splitext(jsonl_path)[0] + '.log')
+    if run_log_path:
+        lines.insert(-1, f'run log: {run_log_path}')
     if db_insert_summary:
         lines.insert(-1, f"db insert rows: {db_insert_summary.get('inserted_total')}")
     if severity == 'ok':
