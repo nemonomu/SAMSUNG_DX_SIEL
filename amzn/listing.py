@@ -36,7 +36,9 @@ import psycopg2
 import psycopg2.extras
 import undetected_chromedriver as uc
 from selenium.common.exceptions import NoSuchElementException, WebDriverException
+from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 
 import config
 import siel_log
@@ -334,6 +336,60 @@ def _scroll_element_into_view(driver, css_selector: str) -> None:
         pass
 
 
+def _dispatch_wheel(driver, delta_y: int) -> None:
+    try:
+        driver.execute_script(
+            """
+            const dy = arguments[0];
+            const ev = new WheelEvent('wheel', {
+              deltaY: dy,
+              deltaMode: 0,
+              bubbles: true,
+              cancelable: true,
+              view: window
+            });
+            (document.scrollingElement || document.documentElement).dispatchEvent(ev);
+            window.dispatchEvent(ev);
+            window.scrollBy(0, dy);
+            """,
+            delta_y,
+        )
+    except WebDriverException:
+        pass
+
+
+def _selenium_wheel(driver, amount: int) -> None:
+    try:
+        ActionChains(driver).scroll_by_amount(0, amount).perform()
+    except Exception:
+        _dispatch_wheel(driver, amount)
+
+
+def _key_scroll(driver, key: str, times: int = 1, pause: float = 0.25) -> None:
+    try:
+        body = driver.find_element(By.TAG_NAME, 'body')
+        for _ in range(times):
+            body.send_keys(key)
+            time.sleep(pause)
+    except WebDriverException:
+        pass
+
+
+def _focus_bsr_grid(driver) -> None:
+    try:
+        driver.execute_script(
+            """
+            const first = document.querySelector('#gridItemRoot a, #gridItemRoot');
+            if (first) {
+              first.scrollIntoView({block: 'center'});
+              if (first.focus) first.focus();
+            }
+            """
+        )
+    except WebDriverException:
+        pass
+
+
 def emit(rec: dict) -> None:
     sys.stdout.write(json.dumps(rec, ensure_ascii=False) + '\n')
     sys.stdout.flush()
@@ -500,13 +556,22 @@ def crawl_main(driver, product: str, selectors: dict, batch_id: str,
 
 
 def _load_bsr_cards(driver, container_xpath: str, expected_count: int = 50,
-                    max_rounds: int = 8):
+                    max_rounds: int = 12):
     best_cards = []
     stable_rounds = 0
-    last_height = 0
+    _focus_bsr_grid(driver)
+    time.sleep(1.0)
+
+    def remember_cards():
+        nonlocal best_cards
+        cards = _safe_find_elements(driver, container_xpath)
+        if len(cards) > len(best_cards):
+            best_cards = cards
+        return cards
+
     for round_no in range(1, max_rounds + 1):
+        best_before_round = len(best_cards)
         height = max(_page_height(driver), 1)
-        last_height = max(last_height, height)
         viewport = max(_viewport_height(driver), 600)
         step = max(int(viewport * 0.55), 320)
         positions = list(range(0, height + step, step))
@@ -516,37 +581,61 @@ def _load_bsr_cards(driver, container_xpath: str, expected_count: int = 50,
         for y in positions:
             _scroll_to(driver, y)
             time.sleep(0.35)
-            cards = _safe_find_elements(driver, container_xpath)
-            if len(cards) > len(best_cards):
-                best_cards = cards
-                stable_rounds = 0
+            cards = remember_cards()
+            if len(cards) >= expected_count:
+                return cards
+
+        _selenium_wheel(driver, 900)
+        time.sleep(0.5)
+        _dispatch_wheel(driver, 900)
+        time.sleep(0.5)
+        _key_scroll(driver, Keys.PAGE_DOWN, 2)
+        time.sleep(0.5)
+        cards = remember_cards()
+        if len(cards) >= expected_count:
+            return cards
+
+        if round_no % 2 == 0:
+            _scroll_element_into_view(driver, '#endOfList')
+            time.sleep(0.8)
+            _key_scroll(driver, Keys.HOME, 1)
+            time.sleep(0.5)
+            _key_scroll(driver, Keys.PAGE_DOWN, 5)
+            time.sleep(0.5)
+            cards = remember_cards()
+            if len(cards) >= expected_count:
+                return cards
+
+        if round_no % 3 == 0:
+            _scroll_element_into_view(driver, 'nav[aria-label="pagination"], .a-pagination')
+            time.sleep(0.8)
+            _key_scroll(driver, Keys.END, 1)
+            time.sleep(0.8)
+            cards = remember_cards()
             if len(cards) >= expected_count:
                 return cards
 
         for selector in ('#endOfList', 'nav[aria-label="pagination"]', '.a-pagination'):
             _scroll_element_into_view(driver, selector)
             time.sleep(0.8)
-            cards = _safe_find_elements(driver, container_xpath)
-            if len(cards) > len(best_cards):
-                best_cards = cards
-                stable_rounds = 0
+            cards = remember_cards()
             if len(cards) >= expected_count:
                 return cards
 
-        _scroll_to(driver, max(last_height, _page_height(driver)))
+        _scroll_to(driver, _page_height(driver))
         time.sleep(1.2)
-        cards = _safe_find_elements(driver, container_xpath)
-        if len(cards) > len(best_cards):
-            best_cards = cards
-            stable_rounds = 0
-        elif len(cards) == len(best_cards):
-            stable_rounds += 1
+        cards = remember_cards()
 
         if _logger:
             _logger.info('bsr lazy-load round=%d cards=%d best=%d height=%d',
                          round_no, len(cards), len(best_cards), _page_height(driver))
 
-        if len(best_cards) >= expected_count or stable_rounds >= 3:
+        if len(best_cards) > best_before_round:
+            stable_rounds = 0
+        else:
+            stable_rounds += 1
+
+        if len(best_cards) >= expected_count or stable_rounds >= 5:
             break
     return best_cards or _safe_find_elements(driver, container_xpath)
 

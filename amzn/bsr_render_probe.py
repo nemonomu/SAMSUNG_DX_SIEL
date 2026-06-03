@@ -282,8 +282,14 @@ def main() -> int:
     parser.add_argument('--out-dir', default=os.path.join(_ROOT, 'amzn', 'logs'))
     args = parser.parse_args()
 
+    log(
+        f'start product={args.product} headless={args.headless} '
+        f'target={args.target} rounds={args.rounds} window={args.width}x{args.height}'
+    )
+    log('starting Chrome driver...')
     driver = L.make_driver(headless=args.headless)
     try:
+        log('Chrome driver started')
         try:
             driver.set_window_size(args.width, args.height)
         except WebDriverException:
