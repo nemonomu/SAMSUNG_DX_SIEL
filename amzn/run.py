@@ -568,6 +568,52 @@ def run_detail(driver, product: str, urls: list, sleep_s: float, batch_id: str |
     return n
 
 
+def _bsr_expected_count(stage_max: int) -> int:
+    return stage_max if stage_max and stage_max > 0 else 100
+
+
+def _bsr_required_count(args, stage_max: int) -> int:
+    expected = _bsr_expected_count(stage_max)
+    return min(expected, max(1, args.bsr_min_rank))
+
+
+def run_bsr_capture_with_retries(product: str, args, stage_max: int) -> list:
+    attempts = max(1, args.bsr_retries + 1)
+    expected = _bsr_expected_count(stage_max)
+    required = _bsr_required_count(args, stage_max)
+    best_urls: list = []
+    for attempt in range(1, attempts + 1):
+        _run_log(
+            f'stage=bsr product={product} isolated driver start '
+            f'attempt={attempt}/{attempts} required={required} expected={expected}'
+        )
+        listing_driver = _make_driver_tracked(args.headless)
+        try:
+            urls = run_listing_capture(listing_driver, product, 'bsr',
+                                       stage_max, args.max_pages)
+        finally:
+            _hard_kill_driver(listing_driver)
+            _run_log(
+                f'stage=bsr product={product} isolated driver closed '
+                f'attempt={attempt}/{attempts}'
+            )
+
+        if len(urls) > len(best_urls):
+            best_urls = urls
+        if len(urls) >= required:
+            return urls
+
+        _run_log(
+            f'stage=bsr product={product} retry_needed '
+            f'attempt={attempt}/{attempts} captured={len(urls)} '
+            f'required={required} expected={expected}',
+            'WARNING',
+        )
+        if attempt < attempts:
+            time.sleep(min(10, 2 * attempt))
+    return best_urls
+
+
 def _send_product_email_report(product: str, jsonl_path: str | None) -> None:
     """product 별 jsonl 을 읽어 이메일 리포트 발송. 실패해도 run 진행."""
     if not jsonl_path:
@@ -609,14 +655,35 @@ def _run_one_product(driver, product: str, args) -> None:
     product_batch_id = L.make_batch_id('run', product)
     captured: list = []
     seen = set()
+    fatal_run_error = False
     try:
         for stage in args.stages:
             _run_log(f'stage={stage} product={product} start')
             if stage in ('main', 'bsr'):
                 stage_max = args.max_rank if stage == 'main' else args.bsr_max_rank
                 run_listing_capture._batch_id = product_batch_id
-                urls = run_listing_capture(driver, product, stage,
-                                           stage_max, args.max_pages)
+                if stage == 'bsr':
+                    urls = run_bsr_capture_with_retries(product, args, stage_max)
+                    required = _bsr_required_count(args, stage_max)
+                    expected = _bsr_expected_count(stage_max)
+                    if len(urls) < required:
+                        message = (
+                            f'BSR target not met: captured={len(urls)} '
+                            f'required={required} expected={expected}'
+                        )
+                        D.emit({
+                            '_error': 'bsr target not met',
+                            'stage': 'bsr',
+                            'product': product,
+                            'message': message,
+                            'captured': len(urls),
+                            'required': required,
+                            'expected': expected,
+                        })
+                        raise RuntimeError(message)
+                else:
+                    urls = run_listing_capture(driver, product, stage,
+                                               stage_max, args.max_pages)
                 added = 0
                 for u in urls:
                     key = D.asin_from_url(u or '') or _url_key(u)
@@ -642,6 +709,7 @@ def _run_one_product(driver, product: str, args) -> None:
                 _run_log(f'stage=detail product={product} processing={len(use_urls)}')
                 run_detail(driver, product, use_urls, args.detail_sleep, product_batch_id)
     except Exception as exc:
+        fatal_run_error = True
         _run_log(f'product={product} failed: {type(exc).__name__}: {exc}', 'ERROR')
         _run_log(traceback.format_exc(), 'ERROR')
         try:
@@ -661,7 +729,9 @@ def _run_one_product(driver, product: str, args) -> None:
             pass
         results_path_snapshot = _results_path
         _close_results()
-        if not getattr(args, 'no_auto_insert', False) and not getattr(args, 'streaming_insert', False):
+        if fatal_run_error:
+            _run_log(f'auto_insert skipped product={product} because product run failed', 'ERROR')
+        elif not getattr(args, 'no_auto_insert', False) and not getattr(args, 'streaming_insert', False):
             insert_summary = _auto_insert(results_path_snapshot)
             if insert_summary:
                 _append_results_record(results_path_snapshot, insert_summary)
@@ -682,6 +752,10 @@ def main() -> int:
                     help='main 단계 max rank (default 300)')
     ap.add_argument('--bsr-max-rank', type=int, default=100,
                     help='bsr 단계 max rank cap (default 100)')
+    ap.add_argument('--bsr-retries', type=int, default=2,
+                    help='retry BSR with a fresh isolated driver when captured rows are below target')
+    ap.add_argument('--bsr-min-rank', type=int, default=97,
+                    help='minimum successful BSR rows before detail/insert can continue (default 97)')
     ap.add_argument('--max-pages', type=int, default=30)
     ap.add_argument('--max-detail', type=int, default=None,
                     help='detail 단계 처리 URL 수 제한 (default 무제한)')
