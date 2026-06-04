@@ -8,6 +8,7 @@ basic card fields. It does not read DB selectors and does not write DB rows.
 Usage:
   python amzn\\bsr_render_probe.py --product ldy
   python amzn\\bsr_render_probe.py --product ldy --pause
+  python amzn\\bsr_render_probe.py --product tv --page-load-strategy none
 """
 from __future__ import annotations
 
@@ -280,14 +281,24 @@ def main() -> int:
     parser.add_argument('--headless', action='store_true')
     parser.add_argument('--pause', action='store_true', help='wait before closing browser')
     parser.add_argument('--out-dir', default=os.path.join(_ROOT, 'amzn', 'logs'))
+    parser.add_argument(
+        '--page-load-strategy',
+        choices=['none', 'eager', 'normal'],
+        default='none',
+        help='Chrome pageLoadStrategy for BSR page loading (default none)',
+    )
     args = parser.parse_args()
 
     log(
         f'start product={args.product} headless={args.headless} '
-        f'target={args.target} rounds={args.rounds} window={args.width}x{args.height}'
+        f'target={args.target} rounds={args.rounds} window={args.width}x{args.height} '
+        f'page_load_strategy={args.page_load_strategy}'
     )
     log('starting Chrome driver...')
-    driver = L.make_driver(headless=args.headless)
+    driver = L.make_driver(
+        headless=args.headless,
+        page_load_strategy=args.page_load_strategy,
+    )
     try:
         log('Chrome driver started')
         try:

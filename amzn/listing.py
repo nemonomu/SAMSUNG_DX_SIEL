@@ -157,8 +157,10 @@ def load_selectors(site_account: str, page_type: str, domain: str) -> dict:
                               'fallback': r['fallback_xpath']} for r in rows}
 
 
-def make_driver(headless: bool = False) -> uc.Chrome:
+def make_driver(headless: bool = False, page_load_strategy: str | None = None) -> uc.Chrome:
     opts = uc.ChromeOptions()
+    if page_load_strategy:
+        opts.set_capability('pageLoadStrategy', page_load_strategy)
     if headless:
         opts.add_argument('--headless=new')
     opts.add_argument('--no-sandbox')

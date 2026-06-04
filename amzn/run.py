@@ -492,10 +492,10 @@ def _list_chrome_pids() -> set:
         return set()
 
 
-def _make_driver_tracked(headless: bool):
+def _make_driver_tracked(headless: bool, page_load_strategy: str | None = None):
     """Track chrome.exe PIDs created by this crawler run."""
     before = _list_chrome_pids()
-    drv = L.make_driver(headless=headless)
+    drv = L.make_driver(headless=headless, page_load_strategy=page_load_strategy)
     try:
         drv.set_page_load_timeout(60)
         drv.set_script_timeout(30)
@@ -506,7 +506,10 @@ def _make_driver_tracked(headless: bool):
     drv._amzn_chrome_pids = after - before
     print(f'[run] new driver chrome.exe PIDs tracked={sorted(drv._amzn_chrome_pids)}',
           file=sys.stderr)
-    _run_log(f'new driver chrome.exe PIDs tracked={sorted(drv._amzn_chrome_pids)}')
+    _run_log(
+        f'new driver chrome.exe PIDs tracked={sorted(drv._amzn_chrome_pids)} '
+        f'page_load_strategy={page_load_strategy or "normal"}'
+    )
     return drv
 
 
@@ -587,7 +590,7 @@ def run_bsr_capture_with_retries(product: str, args, stage_max: int) -> list:
             f'stage=bsr product={product} isolated driver start '
             f'attempt={attempt}/{attempts} required={required} expected={expected}'
         )
-        listing_driver = _make_driver_tracked(args.headless)
+        listing_driver = _make_driver_tracked(args.headless, page_load_strategy='none')
         try:
             urls = run_listing_capture(listing_driver, product, 'bsr',
                                        stage_max, args.max_pages)
