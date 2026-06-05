@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -302,7 +303,11 @@ def main() -> int:
     parser.add_argument("--url", help="Source product URL for saved HTML or live detail API probe.")
     parser.add_argument("--api-dir", help="FPKT API capture dir for live detail API probe.")
     parser.add_argument("--product", default="hhp", choices=["tv", "hhp", "ref", "ldy"])
+    parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification.")
     args = parser.parse_args()
+
+    if args.insecure:
+        os.environ["FPKT_API_INSECURE_SSL"] = "1"
 
     if args.api_dir and args.url:
         print_json(probe_api(Path(args.api_dir), args.url, args.product))
