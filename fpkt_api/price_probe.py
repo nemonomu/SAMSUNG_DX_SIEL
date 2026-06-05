@@ -107,11 +107,17 @@ def amount_candidates(value: Any) -> list[int]:
 
 def percent_candidates(value: Any) -> list[str]:
     percents: list[str] = []
-    direct = percent_text_from_text(value)
-    if direct:
-        percents.append(direct)
+    if value not in (None, ""):
+        try:
+            direct = percent_text_from_text(value)
+        except TypeError:
+            direct = None
+        if direct:
+            percents.append(direct)
     if isinstance(value, dict):
         for text in scalar_texts(value):
+            if text in (None, ""):
+                continue
             percent = percent_text_from_text(text)
             if percent and percent not in percents:
                 percents.append(percent)
