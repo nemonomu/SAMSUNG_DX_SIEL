@@ -5,23 +5,44 @@ import csv
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
-from ops_test import (
-    detail_api_response,
-    detail_from_api_response,
-    detail_from_html,
-    detail_price_values,
-    iter_dicts,
-    original_price_text,
-    percent_text_from_text,
-    price_text,
-    rupee_amounts_from_text,
-    scalar_texts,
-    text_or_none,
-    to_int,
-)
+FPKT_API_DIR = Path(__file__).resolve().parent
+if str(FPKT_API_DIR) not in sys.path:
+    sys.path.insert(0, str(FPKT_API_DIR))
+
+try:
+    from ops_test import (
+        detail_api_response,
+        detail_from_api_response,
+        detail_from_html,
+        detail_price_values,
+        iter_dicts,
+        original_price_text,
+        percent_text_from_text,
+        price_text,
+        rupee_amounts_from_text,
+        scalar_texts,
+        text_or_none,
+        to_int,
+    )
+except ModuleNotFoundError:
+    from fpkt_api.ops_test import (
+        detail_api_response,
+        detail_from_api_response,
+        detail_from_html,
+        detail_price_values,
+        iter_dicts,
+        original_price_text,
+        percent_text_from_text,
+        price_text,
+        rupee_amounts_from_text,
+        scalar_texts,
+        text_or_none,
+        to_int,
+    )
 
 
 def calc_savings(final_price: Any, original_price: Any) -> float | None:
@@ -105,20 +126,23 @@ def amount_candidates(value: Any) -> list[int]:
     return amounts[:8]
 
 
+def safe_percent_text(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        return percent_text_from_text(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def percent_candidates(value: Any) -> list[str]:
     percents: list[str] = []
-    if value not in (None, ""):
-        try:
-            direct = percent_text_from_text(value)
-        except TypeError:
-            direct = None
-        if direct:
-            percents.append(direct)
+    direct = safe_percent_text(value)
+    if direct:
+        percents.append(direct)
     if isinstance(value, dict):
         for text in scalar_texts(value):
-            if text in (None, ""):
-                continue
-            percent = percent_text_from_text(text)
+            percent = safe_percent_text(text)
             if percent and percent not in percents:
                 percents.append(percent)
     return percents[:8]
@@ -172,6 +196,9 @@ def price_text_candidates(slot: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for text in scalar_texts(slot):
+        if text in (None, ""):
+            continue
+        text = str(text)
         lowered = text.lower()
         if not (
             "\u20b9" in text
@@ -299,6 +326,8 @@ def probe_html(path: Path, url: str | None) -> dict[str, Any]:
 
 
 def print_json(value: Any) -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
