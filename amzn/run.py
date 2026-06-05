@@ -580,17 +580,28 @@ def _bsr_required_count(args, stage_max: int) -> int:
     return min(expected, max(1, args.bsr_min_rank))
 
 
+def _bsr_page_load_strategies(args) -> list[str]:
+    raw = getattr(args, 'bsr_page_load_strategies', '') or 'eager,none,eager'
+    valid = {'normal', 'eager', 'none'}
+    strategies = [s.strip().lower() for s in raw.split(',') if s.strip()]
+    strategies = [s for s in strategies if s in valid]
+    return strategies or ['eager', 'none', 'eager']
+
+
 def run_bsr_capture_with_retries(product: str, args, stage_max: int) -> list:
-    attempts = max(1, args.bsr_retries + 1)
+    strategies = _bsr_page_load_strategies(args)
+    attempts = max(1, args.bsr_retries + 1, len(strategies))
     expected = _bsr_expected_count(stage_max)
     required = _bsr_required_count(args, stage_max)
     best_urls: list = []
     for attempt in range(1, attempts + 1):
+        strategy = strategies[(attempt - 1) % len(strategies)]
         _run_log(
             f'stage=bsr product={product} isolated driver start '
-            f'attempt={attempt}/{attempts} required={required} expected={expected}'
+            f'attempt={attempt}/{attempts} required={required} expected={expected} '
+            f'page_load_strategy={strategy}'
         )
-        listing_driver = _make_driver_tracked(args.headless, page_load_strategy='none')
+        listing_driver = _make_driver_tracked(args.headless, page_load_strategy=strategy)
         try:
             urls = run_listing_capture(listing_driver, product, 'bsr',
                                        stage_max, args.max_pages)
@@ -778,6 +789,8 @@ def main() -> int:
                     help='retry BSR with a fresh isolated driver when captured rows are below target')
     ap.add_argument('--bsr-min-rank', type=int, default=97,
                     help='minimum successful BSR rows before detail/insert can continue (default 97)')
+    ap.add_argument('--bsr-page-load-strategies', default='eager,none,eager',
+                    help='comma-separated BSR pageLoadStrategy retry order (default eager,none,eager)')
     ap.add_argument('--max-pages', type=int, default=30)
     ap.add_argument('--max-detail', type=int, default=None,
                     help='detail 단계 처리 URL 수 제한 (default 무제한)')

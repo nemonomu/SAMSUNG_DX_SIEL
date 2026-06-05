@@ -8,7 +8,7 @@ basic card fields. It does not read DB selectors and does not write DB rows.
 Usage:
   python amzn\\bsr_render_probe.py --product ldy
   python amzn\\bsr_render_probe.py --product ldy --pause
-  python amzn\\bsr_render_probe.py --product tv --page-load-strategy none
+  python amzn\\bsr_render_probe.py --product tv --page-load-strategy eager
 """
 from __future__ import annotations
 
@@ -284,8 +284,8 @@ def main() -> int:
     parser.add_argument(
         '--page-load-strategy',
         choices=['none', 'eager', 'normal'],
-        default='none',
-        help='Chrome pageLoadStrategy for BSR page loading (default none)',
+        default='eager',
+        help='Chrome pageLoadStrategy for BSR page loading (default eager)',
     )
     args = parser.parse_args()
 

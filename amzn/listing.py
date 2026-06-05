@@ -85,6 +85,7 @@ BSR_URL_TEMPLATES = {
 _logger = None
 _html_path = None
 _html_saved = False
+BSR_POST_GET_WAIT = float(os.environ.get('AMZN_BSR_POST_GET_WAIT', '8'))
 
 # emit() 가 갱신, 매 record progress + 누적 elapsed
 _progress = {'total': 0, 'done': 0, 'start': 0.0,
@@ -668,7 +669,9 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
             continue
         if _logger:
             _logger.info('page=%d load_page ok; starting BSR lazy render', page_no)
-        time.sleep(3)
+            _logger.info('page=%d bsr post-get wait %.1fs before first DOM command',
+                         page_no, BSR_POST_GET_WAIT)
+        time.sleep(BSR_POST_GET_WAIT)
         cards = _load_bsr_cards(driver, container_xpath, expected_count=50)
         if page_no == 1:
             maybe_save_html(driver)
