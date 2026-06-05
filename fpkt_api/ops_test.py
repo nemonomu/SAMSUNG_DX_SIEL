@@ -672,6 +672,117 @@ def percent_text_from_text(value: Any) -> str | None:
     return f"{int(number)}%" if number == int(number) else f"{number:g}%"
 
 
+PRICE_NOISE_TERMS = (
+    "apply offers",
+    "bank offer",
+    "bank offers",
+    "buy at",
+    "cashback",
+    "coupon",
+    "emi",
+    "exchange",
+    "lowest price",
+    "nep",
+    "offerdetails",
+    "packaging fee",
+    "pay ",
+    "protect promise",
+    "saved",
+    "with bank",
+    "xtrasaver",
+    "xtra saver",
+)
+
+
+def price_noise(value: Any) -> bool:
+    lowered = normalize_text(str(value or "")) or ""
+    lowered = lowered.lower()
+    return any(term in lowered for term in PRICE_NOISE_TERMS)
+
+
+def price_scalar_texts(value: Any) -> list[str]:
+    found: list[str] = []
+
+    def visit(item: Any, path: tuple[str, ...]) -> None:
+        if isinstance(item, dict):
+            for key, child in item.items():
+                visit(child, path + (str(key),))
+        elif isinstance(item, list):
+            for child in item:
+                visit(child, path)
+        elif item not in (None, ""):
+            text = normalize_text(str(item))
+            if not text:
+                return
+            if price_noise(" ".join(path)) or price_noise(text):
+                return
+            if text not in found:
+                found.append(text)
+
+    visit(value, ())
+    return found
+
+
+def price_amounts_from_value(value: Any) -> list[int]:
+    amounts = rupee_amounts_from_text(value, allow_plain=True)
+    if not amounts and isinstance(value, dict):
+        for text in price_scalar_texts(value):
+            for amount in rupee_amounts_from_text(text, allow_plain=True):
+                if amount not in amounts:
+                    amounts.append(amount)
+    return amounts
+
+
+def clean_detail_price_result(
+    final_price: Any,
+    original_price: Any,
+    savings: Any,
+) -> dict[str, int | str | None]:
+    final_value = to_int(final_price)
+    original_value = to_int(original_price)
+    savings_text = text_or_none(savings)
+    savings_value = to_int(savings_text)
+
+    if final_value is not None and original_value is not None:
+        if original_value <= final_value or (final_value > 0 and original_value > final_value * 10):
+            original_value = None
+
+    if final_value is None or original_value is None:
+        savings_text = None
+    elif savings_value is not None:
+        calculated = (original_value - final_value) * 100.0 / original_value
+        if abs(calculated - savings_value) > 1.0:
+            savings_text = None
+
+    return {
+        "final_sku_price": final_value,
+        "original_sku_price": original_value,
+        "savings": savings_text,
+    }
+
+
+def detail_price_from_price_description(slot: dict[str, Any]) -> dict[str, int | str | None]:
+    for item in iter_dicts(slot):
+        for key, value in item.items():
+            key_text = str(key).replace("-", "_").lower()
+            if not key_text.startswith("price_description") or price_noise(key_text):
+                continue
+            amounts = price_amounts_from_value(value)
+            savings = None
+            for text in scalar_texts(value):
+                if price_noise(text):
+                    continue
+                savings = savings or percent_text_from_text(text)
+            if not amounts:
+                continue
+            final_price = min(amounts) if len(amounts) >= 2 else amounts[0]
+            original_price = max(amounts) if len(amounts) >= 2 else None
+            result = clean_detail_price_result(final_price, original_price, savings)
+            if result.get("final_sku_price"):
+                return result
+    return {"final_sku_price": None, "original_sku_price": None, "savings": None}
+
+
 def detail_price_from_keyed_fields(slot: dict[str, Any]) -> dict[str, int | str | None]:
     final_keys = {
         "finalprice", "final_price", "sellingprice", "selling_price", "specialprice",
@@ -685,32 +796,27 @@ def detail_price_from_keyed_fields(slot: dict[str, Any]) -> dict[str, int | str 
         for key, value in item.items():
             lowered = str(key).replace("-", "_").lower()
             compact = lowered.replace("_", "")
+            if price_noise(lowered):
+                continue
             amounts = []
             if isinstance(value, (int, float)):
                 amounts = [int(value)]
             else:
-                amounts = rupee_amounts_from_text(value, allow_plain=True)
-                if not amounts and isinstance(value, dict):
-                    for text in scalar_texts(value):
-                        amounts.extend(rupee_amounts_from_text(text, allow_plain=True))
+                amounts = price_amounts_from_value(value)
             if compact in final_keys and amounts and final_price is None:
                 final_price = amounts[0]
             elif compact in original_keys and amounts and original_price is None:
                 original_price = amounts[0]
             if savings is None and ("discount" in compact or "saving" in compact):
-                savings = percent_text_from_text(value)
+                savings = None if price_noise(value) else percent_text_from_text(value)
         if final_price is not None and original_price is not None and savings:
             break
-    return {
-        "final_sku_price": final_price,
-        "original_sku_price": original_price,
-        "savings": savings,
-    }
+    return clean_detail_price_result(final_price, original_price, savings)
 
 
 def detail_price_from_pricing_texts(slot: dict[str, Any]) -> dict[str, int | str | None]:
     top_texts: list[str] = []
-    for text in scalar_texts(slot):
+    for text in price_scalar_texts(slot):
         lowered = text.lower()
         if any(stop in lowered for stop in (
             "apply offers",
@@ -718,20 +824,14 @@ def detail_price_from_pricing_texts(slot: dict[str, Any]) -> dict[str, int | str
             "exchange offer",
             "change pincode",
             "view emi offers",
+            "xtrasaver price",
+            "price details",
         )):
             break
-        if any(skip in lowered for skip in (
-            "lowest price",
-            "protect promise",
+        if price_noise(lowered) or any(skip in lowered for skip in (
             "no cost emi",
-            "emi",
             "month",
             "x ",
-            "pay ",
-            "exchange",
-            "bank offer",
-            "coupon",
-            "cashback",
         )):
             continue
         top_texts.append(text)
@@ -752,34 +852,30 @@ def detail_price_from_pricing_texts(slot: dict[str, Any]) -> dict[str, int | str
     else:
         final_price = amounts[0]
         original_price = next((amount for amount in amounts[1:] if amount > final_price), None)
-    return {
-        "final_sku_price": final_price,
-        "original_sku_price": original_price,
-        "savings": savings,
-    }
+    return clean_detail_price_result(final_price, original_price, savings)
 
 
 def detail_price_values(response: dict[str, Any]) -> dict[str, int | str | None]:
     slots = (response.get("RESPONSE") or {}).get("slots") or []
     price_slots: list[dict[str, Any]] = []
-    fallback_slots: list[dict[str, Any]] = []
     for slot in slots:
         widget = slot.get("widget") or {}
         if widget.get("viewType") == "pp_pricing_price_summary":
             price_slots.append(slot)
-        elif widget.get("type") == "ATLAS_NEP_V2":
-            fallback_slots.append(slot)
 
-    for slot in price_slots + fallback_slots:
+    for slot in price_slots:
+        described = detail_price_from_price_description(slot)
+        if described.get("final_sku_price"):
+            return described
         keyed = detail_price_from_keyed_fields(slot)
         text_based = detail_price_from_pricing_texts(slot)
         final_price = keyed.get("final_sku_price") or text_based.get("final_sku_price")
         if final_price:
-            return {
-                "final_sku_price": final_price,
-                "original_sku_price": keyed.get("original_sku_price") or text_based.get("original_sku_price"),
-                "savings": keyed.get("savings") or text_based.get("savings"),
-            }
+            return clean_detail_price_result(
+                final_price,
+                keyed.get("original_sku_price") or text_based.get("original_sku_price"),
+                keyed.get("savings") or text_based.get("savings"),
+            )
     return {"final_sku_price": None, "original_sku_price": None, "savings": None}
 
 
