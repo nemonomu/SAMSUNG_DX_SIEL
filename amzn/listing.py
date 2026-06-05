@@ -184,7 +184,13 @@ def load_page(driver, url: str, stage: str, product: str, page_no: int,
               batch_id: str, max_attempts: int = 2) -> bool:
     for attempt in range(1, max_attempts + 1):
         try:
+            if _logger and stage == 'bsr':
+                _logger.info('%s page=%d driver.get start attempt=%d/%d',
+                             stage, page_no, attempt, max_attempts)
             driver.get(url)
+            if _logger and stage == 'bsr':
+                _logger.info('%s page=%d driver.get ok attempt=%d/%d',
+                             stage, page_no, attempt, max_attempts)
             return True
         except WebDriverException as e:
             message = f'{type(e).__name__}: {str(e)[:240]}'
@@ -660,6 +666,8 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
             _logger.info('page=%d url=%s', page_no, url)
         if not load_page(driver, url, 'bsr', product, page_no, batch_id):
             continue
+        if _logger:
+            _logger.info('page=%d load_page ok; starting BSR lazy render', page_no)
         time.sleep(3)
         cards = _load_bsr_cards(driver, container_xpath, expected_count=50)
         if page_no == 1:

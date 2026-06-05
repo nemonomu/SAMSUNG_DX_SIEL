@@ -650,7 +650,7 @@ def _send_product_email_report(product: str, jsonl_path: str | None) -> None:
         _run_log(f'email_report failed: {type(e).__name__}: {e}', 'ERROR')
 
 
-def _run_one_product(driver, product: str, args) -> None:
+def _run_one_product(driver, product: str, args):
     """단일 product 의 main/bsr/detail 처리 — driver 공유, cache reset, jsonl/INSERT 별개."""
     _reset_caches()
     _setup_results(product)
@@ -659,6 +659,7 @@ def _run_one_product(driver, product: str, args) -> None:
     captured: list = []
     seen = set()
     fatal_run_error = False
+    active_driver = driver
     try:
         for stage in args.stages:
             _run_log(f'stage={stage} product={product} start')
@@ -666,6 +667,13 @@ def _run_one_product(driver, product: str, args) -> None:
                 stage_max = args.max_rank if stage == 'main' else args.bsr_max_rank
                 run_listing_capture._batch_id = product_batch_id
                 if stage == 'bsr':
+                    if active_driver is not None:
+                        _run_log(
+                            f'stage=bsr product={product} closing shared driver '
+                            'before isolated BSR capture'
+                        )
+                        _hard_kill_driver(active_driver)
+                        active_driver = None
                     urls = run_bsr_capture_with_retries(product, args, stage_max)
                     required = _bsr_required_count(args, stage_max)
                     expected = _bsr_expected_count(stage_max)
@@ -685,7 +693,12 @@ def _run_one_product(driver, product: str, args) -> None:
                         })
                         raise RuntimeError(message)
                 else:
-                    urls = run_listing_capture(driver, product, stage,
+                    if active_driver is None:
+                        _run_log(
+                            f'stage={stage} product={product} starting fresh shared driver'
+                        )
+                        active_driver = _make_driver_tracked(args.headless)
+                    urls = run_listing_capture(active_driver, product, stage,
                                                stage_max, args.max_pages)
                 added = 0
                 for u in urls:
@@ -707,10 +720,15 @@ def _run_one_product(driver, product: str, args) -> None:
                     _run_log(f'stage=detail product={product} no product_urls captured', 'WARNING')
                     D.emit({'_warn': 'no product_urls captured', 'product': product})
                     continue
+                if active_driver is None:
+                    _run_log(
+                        f'stage=detail product={product} starting fresh driver after BSR'
+                    )
+                    active_driver = _make_driver_tracked(args.headless)
                 print(f'[run] product={product} stage=detail processing={len(use_urls)}',
                       file=sys.stderr)
                 _run_log(f'stage=detail product={product} processing={len(use_urls)}')
-                run_detail(driver, product, use_urls, args.detail_sleep, product_batch_id)
+                run_detail(active_driver, product, use_urls, args.detail_sleep, product_batch_id)
     except Exception as exc:
         fatal_run_error = True
         _run_log(f'product={product} failed: {type(exc).__name__}: {exc}', 'ERROR')
@@ -740,6 +758,7 @@ def _run_one_product(driver, product: str, args) -> None:
                 _append_results_record(results_path_snapshot, insert_summary)
         if getattr(args, 'email_report', False):
             _send_product_email_report(product, results_path_snapshot)
+    return active_driver
 
 
 def main() -> int:
@@ -785,7 +804,7 @@ def main() -> int:
         for product in args.product:
             print(f'\n=== [run] starting product={product} ===\n', file=sys.stderr)
             try:
-                _run_one_product(driver, product, args)
+                driver = _run_one_product(driver, product, args)
             except Exception:
                 traceback.print_exc(file=sys.stderr)
                 _run_log(f'outer product failure product={product}', 'ERROR')
