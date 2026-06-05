@@ -39,6 +39,9 @@ if "%FPKT_MAIN_TARGET%"=="" set "FPKT_MAIN_TARGET=300"
 if "%FPKT_BSR_TARGET%"=="" set "FPKT_BSR_TARGET=100"
 if "%FPKT_MAX_PAGES_MAIN%"=="" set "FPKT_MAX_PAGES_MAIN=30"
 if "%FPKT_MAX_PAGES_BSR%"=="" set "FPKT_MAX_PAGES_BSR=15"
+if "%FPKT_API_TIMEOUT%"=="" set "FPKT_API_TIMEOUT=90"
+if "%FPKT_LISTING_RETRIES%"=="" set "FPKT_LISTING_RETRIES=3"
+if "%FPKT_LISTING_RETRY_DELAY%"=="" set "FPKT_LISTING_RETRY_DELAY=10"
 if "%FPKT_MAX_DETAIL%"=="" set "FPKT_MAX_DETAIL=0"
 if "%FPKT_DETAIL_RETRIES%"=="" set "FPKT_DETAIL_RETRIES=2"
 if "%FPKT_REVIEW_PAGES%"=="" set "FPKT_REVIEW_PAGES=2"
@@ -49,6 +52,8 @@ if "%FPKT_INSERT_MAX_N%"=="" set "FPKT_INSERT_MAX_N=0"
 if "%FPKT_LOCK_STALE_HOURS%"=="" set "FPKT_LOCK_STALE_HOURS=18"
 if "%FPKT_INSECURE_SSL%"=="" set "FPKT_INSECURE_SSL=1"
 if "%FPKT_CONTINUE_ON_PRODUCT_FAIL%"=="" set "FPKT_CONTINUE_ON_PRODUCT_FAIL=1"
+if "%FPKT_PRODUCT_RETRY_AFTER_ALL%"=="" set "FPKT_PRODUCT_RETRY_AFTER_ALL=1"
+if "%FPKT_PRODUCT_RETRY_DELAY%"=="" set "FPKT_PRODUCT_RETRY_DELAY=0"
 if "%FPKT_EMAIL_REPORT%"=="" (
   set "FPKT_EMAIL_REPORT=0"
   if /I "%RUN_MODE%"=="insert" set "FPKT_EMAIL_REPORT=1"
@@ -60,6 +65,8 @@ echo [fpkt_api_run_all] products=%FPKT_PRODUCTS%
 >> "%RUN_LOG%" echo [fpkt_api_run_all] products=%FPKT_PRODUCTS%
 echo [fpkt_api_run_all] main_target=%FPKT_MAIN_TARGET% bsr_target=%FPKT_BSR_TARGET% max_detail=%FPKT_MAX_DETAIL%
 >> "%RUN_LOG%" echo [fpkt_api_run_all] main_target=%FPKT_MAIN_TARGET% bsr_target=%FPKT_BSR_TARGET% max_detail=%FPKT_MAX_DETAIL%
+echo [fpkt_api_run_all] api_timeout=%FPKT_API_TIMEOUT% listing_retries=%FPKT_LISTING_RETRIES% listing_retry_delay=%FPKT_LISTING_RETRY_DELAY%
+>> "%RUN_LOG%" echo [fpkt_api_run_all] api_timeout=%FPKT_API_TIMEOUT% listing_retries=%FPKT_LISTING_RETRIES% listing_retry_delay=%FPKT_LISTING_RETRY_DELAY%
 echo [fpkt_api_run_all] review_pages=%FPKT_REVIEW_PAGES% review_short_max_pages=%FPKT_REVIEW_SHORT_MAX_PAGES%
 >> "%RUN_LOG%" echo [fpkt_api_run_all] review_pages=%FPKT_REVIEW_PAGES% review_short_max_pages=%FPKT_REVIEW_SHORT_MAX_PAGES%
 echo [fpkt_api_run_all] email_report=%FPKT_EMAIL_REPORT%
@@ -68,6 +75,8 @@ echo [fpkt_api_run_all] insecure_ssl=%FPKT_INSECURE_SSL%
 >> "%RUN_LOG%" echo [fpkt_api_run_all] insecure_ssl=%FPKT_INSECURE_SSL%
 echo [fpkt_api_run_all] continue_on_product_fail=%FPKT_CONTINUE_ON_PRODUCT_FAIL%
 >> "%RUN_LOG%" echo [fpkt_api_run_all] continue_on_product_fail=%FPKT_CONTINUE_ON_PRODUCT_FAIL%
+echo [fpkt_api_run_all] product_retry_after_all=%FPKT_PRODUCT_RETRY_AFTER_ALL% product_retry_delay=%FPKT_PRODUCT_RETRY_DELAY%
+>> "%RUN_LOG%" echo [fpkt_api_run_all] product_retry_after_all=%FPKT_PRODUCT_RETRY_AFTER_ALL% product_retry_delay=%FPKT_PRODUCT_RETRY_DELAY%
 
 git status --short --untracked-files=no > "%RUN_DIR%\git_status_before.txt" 2>&1
 
@@ -127,13 +136,17 @@ if /I not "%FPKT_SKIP_LOCK%"=="1" (
 
 set "DB_FLAGS="
 set "EMAIL_FLAGS="
+set "FIRST_PASS_EMAIL_FLAGS="
 set "FAILED_PRODUCTS="
+set "FAILED_PRODUCT_NAMES="
 if /I "%RUN_MODE%"=="dry-run" set "DB_FLAGS=!DB_FLAGS! --db-insert --db-dry-run"
 if /I "%RUN_MODE%"=="insert" set "DB_FLAGS=!DB_FLAGS! --db-insert --real-batch-id"
 if /I "%FPKT_REAL_BATCH_ID%"=="1" set "DB_FLAGS=!DB_FLAGS! --real-batch-id"
 if /I "%FPKT_ALLOW_QA_INSERT%"=="1" set "DB_FLAGS=!DB_FLAGS! --allow-qa-insert"
 if /I "%FPKT_INSECURE_SSL%"=="1" set "DB_FLAGS=!DB_FLAGS! --insecure"
 if /I "%FPKT_EMAIL_REPORT%"=="1" set "EMAIL_FLAGS=!EMAIL_FLAGS! --email-report"
+set "FIRST_PASS_EMAIL_FLAGS=!EMAIL_FLAGS!"
+if /I "%FPKT_EMAIL_REPORT%"=="1" if /I "%FPKT_CONTINUE_ON_PRODUCT_FAIL%"=="1" if /I "%FPKT_PRODUCT_RETRY_AFTER_ALL%"=="1" set "FIRST_PASS_EMAIL_FLAGS=!FIRST_PASS_EMAIL_FLAGS! --email-report-success-only"
 
 for %%P in (%FPKT_PRODUCTS%) do (
   set "PRODUCT_LOG=%RUN_DIR%\%%P_console.log"
@@ -141,7 +154,7 @@ for %%P in (%FPKT_PRODUCTS%) do (
   >> "%RUN_LOG%" echo [fpkt_api_run_all] start %%P
   echo [fpkt_api_run_all] log=!PRODUCT_LOG!
   >> "%RUN_LOG%" echo [fpkt_api_run_all] log=!PRODUCT_LOG!
-  set "PRODUCT_CMD=python -u fpkt_api\ops_test.py --api-dir %FPKT_API_DIR% --product %%P --main-target %FPKT_MAIN_TARGET% --bsr-target %FPKT_BSR_TARGET% --max-pages-main %FPKT_MAX_PAGES_MAIN% --max-pages-bsr %FPKT_MAX_PAGES_BSR% --max-detail %FPKT_MAX_DETAIL% --detail-retries %FPKT_DETAIL_RETRIES% --review-pages %FPKT_REVIEW_PAGES% --review-short-max-pages %FPKT_REVIEW_SHORT_MAX_PAGES% --review-retries %FPKT_REVIEW_RETRIES% --max-reviews-per-product %FPKT_MAX_REVIEWS_PER_PRODUCT% --insert-max-n %FPKT_INSERT_MAX_N% !DB_FLAGS! !EMAIL_FLAGS!"
+  set "PRODUCT_CMD=set FPKT_API_TIMEOUT=%FPKT_API_TIMEOUT%&& python -u fpkt_api\ops_test.py --api-dir %FPKT_API_DIR% --product %%P --main-target %FPKT_MAIN_TARGET% --bsr-target %FPKT_BSR_TARGET% --max-pages-main %FPKT_MAX_PAGES_MAIN% --max-pages-bsr %FPKT_MAX_PAGES_BSR% --listing-retries %FPKT_LISTING_RETRIES% --listing-retry-delay %FPKT_LISTING_RETRY_DELAY% --api-timeout %FPKT_API_TIMEOUT% --max-detail %FPKT_MAX_DETAIL% --detail-retries %FPKT_DETAIL_RETRIES% --review-pages %FPKT_REVIEW_PAGES% --review-short-max-pages %FPKT_REVIEW_SHORT_MAX_PAGES% --review-retries %FPKT_REVIEW_RETRIES% --max-reviews-per-product %FPKT_MAX_REVIEWS_PER_PRODUCT% --insert-max-n %FPKT_INSERT_MAX_N% !DB_FLAGS! !FIRST_PASS_EMAIL_FLAGS!"
   set "FPKT_PRODUCT_CMD=!PRODUCT_CMD!"
   set "FPKT_PRODUCT_LOG=!PRODUCT_LOG!"
   set "FPKT_RUN_LOG=%RUN_LOG%"
@@ -152,11 +165,48 @@ for %%P in (%FPKT_PRODUCTS%) do (
     >> "%RUN_LOG%" echo [fpkt_api_run_all] failed %%P exit=!PRODUCT_CODE!
     if not defined EXIT_CODE set "EXIT_CODE=!PRODUCT_CODE!"
     set "FAILED_PRODUCTS=!FAILED_PRODUCTS! %%P(!PRODUCT_CODE!)"
+    set "FAILED_PRODUCT_NAMES=!FAILED_PRODUCT_NAMES! %%P"
     if /I not "%FPKT_CONTINUE_ON_PRODUCT_FAIL%"=="1" goto fail
   ) else (
     echo [fpkt_api_run_all] done %%P
     >> "%RUN_LOG%" echo [fpkt_api_run_all] done %%P
   )
+)
+
+if defined FAILED_PRODUCT_NAMES if /I "%FPKT_PRODUCT_RETRY_AFTER_ALL%"=="1" (
+  echo [fpkt_api_run_all] retry_after_all products=!FAILED_PRODUCT_NAMES!
+  >> "%RUN_LOG%" echo [fpkt_api_run_all] retry_after_all products=!FAILED_PRODUCT_NAMES!
+  if not "%FPKT_PRODUCT_RETRY_DELAY%"=="0" powershell -NoProfile -Command "Start-Sleep -Seconds %FPKT_PRODUCT_RETRY_DELAY%"
+  set "FIRST_PASS_FAILED_PRODUCTS=!FAILED_PRODUCTS!"
+  set "RETRY_PRODUCTS=!FAILED_PRODUCT_NAMES!"
+  set "FAILED_PRODUCTS="
+  set "FAILED_PRODUCT_NAMES="
+  set "EXIT_CODE="
+  for %%P in (!RETRY_PRODUCTS!) do (
+    set "PRODUCT_LOG=%RUN_DIR%\%%P_retry_console.log"
+    echo [fpkt_api_run_all] retry %%P
+    >> "%RUN_LOG%" echo [fpkt_api_run_all] retry %%P
+    echo [fpkt_api_run_all] log=!PRODUCT_LOG!
+    >> "%RUN_LOG%" echo [fpkt_api_run_all] log=!PRODUCT_LOG!
+    set "PRODUCT_CMD=set FPKT_API_TIMEOUT=%FPKT_API_TIMEOUT%&& python -u fpkt_api\ops_test.py --api-dir %FPKT_API_DIR% --product %%P --main-target %FPKT_MAIN_TARGET% --bsr-target %FPKT_BSR_TARGET% --max-pages-main %FPKT_MAX_PAGES_MAIN% --max-pages-bsr %FPKT_MAX_PAGES_BSR% --listing-retries %FPKT_LISTING_RETRIES% --listing-retry-delay %FPKT_LISTING_RETRY_DELAY% --api-timeout %FPKT_API_TIMEOUT% --max-detail %FPKT_MAX_DETAIL% --detail-retries %FPKT_DETAIL_RETRIES% --review-pages %FPKT_REVIEW_PAGES% --review-short-max-pages %FPKT_REVIEW_SHORT_MAX_PAGES% --review-retries %FPKT_REVIEW_RETRIES% --max-reviews-per-product %FPKT_MAX_REVIEWS_PER_PRODUCT% --insert-max-n %FPKT_INSERT_MAX_N% !DB_FLAGS! !EMAIL_FLAGS!"
+    set "FPKT_PRODUCT_CMD=!PRODUCT_CMD!"
+    set "FPKT_PRODUCT_LOG=!PRODUCT_LOG!"
+    set "FPKT_RUN_LOG=%RUN_LOG%"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "$cmd=$env:FPKT_PRODUCT_CMD; $productLog=$env:FPKT_PRODUCT_LOG; $runLog=$env:FPKT_RUN_LOG; if (Test-Path -LiteralPath $productLog) { Remove-Item -LiteralPath $productLog -Force }; & cmd.exe /d /c $cmd 2>&1 | Tee-Object -FilePath $productLog | Tee-Object -FilePath $runLog -Append; exit $LASTEXITCODE"
+    set "PRODUCT_CODE=!ERRORLEVEL!"
+    if not "!PRODUCT_CODE!"=="0" (
+      echo [fpkt_api_run_all] retry_failed %%P exit=!PRODUCT_CODE!
+      >> "%RUN_LOG%" echo [fpkt_api_run_all] retry_failed %%P exit=!PRODUCT_CODE!
+      if not defined EXIT_CODE set "EXIT_CODE=!PRODUCT_CODE!"
+      set "FAILED_PRODUCTS=!FAILED_PRODUCTS! %%P(!PRODUCT_CODE!)"
+      set "FAILED_PRODUCT_NAMES=!FAILED_PRODUCT_NAMES! %%P"
+    ) else (
+      echo [fpkt_api_run_all] recovered %%P
+      >> "%RUN_LOG%" echo [fpkt_api_run_all] recovered %%P
+    )
+  )
+  echo [fpkt_api_run_all] first_pass_failed_products=!FIRST_PASS_FAILED_PRODUCTS!
+  >> "%RUN_LOG%" echo [fpkt_api_run_all] first_pass_failed_products=!FIRST_PASS_FAILED_PRODUCTS!
 )
 
 if defined FAILED_PRODUCTS goto fail

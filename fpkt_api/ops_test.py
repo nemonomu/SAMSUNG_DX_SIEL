@@ -254,7 +254,11 @@ def listing_until(
     query: str,
     target_unique: int,
     max_pages: int,
+    retries: int = 2,
+    retry_delay: float = 5.0,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, list[dict[str, Any]]]:
+    retries = max(0, int(retries))
+    retry_delay = max(0.0, float(retry_delay))
     har_path = api_dir / "main_page2_page1_har.txt"
     if not har_path.exists():
         har_path = api_dir / "main_har.txt"
@@ -274,19 +278,39 @@ def listing_until(
 
     for page in range(1, max_pages + 1):
         pages_used = page
-        try:
-            response = listing_page(har_path, query, page, sort, previous_response)
-        except Exception as exc:
+        response = None
+        last_error: Exception | None = None
+        for attempt in range(1, retries + 2):
+            try:
+                response = listing_page(har_path, query, page, sort, previous_response)
+                if attempt > 1:
+                    safe_print(f"[listing_retry_ok] {stage} page={page} attempt={attempt}/{retries + 1}")
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt <= retries:
+                    safe_print(
+                        f"[listing_retry] {stage} page={page} attempt={attempt}/{retries + 1} "
+                        f"error={repr(exc)}"
+                    )
+                    time.sleep(retry_delay)
+                    continue
+        if response is None:
             error = {
                 "stage": "listing",
                 "listing_stage": stage,
                 "page": page,
                 "query": query,
                 "url": listing_html_url(query, stage, page),
-                "error": repr(exc),
+                "attempts": retries + 1,
+                "retry_delay_seconds": retry_delay,
+                "error": repr(last_error),
             }
             listing_errors.append(error)
-            safe_print(f"[listing_error] {stage} page={page} error={repr(exc)}")
+            safe_print(
+                f"[listing_error] {stage} page={page} attempts={retries + 1} "
+                f"error={repr(last_error)}"
+            )
             break
         previous_response = response
         html_meta = listing_html_metadata_for_page(api_dir, query, stage, page, html_meta_headers)
@@ -1827,7 +1851,13 @@ def build_email_report(
             page = row.get("page") or "-"
             location = row.get("url") or "-"
             reason = row.get("error") or "-"
-            warnings.append(f"{stage} page={page} {location} {reason}")
+            meta = []
+            if row.get("attempts") not in (None, ""):
+                meta.append(f"attempts={row.get('attempts')}")
+            if row.get("retry_delay_seconds") not in (None, ""):
+                meta.append(f"retry_delay={row.get('retry_delay_seconds')}s")
+            suffix = f" ({', '.join(meta)})" if meta else ""
+            warnings.append(f"{stage} page={page} {location} {reason}{suffix}")
         if len(listing_errors) > 10:
             warnings.append(f"listing page 로딩 실패 {len(listing_errors) - 10}건 추가 생략")
     if retail_db_ok is False and len(retail_rows) > 0:
@@ -1970,10 +2000,22 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     (out_dir / "command.txt").write_text(" ".join(sys.argv) + "\n", encoding="utf-8")
 
     main_raw, main_final, main_pages, main_listing_errors = listing_until(
-        args.api_dir, "main", query, args.main_target, args.max_pages_main
+        args.api_dir,
+        "main",
+        query,
+        args.main_target,
+        args.max_pages_main,
+        retries=args.listing_retries,
+        retry_delay=args.listing_retry_delay,
     )
     bsr_raw, bsr_final, bsr_pages, bsr_listing_errors = listing_until(
-        args.api_dir, "bsr", query, args.bsr_target, args.max_pages_bsr
+        args.api_dir,
+        "bsr",
+        query,
+        args.bsr_target,
+        args.max_pages_bsr,
+        retries=args.listing_retries,
+        retry_delay=args.listing_retry_delay,
     )
     listing_errors = main_listing_errors + bsr_listing_errors
     write_csv(out_dir / "main_raw.csv", main_raw)
@@ -1984,11 +2026,12 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     lines.append(summarize_listing("main", main_raw, main_final, main_pages, args.main_target))
     lines.append(summarize_listing("bsr", bsr_raw, bsr_final, bsr_pages, args.bsr_target))
     if listing_errors:
+        exit_code = 1
         lines.append(f"[listing_error] count={len(listing_errors)}")
         for row in listing_errors[:50]:
             lines.append(
                 f"[listing_error] {row.get('listing_stage')} page={row.get('page')} "
-                f"url={row.get('url')} error={row.get('error')}"
+                f"attempts={row.get('attempts')} url={row.get('url')} error={row.get('error')}"
             )
         if len(listing_errors) > 50:
             lines.append(f"[listing_error] omitted={len(listing_errors) - 50}")
@@ -2079,7 +2122,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             return
         details.append(detail)
 
-    if args.max_detail >= 0:
+    if args.max_detail >= 0 and not listing_errors:
         targets = detail_targets(main_final, bsr_final, args.max_detail)
         for idx, target in enumerate(targets, 1):
             url = target["product_url"]
@@ -2137,6 +2180,8 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
                     safe_print(f"[final_retry] recovered {error.get('url')}")
             errors = next_errors
             safe_print(f"[final_retry] remaining={len(errors)}")
+    elif listing_errors:
+        lines.append(f"[detail] skipped: listing_errors={len(listing_errors)}")
 
     failed_keys = {str(row.get("product_id")) for row in errors if row.get("product_id")}
     if failed_keys:
@@ -2192,7 +2237,13 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         # DIFF (review_count_diff 등 informational) 는 INSERT 차단 X — fatal 만 차단.
         fatal_qa = [row for row in qa_issues if row.get('check') != 'review_count_diff']
         diff_qa = [row for row in qa_issues if row.get('check') == 'review_count_diff']
-        if not retail_rows and not product_list_rows:
+        if listing_errors:
+            lines.append(f"[db_insert] skipped: listing_errors={len(listing_errors)}")
+            db_status = f"skipped: listing_errors={len(listing_errors)}"
+            retail_db_ok = False
+            product_list_db_ok = False
+            exit_code = 1
+        elif not retail_rows and not product_list_rows:
             lines.append("[db_insert] skipped: no schema rows")
             db_status = "skipped: no schema rows"
             retail_db_ok = False
@@ -2299,8 +2350,11 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         elif has_email_warning:
             subject = f"WARNING {subject}"
         (out_dir / "email_report.txt").write_text(body, encoding="utf-8")
-        _sent, email_lines = send_email_report(subject, body)
-        lines.extend(email_lines)
+        if args.email_report_success_only and exit_code != 0:
+            lines.append(f"[email] suppressed: success_only exit={exit_code}")
+        else:
+            _sent, email_lines = send_email_report(subject, body)
+            lines.extend(email_lines)
 
     (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (out_dir / "command.txt").write_text(" ".join(sys.argv) + "\n", encoding="utf-8")
@@ -2336,10 +2390,13 @@ def write_fatal_outputs(args: argparse.Namespace, exc: Exception) -> tuple[Path,
     (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (out_dir / "command.txt").write_text(" ".join(sys.argv) + "\n", encoding="utf-8")
     (out_dir / "email_report.txt").write_text(body, encoding="utf-8")
-    if args.email_report:
+    if args.email_report and not getattr(args, "email_report_success_only", False):
         subject = f"SOS [SIEL] FPKT {product_key.upper()} crawling report"
         _sent, email_lines = send_email_report(subject, body)
         lines.extend(email_lines)
+        (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    elif args.email_report:
+        lines.append("[email] suppressed: success_only fatal")
         (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return out_dir, lines
 
@@ -2353,6 +2410,9 @@ def main() -> int:
     parser.add_argument("--bsr-target", type=int, default=100)
     parser.add_argument("--max-pages-main", type=int, default=30)
     parser.add_argument("--max-pages-bsr", type=int, default=15)
+    parser.add_argument("--api-timeout", type=int, default=90, help="Timeout seconds for Flipkart API calls")
+    parser.add_argument("--listing-retries", type=int, default=3, help="Retry listing page API failures before marking the page failed")
+    parser.add_argument("--listing-retry-delay", type=float, default=10.0, help="Seconds to wait between listing page retries")
     parser.add_argument("--max-detail", type=int, default=10, help="detail target count; 0=all unique, -1=skip detail")
     parser.add_argument("--detail-retries", type=int, default=2, help="Retry detail API when a product response fails")
     parser.add_argument("--review-pages", type=int, default=2)
@@ -2368,8 +2428,11 @@ def main() -> int:
     parser.add_argument("--insert-max-n", type=int, default=0, help="Rows cap passed to insert_test_retail_com.py; 0=unlimited")
     parser.add_argument("--allow-qa-insert", action="store_true", help="Insert even when QA issues are present")
     parser.add_argument("--email-report", action="store_true", help="Send per-product crawl report email using config.EMAIL_CONFIG")
+    parser.add_argument("--email-report-success-only", action="store_true", help="With --email-report, suppress email when the run exits nonzero")
     args = parser.parse_args()
 
+    if args.api_timeout:
+        os.environ["FPKT_API_TIMEOUT"] = str(args.api_timeout)
     if args.out_dir is None:
         args.out_dir = output_dir(args.product)
     try:
