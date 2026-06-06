@@ -584,88 +584,56 @@ def _load_bsr_cards(driver, container_xpath: str, expected_count: int = 50,
     if len(cards) >= expected_count:
         return cards
 
-    # Keep the lazy-render work inside the browser. This avoids dozens of
-    # Selenium round trips where Amazon BSR pages can stall ChromeDriver.
+    # Amazon BSR desktop cards lazy-render reliably when the page is moved
+    # through fixed scroll positions with real waits between browser commands.
+    pause = float(os.environ.get('AMZN_BSR_SCROLL_PAUSE', '2'))
     try:
+        last_height = _page_height(driver)
         if _logger:
-            _logger.info('bsr render async scroll start target=%d', expected_count)
-        driver.execute_async_script(
-            """
-            const target = arguments[0];
-            const done = arguments[arguments.length - 1];
-            const root = document.scrollingElement || document.documentElement;
-            let rounds = 0;
-            let best = document.querySelectorAll('#gridItemRoot').length;
-            function count() {
-              const n = document.querySelectorAll('#gridItemRoot').length;
-              if (n > best) best = n;
-              return n;
-            }
-            function wheel(dy) {
-              try {
-                const ev = new WheelEvent('wheel', {
-                  deltaY: dy,
-                  deltaMode: 0,
-                  bubbles: true,
-                  cancelable: true,
-                  view: window
-                });
-                root.dispatchEvent(ev);
-                window.dispatchEvent(ev);
-              } catch (e) {}
-              window.scrollBy(0, dy);
-            }
-            function step() {
-              const height = Math.max(document.body.scrollHeight || 0,
-                                      document.documentElement.scrollHeight || 0);
-              const viewport = window.innerHeight || 900;
-              const y = Math.min(height, Math.round((rounds + 1) * viewport * 0.75));
-              window.scrollTo(0, y);
-              wheel(Math.max(600, Math.round(viewport * 0.8)));
-              const n = count();
-              rounds += 1;
-              if (n >= target || rounds >= 18) {
-                const end = document.querySelector('#endOfList, nav[aria-label="pagination"], .a-pagination');
-                if (end) {
-                  try { end.scrollIntoView({block: 'center', inline: 'nearest'}); } catch (e) {}
-                }
-                setTimeout(() => done({
-                  cards: count(),
-                  best,
-                  rounds,
-                  y: Math.round(window.scrollY || 0),
-                  height
-                }), 700);
-              } else {
-                setTimeout(step, 550);
-              }
-            }
-            step();
-            """,
-            expected_count,
-        )
+            _logger.info('bsr render retail scroll start target=%d height=%d pause=%.1fs',
+                         expected_count, last_height, pause)
+
+        for pct in (20, 40, 60, 80, 100):
+            driver.execute_script(
+                'window.scrollTo(0, document.body.scrollHeight * arguments[0]);',
+                pct / 100,
+            )
+            time.sleep(pause)
+            cards = remember_cards()
+            if _logger:
+                _logger.info('bsr render scroll pct=%d cards=%d best=%d',
+                             pct, len(cards), len(best_cards))
+            if len(cards) >= expected_count:
+                return cards
+
+        for attempt in range(1, 4):
+            driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+            time.sleep(pause)
+            cards = remember_cards()
+            new_height = _page_height(driver)
+            if _logger:
+                _logger.info('bsr render bottom attempt=%d cards=%d best=%d height=%d',
+                             attempt, len(cards), len(best_cards), new_height)
+            if len(cards) >= expected_count:
+                return cards
+            if new_height == last_height:
+                break
+            last_height = new_height
+
+        driver.execute_script('window.scrollTo(0, 0);')
+        time.sleep(1)
+        cards = remember_cards()
+        if _logger:
+            _logger.info('bsr render top reset cards=%d best=%d',
+                         len(cards), len(best_cards))
+
+        driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+        time.sleep(pause)
     except Exception as e:
         if _logger:
-            _logger.warning('bsr render async scroll failed: %s: %s',
+            _logger.warning('bsr render retail scroll failed: %s: %s',
                             type(e).__name__, str(e)[:220])
 
-    cards = remember_cards()
-    if _logger:
-        _logger.info('bsr render after async cards=%d best=%d',
-                     len(cards), len(best_cards))
-    if len(cards) >= expected_count:
-        return cards
-
-    try:
-        if _logger:
-            _logger.info('bsr render key-scroll fallback start')
-        _key_scroll(driver, Keys.PAGE_DOWN, 6, pause=0.35)
-        _key_scroll(driver, Keys.END, 1, pause=0.35)
-    except Exception as e:
-        if _logger:
-            _logger.warning('bsr render key-scroll fallback failed: %s: %s',
-                            type(e).__name__, str(e)[:160])
-    time.sleep(1.0)
     cards = remember_cards()
     if _logger:
         _logger.info('bsr render final cards=%d best=%d',
