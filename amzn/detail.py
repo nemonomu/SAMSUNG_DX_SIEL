@@ -306,6 +306,18 @@ _SORRY_BODY_HINTS = (
     '/error/logo',
     'dogsofamazon',
 )
+_CONTINUE_SHOPPING_HINTS = (
+    'continue shopping',
+    'click the button below to continue shopping',
+)
+_CONTINUE_SHOPPING_XPATHS = (
+    "//*[self::button or self::a][contains("
+    "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'),"
+    " 'continue shopping')]",
+    "//input[contains("
+    "translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'),"
+    " 'continue shopping')]",
+)
 
 
 def check_and_recover_sorry(driver, url: str, max_retries: int = 3) -> bool:
@@ -341,7 +353,70 @@ def check_and_recover_sorry(driver, url: str, max_retries: int = 3) -> bool:
     return False
 
 
-def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str) -> dict:
+def _is_continue_shopping_page(driver) -> bool:
+    try:
+        title = (driver.title or '').lower()
+    except WebDriverException:
+        title = ''
+    try:
+        src = (driver.page_source or '').lower()
+    except WebDriverException:
+        src = ''
+    return any(h in title or h in src for h in _CONTINUE_SHOPPING_HINTS)
+
+
+def _click_continue_shopping(driver) -> bool:
+    for xpath in _CONTINUE_SHOPPING_XPATHS:
+        try:
+            btn = driver.find_element(By.XPATH, xpath)
+            try:
+                btn.click()
+            except WebDriverException:
+                driver.execute_script('arguments[0].click();', btn)
+            time.sleep(random.uniform(3, 5))
+            return True
+        except (NoSuchElementException, WebDriverException):
+            continue
+    return False
+
+
+def check_and_recover_continue_shopping(driver, url: str, max_retries: int = 3) -> bool:
+    """Amazon detail 중간 Continue shopping 화면 감지 후 버튼 클릭/재진입으로 복구."""
+    for attempt in range(max_retries):
+        if not _is_continue_shopping_page(driver):
+            return True
+        if _logger:
+            _logger.warning('detail continue_shopping attempt %d/%d url=%s',
+                            attempt + 1, max_retries, url)
+        clicked = _click_continue_shopping(driver)
+        if clicked and not _is_continue_shopping_page(driver):
+            return True
+        if attempt < max_retries - 1:
+            try:
+                time.sleep(random.uniform(2, 3))
+                if clicked:
+                    driver.refresh()
+                else:
+                    driver.get(url)
+                time.sleep(random.uniform(3, 5))
+            except WebDriverException:
+                pass
+    return not _is_continue_shopping_page(driver)
+
+
+def _detail_payload_empty(rec: dict, selectors: dict) -> bool:
+    """Return True when selector-driven detail payload fields are all empty."""
+    ignored = set(EXPAND_FIELDS) | {'base_container', 'product_url', 'sku'}
+    fields = [f for f in selectors if f not in ignored]
+    for field in fields:
+        v = rec.get(field)
+        if v not in (None, '', []):
+            return False
+    return True
+
+
+def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str,
+                 _continue_retry: bool = False) -> dict:
     asin = asin_from_url(url)
     rec: dict = {
         'account_name':   ACCOUNT_NAME,
@@ -550,6 +625,17 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
             rec['count_of_star_ratings'] = '0'
             if _logger:
                 _logger.info('detail no_customer_reviews: url=%s', url)
+    if (not _continue_retry
+            and _detail_payload_empty(rec, selectors)
+            and _is_continue_shopping_page(driver)):
+        if _logger:
+            _logger.warning('detail payload empty with continue_shopping page; retry url=%s', url)
+        if check_and_recover_continue_shopping(driver, url):
+            return crawl_detail(driver, product, url, selectors, batch_id,
+                                _continue_retry=True)
+        rec['_detail_skip'] = 'continue_shopping_page'
+        if _logger:
+            _logger.warning('detail skip: continue_shopping_page url=%s', url)
     # post-process: 결과 요약 로그 — stdout 은 JSONL channel 이라 _logger 사용.
     # 4 제품군 (HHP/TV/REF/LDY) 별 spec 분기 출력.
     if _logger:
