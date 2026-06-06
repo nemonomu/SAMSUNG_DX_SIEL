@@ -283,12 +283,12 @@ def canonical_product_url(asin: str):
 def scan_card_asin(card):
     try:
         links = card.find_elements(By.XPATH, './/a[@href]')
-    except WebDriverException:
+    except Exception:
         return None
     for link in links:
         try:
             href = link.get_attribute('href') or ''
-        except WebDriverException:
+        except Exception:
             continue
         asin = asin_from_text(href)
         if asin:
@@ -301,7 +301,10 @@ def _safe_find_elements(driver, xpath: str):
         return []
     try:
         return driver.find_elements(By.XPATH, xpath)
-    except WebDriverException:
+    except Exception as e:
+        if _logger:
+            _logger.warning('safe_find_elements failed: %s: %s',
+                            type(e).__name__, str(e)[:160])
         return []
 
 
@@ -310,7 +313,7 @@ def _page_height(driver) -> int:
         return int(driver.execute_script(
             'return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);'
         ) or 0)
-    except WebDriverException:
+    except Exception:
         return 0
 
 
@@ -319,14 +322,14 @@ def _viewport_height(driver) -> int:
         return int(driver.execute_script(
             'return window.innerHeight || document.documentElement.clientHeight || 900;'
         ) or 900)
-    except WebDriverException:
+    except Exception:
         return 900
 
 
 def _scroll_to(driver, y: int) -> None:
     try:
         driver.execute_script('window.scrollTo(0, arguments[0]);', max(0, int(y)))
-    except WebDriverException:
+    except Exception:
         pass
 
 
@@ -341,7 +344,7 @@ def _scroll_element_into_view(driver, css_selector: str) -> None:
             """,
             css_selector,
         )
-    except WebDriverException:
+    except Exception:
         pass
 
 
@@ -363,7 +366,7 @@ def _dispatch_wheel(driver, delta_y: int) -> None:
             """,
             delta_y,
         )
-    except WebDriverException:
+    except Exception:
         pass
 
 
@@ -380,7 +383,7 @@ def _key_scroll(driver, key: str, times: int = 1, pause: float = 0.25) -> None:
         for _ in range(times):
             body.send_keys(key)
             time.sleep(pause)
-    except WebDriverException:
+    except Exception:
         pass
 
 
@@ -395,7 +398,7 @@ def _focus_bsr_grid(driver) -> None:
             }
             """
         )
-    except WebDriverException:
+    except Exception:
         pass
 
 
@@ -438,7 +441,7 @@ def extract_card(card, selectors: dict) -> dict:
         asin = card.get_attribute('data-asin')
         if asin:
             rec['asin'] = asin
-    except WebDriverException:
+    except Exception:
         pass
     for field, sel in selectors.items():
         if field == 'base_container':
@@ -567,9 +570,6 @@ def crawl_main(driver, product: str, selectors: dict, batch_id: str,
 def _load_bsr_cards(driver, container_xpath: str, expected_count: int = 50,
                     max_rounds: int = 12):
     best_cards = []
-    stable_rounds = 0
-    _focus_bsr_grid(driver)
-    time.sleep(1.0)
 
     def remember_cards():
         nonlocal best_cards
@@ -578,74 +578,98 @@ def _load_bsr_cards(driver, container_xpath: str, expected_count: int = 50,
             best_cards = cards
         return cards
 
-    for round_no in range(1, max_rounds + 1):
-        best_before_round = len(best_cards)
-        height = max(_page_height(driver), 1)
-        viewport = max(_viewport_height(driver), 600)
-        step = max(int(viewport * 0.55), 320)
-        positions = list(range(0, height + step, step))
-        if positions[-1] != height:
-            positions.append(height)
+    cards = remember_cards()
+    if _logger:
+        _logger.info('bsr render initial cards=%d', len(cards))
+    if len(cards) >= expected_count:
+        return cards
 
-        for y in positions:
-            _scroll_to(driver, y)
-            time.sleep(0.35)
-            cards = remember_cards()
-            if len(cards) >= expected_count:
-                return cards
-
-        _selenium_wheel(driver, 900)
-        time.sleep(0.5)
-        _dispatch_wheel(driver, 900)
-        time.sleep(0.5)
-        _key_scroll(driver, Keys.PAGE_DOWN, 2)
-        time.sleep(0.5)
-        cards = remember_cards()
-        if len(cards) >= expected_count:
-            return cards
-
-        if round_no % 2 == 0:
-            _scroll_element_into_view(driver, '#endOfList')
-            time.sleep(0.8)
-            _key_scroll(driver, Keys.HOME, 1)
-            time.sleep(0.5)
-            _key_scroll(driver, Keys.PAGE_DOWN, 5)
-            time.sleep(0.5)
-            cards = remember_cards()
-            if len(cards) >= expected_count:
-                return cards
-
-        if round_no % 3 == 0:
-            _scroll_element_into_view(driver, 'nav[aria-label="pagination"], .a-pagination')
-            time.sleep(0.8)
-            _key_scroll(driver, Keys.END, 1)
-            time.sleep(0.8)
-            cards = remember_cards()
-            if len(cards) >= expected_count:
-                return cards
-
-        for selector in ('#endOfList', 'nav[aria-label="pagination"]', '.a-pagination'):
-            _scroll_element_into_view(driver, selector)
-            time.sleep(0.8)
-            cards = remember_cards()
-            if len(cards) >= expected_count:
-                return cards
-
-        _scroll_to(driver, _page_height(driver))
-        time.sleep(1.2)
-        cards = remember_cards()
-
+    # Keep the lazy-render work inside the browser. This avoids dozens of
+    # Selenium round trips where Amazon BSR pages can stall ChromeDriver.
+    try:
         if _logger:
-            _logger.info('bsr lazy-load round=%d cards=%d best=%d height=%d',
-                         round_no, len(cards), len(best_cards), _page_height(driver))
+            _logger.info('bsr render async scroll start target=%d', expected_count)
+        driver.execute_async_script(
+            """
+            const target = arguments[0];
+            const done = arguments[arguments.length - 1];
+            const root = document.scrollingElement || document.documentElement;
+            let rounds = 0;
+            let best = document.querySelectorAll('#gridItemRoot').length;
+            function count() {
+              const n = document.querySelectorAll('#gridItemRoot').length;
+              if (n > best) best = n;
+              return n;
+            }
+            function wheel(dy) {
+              try {
+                const ev = new WheelEvent('wheel', {
+                  deltaY: dy,
+                  deltaMode: 0,
+                  bubbles: true,
+                  cancelable: true,
+                  view: window
+                });
+                root.dispatchEvent(ev);
+                window.dispatchEvent(ev);
+              } catch (e) {}
+              window.scrollBy(0, dy);
+            }
+            function step() {
+              const height = Math.max(document.body.scrollHeight || 0,
+                                      document.documentElement.scrollHeight || 0);
+              const viewport = window.innerHeight || 900;
+              const y = Math.min(height, Math.round((rounds + 1) * viewport * 0.75));
+              window.scrollTo(0, y);
+              wheel(Math.max(600, Math.round(viewport * 0.8)));
+              const n = count();
+              rounds += 1;
+              if (n >= target || rounds >= 18) {
+                const end = document.querySelector('#endOfList, nav[aria-label="pagination"], .a-pagination');
+                if (end) {
+                  try { end.scrollIntoView({block: 'center', inline: 'nearest'}); } catch (e) {}
+                }
+                setTimeout(() => done({
+                  cards: count(),
+                  best,
+                  rounds,
+                  y: Math.round(window.scrollY || 0),
+                  height
+                }), 700);
+              } else {
+                setTimeout(step, 550);
+              }
+            }
+            step();
+            """,
+            expected_count,
+        )
+    except Exception as e:
+        if _logger:
+            _logger.warning('bsr render async scroll failed: %s: %s',
+                            type(e).__name__, str(e)[:220])
 
-        if len(best_cards) > best_before_round:
-            stable_rounds = 0
-        else:
-            stable_rounds += 1
+    cards = remember_cards()
+    if _logger:
+        _logger.info('bsr render after async cards=%d best=%d',
+                     len(cards), len(best_cards))
+    if len(cards) >= expected_count:
+        return cards
 
-        if len(best_cards) >= expected_count or stable_rounds >= 5:
-            break
+    try:
+        if _logger:
+            _logger.info('bsr render key-scroll fallback start')
+        _key_scroll(driver, Keys.PAGE_DOWN, 6, pause=0.35)
+        _key_scroll(driver, Keys.END, 1, pause=0.35)
+    except Exception as e:
+        if _logger:
+            _logger.warning('bsr render key-scroll fallback failed: %s: %s',
+                            type(e).__name__, str(e)[:160])
+    time.sleep(1.0)
+    cards = remember_cards()
+    if _logger:
+        _logger.info('bsr render final cards=%d best=%d',
+                     len(cards), len(best_cards))
     return best_cards or _safe_find_elements(driver, container_xpath)
 
 
