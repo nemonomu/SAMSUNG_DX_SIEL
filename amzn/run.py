@@ -345,7 +345,8 @@ def _auto_apply_sql():
         print(f'[run.py] auto apply_sql skip: {type(e).__name__}: {e}', file=sys.stderr)
 
 
-_auto_apply_sql()
+if os.environ.get('AMZN_AUTO_APPLY_SQL', '').strip().lower() in {'1', 'true', 'yes', 'on'}:
+    _auto_apply_sql()
 
 from amzn import listing as L
 from amzn import detail as D
