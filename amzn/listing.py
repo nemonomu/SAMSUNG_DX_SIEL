@@ -584,6 +584,13 @@ def _load_bsr_cards(driver, container_xpath: str, expected_count: int = 50,
     if len(cards) >= expected_count:
         return cards
 
+    def maybe_done(label: str):
+        cards_now = remember_cards()
+        if _logger:
+            _logger.info('bsr render %s cards=%d best=%d',
+                         label, len(cards_now), len(best_cards))
+        return cards_now if len(cards_now) >= expected_count else None
+
     # Amazon BSR desktop cards lazy-render reliably when the page is moved
     # through fixed scroll positions with real waits between browser commands.
     pause = float(os.environ.get('AMZN_BSR_SCROLL_PAUSE', '2'))
@@ -632,6 +639,47 @@ def _load_bsr_cards(driver, container_xpath: str, expected_count: int = 50,
     except Exception as e:
         if _logger:
             _logger.warning('bsr render retail scroll failed: %s: %s',
+                            type(e).__name__, str(e)[:220])
+
+    cards = maybe_done('after percent scroll')
+    if cards:
+        return cards
+
+    # Amazon BSR can keep the final cards unrendered unless it receives
+    # real wheel/key-like events. Restore that fallback while keeping the
+    # faster percent-scroll path above for environments where it works.
+    try:
+        if _logger:
+            _logger.info('bsr render wheel fallback start target=%d', expected_count)
+        for amount in (700, 900, 1100, 1300, 1500, 1800):
+            _dispatch_wheel(driver, amount)
+            time.sleep(0.45)
+            cards = maybe_done(f'wheel dy={amount}')
+            if cards:
+                return cards
+        _selenium_wheel(driver, 1800)
+        time.sleep(0.7)
+    except Exception as e:
+        if _logger:
+            _logger.warning('bsr render wheel fallback failed: %s: %s',
+                            type(e).__name__, str(e)[:220])
+
+    cards = maybe_done('after wheel fallback')
+    if cards:
+        return cards
+
+    try:
+        if _logger:
+            _logger.info('bsr render key fallback start target=%d', expected_count)
+        _key_scroll(driver, Keys.PAGE_DOWN, 8, pause=0.35)
+        cards = maybe_done('after page_down')
+        if cards:
+            return cards
+        _key_scroll(driver, Keys.END, 1, pause=0.5)
+        time.sleep(1.0)
+    except Exception as e:
+        if _logger:
+            _logger.warning('bsr render key fallback failed: %s: %s',
                             type(e).__name__, str(e)[:220])
 
     cards = remember_cards()
