@@ -308,6 +308,90 @@ def _safe_find_elements(driver, xpath: str):
         return []
 
 
+def _js_bsr_records(driver) -> list[dict]:
+    """Extract BSR cards inside Chrome to avoid Selenium WebElement round trips."""
+    try:
+        rows = driver.execute_script(
+            """
+            const clean = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+            const text = (root, selectors) => {
+              for (const sel of selectors) {
+                const el = root.querySelector(sel);
+                if (!el) continue;
+                const val = clean(el.textContent || el.getAttribute('aria-label'));
+                if (val) return val;
+              }
+              return null;
+            };
+            const attr = (root, selectors, name) => {
+              for (const sel of selectors) {
+                const el = root.querySelector(sel);
+                if (!el) continue;
+                const val = clean(el.getAttribute(name));
+                if (val) return val;
+              }
+              return null;
+            };
+            const cards = Array.from(document.querySelectorAll(
+              '#gridItemRoot, .zg-grid-general-faceout'
+            ));
+            const asinFromHref = (href) => {
+              const match = (href || '').match(/\\/(?:dp|gp\\/product)\\/([A-Z0-9]{10})/);
+              return match ? match[1] : null;
+            };
+            const seen = new Set();
+            const rows = [];
+            for (const card of cards) {
+              const href = attr(card, [
+                'a[href*="/dp/"]',
+                'a[href*="/gp/product/"]'
+              ], 'href');
+              if (!href) continue;
+              const asin = asinFromHref(href);
+              const key = asin || href.split('?')[0];
+              if (!key || seen.has(key)) continue;
+              seen.add(key);
+              const imgAlt = attr(card, ['img[alt]'], 'alt');
+              rows.push({
+                product_url: href,
+                retailer_sku_name: text(card, [
+                  '.p13n-sc-css-line-clamp',
+                  '.p13n-sc-truncate',
+                  'a[href*="/dp/"] span',
+                  'a[href*="/gp/product/"] span',
+                  'a[href*="/dp/"] div',
+                  'a[href*="/gp/product/"] div'
+                ]) || imgAlt,
+                final_sku_price: text(card, [
+                  '.p13n-sc-price',
+                  '.a-price .a-offscreen',
+                  '.a-color-price'
+                ]),
+                star_rating: attr(card, [
+                  '[aria-label*="out of 5 stars"]',
+                  'i.a-icon-star span'
+                ], 'aria-label') || text(card, [
+                  'i.a-icon-star span',
+                  '[aria-label*="out of 5 stars"]'
+                ]),
+                count_of_star_ratings: text(card, [
+                  'a[href*="customerReviews"] span',
+                  'a[href*="product-reviews"] span',
+                  '.a-size-small'
+                ])
+              });
+            }
+            return rows;
+            """
+        )
+        return rows if isinstance(rows, list) else []
+    except Exception as e:
+        if _logger:
+            _logger.warning('bsr js extract failed: %s: %s',
+                            type(e).__name__, str(e)[:220])
+        return []
+
+
 def _page_height(driver) -> int:
     try:
         return int(driver.execute_script(
@@ -429,6 +513,20 @@ def maybe_save_html(driver) -> None:
     global _html_saved
     if _html_saved or _html_path is None:
         return
+    try:
+        html = driver.execute_script('return document.documentElement.outerHTML;')
+        if html:
+            with open(_html_path, 'w', encoding='utf-8') as f:
+                f.write('<!doctype html>\n')
+                f.write(html)
+            if _logger is not None:
+                _logger.info('HTML snapshot saved via js: %s', _html_path)
+            _html_saved = True
+            return
+    except Exception as e:
+        if _logger is not None:
+            _logger.warning('HTML snapshot js save failed: %s: %s',
+                            type(e).__name__, str(e)[:160])
     if siel_log.save_html(driver, _html_path) and _logger is not None:
         _logger.info('HTML snapshot saved: %s', _html_path)
     _html_saved = True
@@ -689,6 +787,115 @@ def _load_bsr_cards(driver, container_xpath: str, expected_count: int = 50,
     return best_cards or _safe_find_elements(driver, container_xpath)
 
 
+def _normalize_bsr_record(raw: dict) -> dict:
+    rec = dict(raw or {})
+    if rec.get('final_sku_price'):
+        rec['final_sku_price'] = siel_log.parse_amzn_apex_price(
+            rec.get('final_sku_price'))
+    rating_label = rec.get('star_rating') or ''
+    rating_count = rec.get('count_of_star_ratings') or ''
+    combined_rating = None
+    for value in (rating_label, rating_count):
+        if value and 'out of 5 stars' in value and 'rating' in value.lower():
+            combined_rating = value
+            break
+    if combined_rating:
+        star_part, _, count_part = combined_rating.partition(',')
+        rec['star_rating'] = star_part.strip() or None
+        rec['count_of_star_ratings'] = (
+            siel_log.parse_count_of_ratings(count_part) if count_part else None
+        )
+    else:
+        if rating_label:
+            rec['star_rating'] = rating_label.split(',', 1)[0].strip() or None
+        if rating_count:
+            if 'out of 5 stars' in rating_count:
+                rec['count_of_star_ratings'] = None
+            else:
+                rec['count_of_star_ratings'] = siel_log.parse_count_of_ratings(
+                    rating_count)
+    if rec.get('product_url'):
+        asin = asin_from_text(rec['product_url'])
+        if asin:
+            rec['asin'] = asin
+            rec['product_url'] = canonical_product_url(asin)
+    return rec
+
+
+def _load_bsr_records(driver, container_xpath: str, selectors: dict,
+                      expected_count: int = 50):
+    best_records: list[dict] = []
+
+    def remember_records():
+        nonlocal best_records
+        records = [_normalize_bsr_record(r) for r in _js_bsr_records(driver)]
+        if len(records) > len(best_records):
+            best_records = records
+        return records
+
+    records = remember_records()
+    if _logger:
+        _logger.info('bsr js render initial records=%d', len(records))
+    if len(records) >= expected_count:
+        return records
+
+    pause = float(os.environ.get('AMZN_BSR_SCROLL_PAUSE', '2'))
+    plateau_count = 0
+    last_count = len(records)
+    try:
+        last_height = _page_height(driver)
+        if _logger:
+            _logger.info('bsr js render scroll start target=%d height=%d pause=%.1fs',
+                         expected_count, last_height, pause)
+        for pct in (20, 40, 60, 80, 100):
+            driver.execute_script(
+                'window.scrollTo(0, document.body.scrollHeight * arguments[0]);',
+                pct / 100,
+            )
+            time.sleep(pause)
+            records = remember_records()
+            if len(records) == last_count:
+                plateau_count += 1
+            else:
+                plateau_count = 0
+            last_count = len(records)
+            if _logger:
+                _logger.info('bsr js render scroll pct=%d records=%d best=%d plateau=%d',
+                             pct, len(records), len(best_records), plateau_count)
+            if len(records) >= expected_count:
+                return records
+            if len(records) >= 30 and plateau_count >= 3:
+                break
+
+        for amount in (700, 900, 1100, 1300, 1500, 1800, 2200, 2600):
+            _dispatch_wheel(driver, amount)
+            time.sleep(0.45)
+            records = remember_records()
+            if _logger:
+                _logger.info('bsr js render wheel dy=%d records=%d best=%d',
+                             amount, len(records), len(best_records))
+            if len(records) >= expected_count:
+                return records
+
+        driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+        time.sleep(pause)
+        new_height = _page_height(driver)
+        records = remember_records()
+        if _logger:
+            _logger.info('bsr js render bottom records=%d best=%d height=%d',
+                         len(records), len(best_records), new_height)
+    except Exception as e:
+        if _logger:
+            _logger.warning('bsr js render failed: %s: %s',
+                            type(e).__name__, str(e)[:220])
+
+    if best_records:
+        return best_records
+
+    cards = _load_bsr_cards(driver, container_xpath, expected_count=expected_count)
+    return [_normalize_bsr_record(extract_card(card, selectors)) for card in cards]
+
+
 def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
               max_rank: int = 0) -> int:
     """max_rank=0 (default) -> unlimited, >0 caps output."""
@@ -712,25 +919,26 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
             _logger.info('page=%d bsr post-get wait %.1fs before first DOM command',
                          page_no, BSR_POST_GET_WAIT)
         time.sleep(BSR_POST_GET_WAIT)
-        cards = _load_bsr_cards(driver, container_xpath, expected_count=50)
+        records = _load_bsr_records(driver, container_xpath, selectors, expected_count=50)
         if page_no == 1:
             maybe_save_html(driver)
         if _logger:
-            _logger.info('page=%d cards=%d (loaded primary gridItemRoot)', page_no, len(cards))
-        if not cards:
+            _logger.info('page=%d records=%d (loaded primary gridItemRoot)',
+                         page_no, len(records))
+        if not records:
             if _logger:
-                _logger.info('page=%d cards=0 -> refresh', page_no)
+                _logger.info('page=%d records=0 -> refresh', page_no)
             try:
                 driver.refresh()
                 time.sleep(3)
-                cards = _load_bsr_cards(driver, container_xpath, expected_count=50)
+                records = _load_bsr_records(driver, container_xpath, selectors, expected_count=50)
                 if _logger:
-                    _logger.info('page=%d cards=%d (after refresh primary gridItemRoot)',
-                                 page_no, len(cards))
+                    _logger.info('page=%d records=%d (after refresh primary gridItemRoot)',
+                                 page_no, len(records))
             except WebDriverException as e:
                 if _logger:
                     _logger.warning('page=%d refresh failed: %s', page_no, e)
-            if not cards:
+            if not records:
                 emit({
                     '_error': 'listing page has no cards',
                     'stage': 'bsr_error',
@@ -742,17 +950,25 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
                     'message': 'cards=0 after refresh retry',
                     'crawl_datetime': now_server_ts(),
                 })
-        elif len(cards) < 50:
+        elif len(records) < 50:
             if _logger:
-                _logger.info('page=%d cards=%d<50 -> second primary-grid pass', page_no, len(cards))
-            cards = _load_bsr_cards(driver, container_xpath, expected_count=50)
+                _logger.info('page=%d records=%d<50 -> refresh/retry primary-grid pass',
+                             page_no, len(records))
+            try:
+                driver.refresh()
+                time.sleep(3)
+                retry_records = _load_bsr_records(driver, container_xpath, selectors, expected_count=50)
+                if len(retry_records) > len(records):
+                    records = retry_records
+            except WebDriverException as e:
+                if _logger:
+                    _logger.warning('page=%d refresh retry failed: %s', page_no, e)
             if _logger:
-                _logger.info('page=%d cards=%d (after second primary-grid pass)',
-                             page_no, len(cards))
-        for raw_pos, card in enumerate(cards, start=1):
+                _logger.info('page=%d records=%d (after refresh/retry primary-grid pass)',
+                             page_no, len(records))
+        for raw_pos, rec in enumerate(records, start=1):
             if max_rank and rank >= max_rank:
                 break
-            rec = extract_card(card, selectors)
             key = listing_record_key(rec) or f'__no_key_bsr_{page_no}_{raw_pos}'
             if key in seen_keys:
                 duplicate_count += 1
