@@ -332,11 +332,18 @@ def _js_bsr_records(driver) -> list[dict]:
               }
               return null;
             };
-            const cards = Array.from(document.querySelectorAll(
-              '#gridItemRoot, .zg-grid-general-faceout'
+            const gridRoot = document.querySelector(
+              '#zg, #zg-right-col, #zg-center-div, .p13n-gridRow'
+            ) || document;
+            const cards = Array.from(gridRoot.querySelectorAll(
+              '#gridItemRoot, .zg-grid-general-faceout, [data-asin]:not([data-asin=""])'
             ));
             const asinFromHref = (href) => {
               const match = (href || '').match(/\\/(?:dp|gp\\/product)\\/([A-Z0-9]{10})/);
+              return match ? match[1] : null;
+            };
+            const asinFromValue = (value) => {
+              const match = (value || '').match(/([A-Z0-9]{10})/);
               return match ? match[1] : null;
             };
             const seen = new Set();
@@ -346,14 +353,19 @@ def _js_bsr_records(driver) -> list[dict]:
                 'a[href*="/dp/"]',
                 'a[href*="/gp/product/"]'
               ], 'href');
-              if (!href) continue;
-              const asin = asinFromHref(href);
+              const dataAsin = clean(
+                card.getAttribute('data-asin') ||
+                attr(card, ['[data-asin]:not([data-asin=""])'], 'data-asin') ||
+                ''
+              );
+              const asin = asinFromHref(href) || asinFromValue(dataAsin);
+              if (!href && !asin) continue;
               const key = asin || href.split('?')[0];
               if (!key || seen.has(key)) continue;
               seen.add(key);
               const imgAlt = attr(card, ['img[alt]'], 'alt');
               rows.push({
-                product_url: href,
+                product_url: href || `https://www.amazon.in/dp/${asin}`,
                 retailer_sku_name: text(card, [
                   '.p13n-sc-css-line-clamp',
                   '.p13n-sc-truncate',
@@ -884,6 +896,27 @@ def _load_bsr_records(driver, container_xpath: str, selectors: dict,
         if _logger:
             _logger.info('bsr js render bottom records=%d best=%d height=%d',
                          len(records), len(best_records), new_height)
+        if len(records) >= expected_count:
+            return records
+
+        if 30 <= len(best_records) < expected_count:
+            extra_cycles = int(os.environ.get('AMZN_BSR_CLOSE_SETTLE_CYCLES', '3'))
+            for cycle in range(1, extra_cycles + 1):
+                before = len(best_records)
+                _scroll_to(driver, 0)
+                time.sleep(0.7)
+                _key_scroll(driver, Keys.END, times=2, pause=0.7)
+                _selenium_wheel(driver, 3200)
+                time.sleep(pause)
+                records = remember_records()
+                if _logger:
+                    _logger.info(
+                        'bsr js render settle cycle=%d records=%d best=%d before=%d',
+                        cycle, len(records), len(best_records), before)
+                if len(records) >= expected_count:
+                    return records
+                if len(best_records) >= expected_count:
+                    return best_records
     except Exception as e:
         if _logger:
             _logger.warning('bsr js render failed: %s: %s',
