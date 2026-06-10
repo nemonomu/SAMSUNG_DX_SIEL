@@ -198,13 +198,39 @@ def original_price_text(original: Any, final: Any = None) -> str | None:
     original_value = to_int(original)
     final_value = to_int(final)
     if original_value is not None and final_value is not None:
-        if original_value == final_value:
+        if original_value <= final_value:
             return None
-        # XPath itertext 가 자손 텍스트를 합쳐 비현실적 큰 값을 만들 때 차단
-        # (예: line-through div 안에 광고/EMI/banner 텍스트가 섞여 ₹21,490,739 같이 나옴)
+        # XPath itertext can concatenate surrounding price/offer text into unrealistic values.
         if final_value > 0 and original_value > final_value * 10:
             return None
     return price_text(original)
+
+
+def computed_savings_text(final: Any, original: Any) -> str | None:
+    final_value = to_int(final)
+    original_value = to_int(original)
+    if final_value is None or original_value is None:
+        return None
+    if final_value <= 0 or original_value <= final_value:
+        return None
+    if original_value > final_value * 10:
+        return None
+    raw = (original_value - final_value) * 100.0 / original_value
+    if raw <= 0:
+        return None
+    if raw < 1:
+        return "1%"
+    return f"{int(raw + 0.5)}%"
+
+
+def normalized_price_fields(final: Any, original: Any) -> dict[str, str | None]:
+    final_text = price_text(final)
+    original_text = original_price_text(original, final)
+    return {
+        "final_sku_price": final_text,
+        "original_sku_price": original_text,
+        "savings": computed_savings_text(final_text, original_text),
+    }
 
 
 def sku_popularity_from_url(url: Any) -> str | None:
@@ -256,7 +282,7 @@ def listing_until(
     max_pages: int,
     retries: int = 2,
     retry_delay: float = 5.0,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, list[dict[str, Any]], list[dict[str, Any]]]:
     retries = max(0, int(retries))
     retry_delay = max(0.0, float(retry_delay))
     har_path = api_dir / "main_page2_page1_har.txt"
@@ -267,6 +293,7 @@ def listing_until(
     raw_rows: list[dict[str, Any]] = []
     final_rows: list[dict[str, Any]] = []
     listing_errors: list[dict[str, Any]] = []
+    listing_pages: list[dict[str, Any]] = []
     seen: set[str] = set()
     previous_response = None
     pages_used = 0
@@ -278,9 +305,12 @@ def listing_until(
 
     for page in range(1, max_pages + 1):
         pages_used = page
+        page_started = time.perf_counter()
         response = None
         last_error: Exception | None = None
+        attempts_used = 0
         for attempt in range(1, retries + 2):
+            attempts_used = attempt
             try:
                 response = listing_page(har_path, query, page, sort, previous_response)
                 if attempt > 1:
@@ -296,6 +326,7 @@ def listing_until(
                     time.sleep(retry_delay)
                     continue
         if response is None:
+            elapsed = round(time.perf_counter() - page_started, 2)
             error = {
                 "stage": "listing",
                 "listing_stage": stage,
@@ -304,17 +335,37 @@ def listing_until(
                 "url": listing_html_url(query, stage, page),
                 "attempts": retries + 1,
                 "retry_delay_seconds": retry_delay,
+                "elapsed_seconds": elapsed,
                 "error": repr(last_error),
             }
             listing_errors.append(error)
+            listing_pages.append({
+                "listing_stage": stage,
+                "page": page,
+                "query": query,
+                "status": "error",
+                "attempts": retries + 1,
+                "elapsed_seconds": elapsed,
+                "rows": 0,
+                "processed_rows": 0,
+                "new_unique": 0,
+                "duplicates": 0,
+                "final_unique": len(final_rows),
+                "raw_rows": len(raw_rows),
+                "error": repr(last_error),
+            })
             safe_print(
                 f"[listing_error] {stage} page={page} attempts={retries + 1} "
-                f"error={repr(last_error)}"
+                f"elapsed={elapsed:.1f}s error={repr(last_error)}"
             )
             break
         previous_response = response
         html_meta = listing_html_metadata_for_page(api_dir, query, stage, page, html_meta_headers)
-        for row in extract_products(response, page=page):
+        products = list(extract_products(response, page=page))
+        raw_before = len(raw_rows)
+        final_before = len(final_rows)
+        status = "ok"
+        for row in products:
             key = row_url_pid(row) or row.get("product_id") or row.get("item_id") or row.get("product_url")
             meta = html_meta.get(str(key or ""))
             api_discount = deal_label_from_text(str(row.get("discount_type") or ""))
@@ -339,8 +390,36 @@ def listing_until(
             final[f"{stage}_rank"] = final["unique_rank"]
             final_rows.append(final)
             if len(final_rows) >= target_unique:
-                return raw_rows, final_rows, pages_used, listing_errors
-    return raw_rows, final_rows, pages_used, listing_errors
+                status = "target_reached"
+                break
+
+        elapsed = round(time.perf_counter() - page_started, 2)
+        processed_rows = len(raw_rows) - raw_before
+        new_unique = len(final_rows) - final_before
+        duplicates = max(0, processed_rows - new_unique)
+        listing_pages.append({
+            "listing_stage": stage,
+            "page": page,
+            "query": query,
+            "status": status,
+            "attempts": attempts_used,
+            "elapsed_seconds": elapsed,
+            "rows": len(products),
+            "processed_rows": processed_rows,
+            "new_unique": new_unique,
+            "duplicates": duplicates,
+            "final_unique": len(final_rows),
+            "raw_rows": len(raw_rows),
+            "error": "",
+        })
+        safe_print(
+            f"[listing] {stage} page={page} status={status} rows={len(products)} "
+            f"processed={processed_rows} new={new_unique} unique={len(final_rows)} "
+            f"attempts={attempts_used} elapsed={elapsed:.1f}s"
+        )
+        if status == "target_reached":
+            return raw_rows, final_rows, pages_used, listing_errors, listing_pages
+    return raw_rows, final_rows, pages_used, listing_errors, listing_pages
 
 
 def html_headers(api_dir: Path) -> dict[str, str]:
@@ -740,24 +819,17 @@ def clean_detail_price_result(
 ) -> dict[str, int | str | None]:
     final_value = to_int(final_price)
     original_value = to_int(original_price)
-    savings_text = text_or_none(savings)
-    savings_value = to_int(savings_text)
 
-    if final_value is not None and original_value is not None:
+    if final_value is None:
+        original_value = None
+    elif original_value is not None:
         if original_value <= final_value or (final_value > 0 and original_value > final_value * 10):
             original_value = None
-
-    if final_value is None or original_value is None:
-        savings_text = None
-    elif savings_value is not None:
-        calculated = (original_value - final_value) * 100.0 / original_value
-        if abs(calculated - savings_value) > 1.0:
-            savings_text = None
 
     return {
         "final_sku_price": final_value,
         "original_sku_price": original_value,
-        "savings": savings_text,
+        "savings": computed_savings_text(final_value, original_value),
     }
 
 
@@ -1402,6 +1474,7 @@ def listing_schema_record(
     rank = row.get(rank_field) or row.get("rank")
     fsn = row_url_pid(row) or row.get("product_id") or row.get("item_id")
     row_crawl_dt = row.get("crawl_datetime") or crawl_dt
+    price_fields = normalized_price_fields(row.get("final_price"), row.get("original_price"))
     return {
         "account_name": "flipkart",
         "product": product,
@@ -1413,9 +1486,9 @@ def listing_schema_record(
         "retailer_sku_name": row.get("product_name"),
         "brand": row.get("brand"),
         "product_url": row.get("product_url"),
-        "final_sku_price": price_text(row.get("final_price")),
-        "original_sku_price": original_price_text(row.get("original_price"), row.get("final_price")),
-        "savings": text_or_none(row.get("savings")),
+        "final_sku_price": price_fields["final_sku_price"],
+        "original_sku_price": price_fields["original_sku_price"],
+        "savings": price_fields["savings"],
         "discount_type": text_or_none(row.get("discount_type")),
         "star_rating": text_or_none(row.get("star_rating")),
         "count_of_star_ratings": count_text(row.get("count_of_star_ratings")),
@@ -1437,6 +1510,7 @@ def detail_schema_record(
 ) -> dict[str, Any]:
     fsn = row_url_pid(detail) or detail.get("fsn") or detail.get("product_id")
     detail_crawl_dt = detail.get("crawl_datetime") or crawl_dt
+    price_fields = normalized_price_fields(detail.get("final_sku_price"), detail.get("original_sku_price"))
     record = {
         "account_name": "flipkart",
         "product": product,
@@ -1447,9 +1521,9 @@ def detail_schema_record(
         "item": fsn,
         "sku": detail.get("sku"),
         "retailer_sku_name": detail.get("retailer_sku_name"),
-        "final_sku_price": price_text(detail.get("final_sku_price")),
-        "original_sku_price": original_price_text(detail.get("original_sku_price"), detail.get("final_sku_price")),
-        "savings": text_or_none(detail.get("savings")),
+        "final_sku_price": price_fields["final_sku_price"],
+        "original_sku_price": price_fields["original_sku_price"],
+        "savings": price_fields["savings"],
         "discount_type": text_or_none(detail.get("discount_type")),
         "retailer_sku_name_similar": text_or_none(detail.get("retailer_sku_name_similar")),
         "star_rating": text_or_none(detail.get("star_rating")),
@@ -1686,6 +1760,8 @@ def build_schema_outputs(
         detailed_reviews = format_detailed_review_content(reviews_by_key.get(key, []))
         final_price_value = primary.get("final_price") or detail.get("final_sku_price")
         original_price_value = primary.get("original_price") or detail.get("original_sku_price")
+        retail_price_fields = normalized_price_fields(final_price_value, original_price_value)
+        listing_price_fields = normalized_price_fields(primary.get("final_price"), primary.get("original_price"))
         if detail:
             jsonl_rows.append(detail_schema_record(detail, product, crawl_dt, batch_id, detailed_reviews))
 
@@ -1719,9 +1795,9 @@ def build_schema_outputs(
             "_review_count_review_page": count_text(detail.get("count_of_reviews")),
             "detailed_review_content": detailed_reviews,
             "retailer_sku_name_similar": text_or_none(detail.get("retailer_sku_name_similar")),
-            "final_sku_price": price_text(final_price_value),
-            "original_sku_price": original_price_text(original_price_value, final_price_value),
-            "savings": text_or_none(primary.get("savings") or detail.get("savings")),
+            "final_sku_price": retail_price_fields["final_sku_price"],
+            "original_sku_price": retail_price_fields["original_sku_price"],
+            "savings": retail_price_fields["savings"],
             "discount_type": text_or_none(primary.get("discount_type")),
             "delivery_availability": text_or_none(detail.get("delivery_availability")),
             "available_quantity_for_purchase": primary.get("available_quantity_for_purchase"),
@@ -1751,9 +1827,9 @@ def build_schema_outputs(
             "star_rating": text_or_none(primary.get("star_rating")),
             "count_of_star_ratings": count_text(primary.get("count_of_star_ratings")),
             "count_of_reviews": count_text(primary.get("count_of_reviews")),
-            "final_sku_price": price_text(primary.get("final_price")),
-            "original_sku_price": original_price_text(primary.get("original_price"), primary.get("final_price")),
-            "savings": text_or_none(primary.get("savings")),
+            "final_sku_price": listing_price_fields["final_sku_price"],
+            "original_sku_price": listing_price_fields["original_sku_price"],
+            "savings": listing_price_fields["savings"],
             "discount_type": text_or_none(primary.get("discount_type")),
             "available_quantity_for_purchase": primary.get("available_quantity_for_purchase"),
             "sku_popularity": primary.get("sku_popularity") or sku_popularity_from_url(primary.get("product_url")),
@@ -2095,7 +2171,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     ]
     (out_dir / "command.txt").write_text(" ".join(sys.argv) + "\n", encoding="utf-8")
 
-    main_raw, main_final, main_pages, main_listing_errors = listing_until(
+    main_raw, main_final, main_pages, main_listing_errors, main_listing_pages = listing_until(
         args.api_dir,
         "main",
         query,
@@ -2104,7 +2180,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         retries=args.listing_retries,
         retry_delay=args.listing_retry_delay,
     )
-    bsr_raw, bsr_final, bsr_pages, bsr_listing_errors = listing_until(
+    bsr_raw, bsr_final, bsr_pages, bsr_listing_errors, bsr_listing_pages = listing_until(
         args.api_dir,
         "bsr",
         query,
@@ -2114,13 +2190,31 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         retry_delay=args.listing_retry_delay,
     )
     listing_errors = main_listing_errors + bsr_listing_errors
+    listing_pages = main_listing_pages + bsr_listing_pages
     write_csv(out_dir / "main_raw.csv", main_raw)
     write_csv(out_dir / "main_final.csv", main_final)
     write_csv(out_dir / "bsr_raw.csv", bsr_raw)
     write_csv(out_dir / "bsr_final.csv", bsr_final)
+    write_csv(out_dir / "listing_pages.csv", listing_pages)
     write_csv(out_dir / "listing_errors.csv", listing_errors)
     lines.append(summarize_listing("main", main_raw, main_final, main_pages, args.main_target))
     lines.append(summarize_listing("bsr", bsr_raw, bsr_final, bsr_pages, args.bsr_target))
+    slow_listing_pages = [
+        row for row in listing_pages
+        if float(row.get("elapsed_seconds") or 0) >= 10.0 or int(row.get("attempts") or 0) > 1
+    ]
+    if slow_listing_pages:
+        lines.append(f"[listing_page] slow_or_retried={len(slow_listing_pages)}")
+        for row in slow_listing_pages[:50]:
+            lines.append(
+                "[listing_page] "
+                f"{row.get('listing_stage')} page={row.get('page')} "
+                f"status={row.get('status')} attempts={row.get('attempts')} "
+                f"elapsed={row.get('elapsed_seconds')}s rows={row.get('rows')} "
+                f"new={row.get('new_unique')} unique={row.get('final_unique')}"
+            )
+        if len(slow_listing_pages) > 50:
+            lines.append(f"[listing_page] omitted={len(slow_listing_pages) - 50}")
     if listing_errors:
         exit_code = 1
         lines.append(f"[listing_error] count={len(listing_errors)}")
@@ -2394,7 +2488,15 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             lines.append(f"[review_retry] omitted={len(review_retry_lines) - 50}")
     lines.append("")
     lines.append("files:")
-    file_names = ["main_final.csv", "bsr_final.csv", "listing_errors.csv", "detail.csv", "review.csv", "errors.csv"]
+    file_names = [
+        "main_final.csv",
+        "bsr_final.csv",
+        "listing_pages.csv",
+        "listing_errors.csv",
+        "detail.csv",
+        "review.csv",
+        "errors.csv",
+    ]
     file_names += [
         f"{product_key}_retail_com_preview.csv",
         f"{product_key}_product_list_preview.csv",
