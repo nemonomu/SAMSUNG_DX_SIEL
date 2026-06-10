@@ -158,6 +158,49 @@ def normalize_price(p):
     return f'{prefix}{int(raw):,}{suffix}'
 
 
+def price_to_int(v):
+    if v is None or v == '':
+        return None
+    if isinstance(v, (int, float)):
+        return int(v)
+    match = re.search(r'(\d[\d,]*)', str(v))
+    if not match:
+        return None
+    try:
+        return int(match.group(1).replace(',', ''))
+    except ValueError:
+        return None
+
+
+def computed_savings_text(final, original):
+    final_value = price_to_int(final)
+    original_value = price_to_int(original)
+    if final_value is None or original_value is None:
+        return None
+    if final_value <= 0 or original_value <= final_value:
+        return None
+    if original_value > final_value * 10:
+        return None
+    raw = (original_value - final_value) * 100.0 / original_value
+    if raw <= 0:
+        return None
+    if raw < 1:
+        return '1%'
+    return f'{int(raw + 0.5)}%'
+
+
+def normalize_fpkt_price_values(final_price, original_price):
+    final_norm = normalize_price(final_price)
+    original_norm = normalize_price(original_price)
+    final_value = price_to_int(final_norm)
+    original_value = price_to_int(original_norm)
+    if final_value is None or original_value is None:
+        return final_norm, None, None
+    if original_value <= final_value or original_value > final_value * 10:
+        return final_norm, None, None
+    return final_norm, original_norm, computed_savings_text(final_norm, original_norm)
+
+
 def normalize_count(v):
     """count_of_reviews / count_of_star_ratings 인도식 → 서양식 콤마.
     예: '12,34,567' → '1,234,567'. 4자리 미만 ('6,759' 등) 은 인도식=서양식 동일."""
@@ -324,6 +367,12 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             redirect_value = redirect_by_key.get(key)
         if (account or '').lower() == 'amazon' and redirect_value is None:
             redirect_value = False
+        final_price = normalize_price(primary.get('final_sku_price') or d.get('final_sku_price'))
+        original_price = normalize_price(primary.get('original_sku_price') or d.get('original_sku_price'))
+        savings = primary.get('savings') or d.get('savings')
+        if (account or '').lower() == 'flipkart':
+            final_price, original_price, savings = normalize_fpkt_price_values(final_price, original_price)
+
         row = {
             'country':           'siel',
             'product':           prod or None,
@@ -347,9 +396,9 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             # 가격: primary (main 우선, 없으면 bsr) → detail fallback
             # bsr-only 카드는 listing 컬럼 비어있는 경우 많음 → detail page 에서 회수
             # normalize_price: 인도식 콤마 → 서양식 (1,49,998 → 149,998)
-            'final_sku_price':    normalize_price(primary.get('final_sku_price') or d.get('final_sku_price')),
-            'original_sku_price': normalize_price(primary.get('original_sku_price') or d.get('original_sku_price')),
-            'savings':            primary.get('savings') or d.get('savings'),
+            'final_sku_price':    final_price,
+            'original_sku_price': original_price,
+            'savings':            savings,
             'discount_type':      primary.get('discount_type'),
             # 배송/재고
             'delivery_availability':           d.get('delivery_availability') or primary.get('delivery_availability'),
