@@ -167,7 +167,12 @@ def make_driver(headless: bool = False, page_load_strategy: str | None = None) -
     opts.add_argument('--no-sandbox')
     opts.add_argument('--disable-dev-shm-usage')
     opts.add_argument('--window-size=1920,1080')
+    opts.add_argument('--start-maximized')
     opts.add_argument('--lang=en-IN')
+    opts.add_argument('--disable-background-timer-throttling')
+    opts.add_argument('--disable-backgrounding-occluded-windows')
+    opts.add_argument('--disable-renderer-backgrounding')
+    opts.add_argument('--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling')
     kwargs = {'options': opts}
     major = siel_log.detect_chrome_major()
     if major:
@@ -176,6 +181,14 @@ def make_driver(headless: bool = False, page_load_strategy: str | None = None) -
     try:
         driver.set_page_load_timeout(60)
         driver.set_script_timeout(30)
+    except WebDriverException:
+        pass
+    try:
+        driver.set_window_rect(0, 0, 1920, 1080)
+    except WebDriverException:
+        pass
+    try:
+        driver.execute_cdp_cmd('Emulation.setFocusEmulationEnabled', {'enabled': True})
     except WebDriverException:
         pass
     return driver

@@ -36,6 +36,33 @@ _retail_sqls: dict = {}
 _list_sqls: dict = {}
 
 
+def _prevent_windows_sleep() -> None:
+    if os.name != 'nt':
+        return
+    try:
+        import ctypes
+        es_continuous = 0x80000000
+        es_system_required = 0x00000001
+        es_display_required = 0x00000002
+        ctypes.windll.kernel32.SetThreadExecutionState(
+            es_continuous | es_system_required | es_display_required
+        )
+        _run_log('windows sleep/display idle prevention enabled')
+    except Exception:
+        _run_log('windows sleep/display idle prevention failed', 'WARNING')
+
+
+def _clear_windows_sleep_prevention() -> None:
+    if os.name != 'nt':
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+        _run_log('windows sleep/display idle prevention cleared')
+    except Exception:
+        pass
+
+
 def _url_key(url: str) -> str:
     """? 앞 path 만 — fallback dedupe key. ASIN 우선 (rec 기반)."""
     return (url or '').split('?', 1)[0].rstrip('/')
@@ -809,6 +836,7 @@ def main() -> int:
     # dual emit (stdout + jsonl + streaming INSERT) — emit monkey-patch 1번만
     L.emit = _make_dual(L.emit)
     D.emit = _make_dual(D.emit)
+    _prevent_windows_sleep()
 
     if args.streaming_insert and not args.no_auto_insert:
         _setup_db()
@@ -832,6 +860,7 @@ def main() -> int:
         _hard_kill_driver(driver)
         _close_results()
         _close_db()
+        _clear_windows_sleep_prevention()
         _sync_logs_to_retail_com()
 
 
