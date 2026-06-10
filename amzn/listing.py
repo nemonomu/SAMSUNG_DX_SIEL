@@ -61,6 +61,7 @@ MAIN_URL_TEMPLATES = {
     'ref': 'https://www.amazon.in/s?k=refrigerator&page={page}',
     'ldy': 'https://www.amazon.in/s?k=washing+machine&page={page}',
 }
+MAIN_MAX_PAGE_LIMIT = 20
 
 BSR_URL_TEMPLATES = {
     'hhp': [
@@ -616,7 +617,11 @@ def crawl_main(driver, product: str, selectors: dict, batch_id: str,
     rank = 0
     seen_keys = set()
     duplicate_count = 0
-    for page in range(1, max_pages + 1):
+    page_limit = min(max_pages, MAIN_MAX_PAGE_LIMIT)
+    if _logger and max_pages > page_limit:
+        _logger.info('main max_pages capped: requested=%d effective=%d',
+                     max_pages, page_limit)
+    for page in range(1, page_limit + 1):
         if rank >= max_rank:
             break
         url = template.format(page=page)
