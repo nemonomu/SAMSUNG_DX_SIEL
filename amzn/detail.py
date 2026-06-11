@@ -253,6 +253,22 @@ def extract_single(driver, xpath: str):
         return None
 
 
+HHP_STORAGE_STRICT_XPATH = (
+    '//*[@id="productOverview_feature_div"]'
+    '//tr[contains(@class,"po-memory_storage_capacity")]/td[2]//span'
+    ' | //*[@id="productDetails_expanderTables_depthLeftSections"]'
+    '//table[contains(@class,"prodDetTable")]//tr['
+    './/th[contains(normalize-space(.),"Memory Storage Capacity") '
+    'or contains(normalize-space(.),"Internal Memory") '
+    'or contains(normalize-space(.),"Storage Capacity")]]/td'
+    ' | //table//tr['
+    './/*[self::th or self::td]['
+    'contains(normalize-space(.),"Memory Storage Capacity") '
+    'or contains(normalize-space(.),"Internal Memory") '
+    'or contains(normalize-space(.),"Storage Capacity")]]/td[last()]'
+)
+
+
 def _extract_multi_raw(driver, xpath: str, max_n=None) -> list:
     try:
         els = driver.find_elements(By.XPATH, xpath)
@@ -594,6 +610,11 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str,
             v = extract_single(driver, xpath)
             if v is None and sel.get('fallback'):
                 v = extract_single(driver, sel['fallback'])
+            rec[field] = v
+        elif field == 'hhp_storage':
+            v = extract_single(driver, xpath)
+            if v is None:
+                v = extract_single(driver, HHP_STORAGE_STRICT_XPATH)
             rec[field] = v
         elif field == 'delivery_availability':
             rec[field] = siel_log.parse_delivery_availability(extract_single(driver, xpath))
