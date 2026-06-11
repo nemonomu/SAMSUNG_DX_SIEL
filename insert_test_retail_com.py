@@ -201,6 +201,14 @@ def normalize_fpkt_price_values(final_price, original_price):
     return final_norm, original_norm, computed_savings_text(final_norm, original_norm)
 
 
+def amazon_price_fields(final_price, original_price, savings):
+    final_norm = normalize_price(final_price)
+    original_norm = normalize_price(original_price)
+    if final_norm not in (None, '') and price_to_int(final_norm) is None:
+        return final_norm, None, None
+    return final_norm, original_norm, savings
+
+
 def normalize_count(v):
     """count_of_reviews / count_of_star_ratings 인도식 → 서양식 콤마.
     예: '12,34,567' → '1,234,567'. 4자리 미만 ('6,759' 등) 은 인도식=서양식 동일."""
@@ -370,7 +378,10 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
         final_price = normalize_price(primary.get('final_sku_price') or d.get('final_sku_price'))
         original_price = normalize_price(primary.get('original_sku_price') or d.get('original_sku_price'))
         savings = primary.get('savings') or d.get('savings')
-        if (account or '').lower() == 'flipkart':
+        if (account or '').lower() == 'amazon':
+            final_price, original_price, savings = amazon_price_fields(
+                final_price, original_price, savings)
+        elif (account or '').lower() == 'flipkart':
             final_price, original_price, savings = normalize_fpkt_price_values(final_price, original_price)
 
         row = {
