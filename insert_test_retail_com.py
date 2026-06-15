@@ -385,7 +385,7 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             final_price, original_price, savings = normalize_fpkt_price_values(final_price, original_price)
 
         row = {
-            'country':           'siel',
+            'country':           'SIEL',
             'product':           prod or None,
             'item':              item,
             'sku':               sku,

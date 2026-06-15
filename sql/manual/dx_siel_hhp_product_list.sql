@@ -17,7 +17,7 @@
 CREATE TABLE IF NOT EXISTS dx_siel_hhp_product_list (
   id                SERIAL PRIMARY KEY,
   -- 식별
-  country           TEXT,                         -- 'siel'
+  country           TEXT,                         -- 'SIEL'
   product           TEXT,                         -- 'HHP'
   item              TEXT,                         -- Flipkart fsn / Amazon asin
   account_name      TEXT,                         -- 'Flipkart' / 'Amazon'

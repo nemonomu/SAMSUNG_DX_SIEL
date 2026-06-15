@@ -1771,7 +1771,7 @@ def build_schema_outputs(
         listing_crawl_dt = primary.get("crawl_datetime") or retail_crawl_dt
         retail = {field: None for field in retail_cols}
         retail.update({
-            "country": "siel",
+            "country": "SIEL",
             "product": product.upper(),
             "item": item,
             "sku": detail.get("sku"),

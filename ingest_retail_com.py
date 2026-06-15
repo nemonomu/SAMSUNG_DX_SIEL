@@ -85,7 +85,7 @@ def main():
     ap = argparse.ArgumentParser(description='SIEL retail_com ingest')
     ap.add_argument('--jsonl', required=True)
     ap.add_argument('--table', default='dx_siel_test_retail_com')
-    ap.add_argument('--country', default='siel')
+    ap.add_argument('--country', default='SIEL')
     args = ap.parse_args()
 
     main_by_url = {}

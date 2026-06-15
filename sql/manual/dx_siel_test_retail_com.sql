@@ -11,7 +11,7 @@
 CREATE TABLE IF NOT EXISTS dx_siel_test_retail_com (
   id                SERIAL PRIMARY KEY,
   -- 식별
-  country           TEXT,                         -- 'siel'
+  country           TEXT,                         -- 'SIEL'
   product           TEXT,                         -- 'TV' / 'HHP' / 'REF' / 'LDY'
   item              TEXT,                         -- Flipkart fsn / Amazon asin
   sku               TEXT,
