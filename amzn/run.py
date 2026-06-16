@@ -150,9 +150,11 @@ def _stream_insert(detail_rec: dict) -> None:
     key = _rec_key(detail_rec)
     main_rec = _main_cache.get(key)
     bsr_rec = _bsr_cache.get(key)
-    detail_skipped = bool(detail_rec.get('_detail_skip'))
-    # retail_com — full merge (main + bsr + detail). ASIN mismatch detail is not trusted.
-    row_full = None if detail_skipped else ITR.make_row(main_rec, bsr_rec, detail_rec)
+    detail_skip_reason = detail_rec.get('_detail_skip')
+    detail_skipped = bool(detail_skip_reason)
+    redirect_skip = detail_skip_reason == 'asin_mismatch' and detail_rec.get('redirect') is True
+    # retail_com — full merge (main + bsr + detail). ASIN mismatch keeps listing data only with redirect=true.
+    row_full = None if (detail_skipped and not redirect_skip) else ITR.make_row(main_rec, bsr_rec, detail_rec)
     # product_list — main + bsr only. redirect records the ASIN comparison result.
     row_listing = ITR.make_row_listing(main_rec, bsr_rec, detail_rec)
     if not row_full and not row_listing:
@@ -166,7 +168,7 @@ def _stream_insert(detail_rec: dict) -> None:
         if row_listing:
             _db_cursor.execute(_list_sqls[prod_lower], row_listing)
         # item_mst upsert — retail_com 적재된 row 만 대상. 실패해도 retail/list 는 commit.
-        if row_full:
+        if row_full and not row_full.get('_redirect_listing_only'):
             try:
                 import siel_item_mst
             except ImportError:

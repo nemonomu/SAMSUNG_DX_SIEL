@@ -375,6 +375,10 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             redirect_value = redirect_by_key.get(key)
         if (account or '').lower() == 'amazon' and redirect_value is None:
             redirect_value = False
+        redirect_listing_only = (
+            d.get('_detail_skip') == 'asin_mismatch'
+            and d.get('redirect') is True
+        )
         final_price = normalize_price(primary.get('final_sku_price') or d.get('final_sku_price'))
         original_price = normalize_price(primary.get('original_sku_price') or d.get('original_sku_price'))
         savings = primary.get('savings') or d.get('savings')
@@ -444,6 +448,8 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             'sku_assurance':                        d.get('sku_assurance'),
             'number_of_units_purchased_past_month': primary.get('number_of_units_purchased_past_month'),
         }
+        if redirect_listing_only:
+            row['_redirect_listing_only'] = True
         rows.append(nullify_blank_strings(row))
     return rows
 
@@ -500,7 +506,9 @@ def main() -> int:
                 else:
                     n_bsr += 1
             elif stage == 'detail':
-                if rec.get('_detail_skip'):
+                detail_skip_reason = rec.get('_detail_skip')
+                redirect_skip = detail_skip_reason == 'asin_mismatch' and rec.get('redirect') is True
+                if detail_skip_reason and not redirect_skip:
                     detail_skip_keys.add(key)
                 else:
                     detail_by_url[key] = rec
@@ -546,6 +554,7 @@ def main() -> int:
     try:
         for prod_lower in PRODUCT_LOWERS:
             rows_full_prod = [r for r in rows_full if (r.get('product') or '').lower() == prod_lower]
+            rows_full_mst_prod = [r for r in rows_full_prod if not r.get('_redirect_listing_only')]
             rows_listing_prod = [r for r in rows_listing if (r.get('product') or '').lower() == prod_lower]
             if not rows_full_prod and not rows_listing_prod:
                 continue
@@ -554,11 +563,11 @@ def main() -> int:
             # mst fallback — 이전 run 의 mst 값으로 NULL spec 채움. 실패해도 INSERT 진행.
             mst_filled = 0
             mst_fb_err = None
-            if rows_full_prod:
+            if rows_full_mst_prod:
                 with conn.cursor() as sp_cur:
                     sp_cur.execute('SAVEPOINT mst_fb_sp')
                     try:
-                        mst_filled = siel_item_mst.fill_from_mst(conn, prod_lower, rows_full_prod)
+                        mst_filled = siel_item_mst.fill_from_mst(conn, prod_lower, rows_full_mst_prod)
                         sp_cur.execute('RELEASE SAVEPOINT mst_fb_sp')
                     except Exception as e:
                         sp_cur.execute('ROLLBACK TO SAVEPOINT mst_fb_sp')
@@ -588,7 +597,7 @@ def main() -> int:
             with conn.cursor() as sp_cur:
                 sp_cur.execute('SAVEPOINT mst_sp')
                 try:
-                    mst_upserted = siel_item_mst.upsert_item_mst_batch(conn, prod_lower, rows_full_prod)
+                    mst_upserted = siel_item_mst.upsert_item_mst_batch(conn, prod_lower, rows_full_mst_prod)
                     sp_cur.execute('RELEASE SAVEPOINT mst_sp')
                 except Exception as e:
                     sp_cur.execute('ROLLBACK TO SAVEPOINT mst_sp')
