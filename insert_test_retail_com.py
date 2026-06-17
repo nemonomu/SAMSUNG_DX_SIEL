@@ -28,6 +28,7 @@ import psycopg2
 import psycopg2.extras
 import config
 import siel_item_mst
+import siel_log
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -223,6 +224,33 @@ def normalize_count(v):
     return f'{int(raw):,}'
 
 
+def normalize_star_value(v):
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    if s.lower() == 'no customer reviews':
+        return s
+    return siel_log.parse_star_rating(s)
+
+
+def normalize_rating_count_value(v):
+    parsed = siel_log.parse_count_of_ratings(v)
+    if parsed is not None:
+        return normalize_count(parsed)
+    normalized = normalize_count(v)
+    return normalized if normalized != v else None
+
+
+def normalize_review_count_value(v):
+    parsed = siel_log.parse_count_of_reviews(v)
+    if parsed is not None:
+        return normalize_count(parsed)
+    normalized = normalize_count(v)
+    return normalized if normalized != v else None
+
+
 def url_path(url: str) -> str:
     """? 앞 path 만 — fallback 매칭용."""
     return (url or '').split('?', 1)[0].rstrip('/')
@@ -402,10 +430,10 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             'crawl_datetime':    cdt,
             'batch_id':          primary.get('batch_id') or d.get('batch_id'),
             # 평점/리뷰: detail 우선, main fallback (양방향 보강 5/8). count 는 서양식 콤마 정규화 (5/10).
-            'star_rating':               d.get('star_rating') or primary.get('star_rating'),
-            'count_of_star_ratings':     normalize_count(d.get('count_of_star_ratings') or primary.get('count_of_star_ratings')),
+            'star_rating':               normalize_star_value(d.get('star_rating') or primary.get('star_rating')),
+            'count_of_star_ratings':     normalize_rating_count_value(d.get('count_of_star_ratings') or primary.get('count_of_star_ratings')),
             # 고객사 spec: count_of_reviews 는 listing(primary) 단계 값 우선. detail fallback.
-            'count_of_reviews':          normalize_count(primary.get('count_of_reviews') or d.get('count_of_reviews')),
+            'count_of_reviews':          normalize_review_count_value(primary.get('count_of_reviews') or d.get('count_of_reviews')),
             'detailed_review_content':   d.get('detailed_review_content'),
             'retailer_sku_name_similar': d.get('retailer_sku_name_similar'),
             # 가격: primary (main 우선, 없으면 bsr) → detail fallback
