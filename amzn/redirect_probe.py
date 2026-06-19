@@ -37,6 +37,12 @@ _RAM_STORAGE_RE = re.compile(r'\b(\d+)\s*gb\s*\+\s*(\d+)\s*gb\b', re.I)
 _RAM_RE = re.compile(r'\b(\d+)\s*gb\s*(?:ram|memory)\b', re.I)
 _STORAGE_RE = re.compile(r'\b(\d+)\s*(gb|tb)\b', re.I)
 _ASIN_RE = re.compile(r'/(?:dp|gp/product)/([A-Z0-9]{10})', re.I)
+_KNOWN_COLORS = (
+    'black', 'white', 'blue', 'green', 'yellow', 'pink', 'red', 'purple',
+    'lavender', 'gold', 'silver', 'grey', 'gray', 'orange', 'teal',
+    'midnight', 'starlight', 'natural titanium', 'desert titanium',
+    'hyper black', 'beach gold', 'light green',
+)
 
 
 def normalize_text(value: str | None) -> str:
@@ -84,13 +90,27 @@ def extract_hhp_specs(text: str | None) -> dict:
     if paren:
         first = paren[0]
         color_part = re.split(r'\d+\s*gb|\d+\s*tb|\|', first, flags=re.I)[0]
-        specs['color'] = _SPACE_RE.sub(' ', color_part).strip(' ,-')
+        color_part = _SPACE_RE.sub(' ', color_part).strip(' ,-')
+        if color_part and not re.search(r'\d|inch|cm|display|screen|battery|camera', color_part, re.I):
+            specs['color'] = color_part
     else:
         pipe_parts = [p.strip() for p in value.split('|')]
         if len(pipe_parts) >= 2:
             maybe_color = pipe_parts[1]
             if not re.search(r'\d+\s*(gb|tb)|processor|battery|camera|display', maybe_color, re.I):
                 specs['color'] = maybe_color[:60].strip()
+    if not specs['color']:
+        tail = re.split(r'[;|]', value)[-1].strip(' .,-')
+        tail_norm = normalize_text(tail)
+        for color in _KNOWN_COLORS:
+            if tail_norm == color or tail_norm.endswith(' ' + color):
+                specs['color'] = tail
+                break
+    if not specs['color']:
+        value_norm = normalize_text(value)
+        hits = [color for color in _KNOWN_COLORS if re.search(rf'\b{re.escape(color)}\b', value_norm)]
+        if hits:
+            specs['color'] = max(hits, key=len)
     return specs
 
 

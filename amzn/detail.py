@@ -444,9 +444,19 @@ def _detail_payload_empty(rec: dict, selectors: dict) -> bool:
     return True
 
 
+
+def _normalize_redirect_name(value: str | None) -> str:
+    """Compare redirect names by ignoring only whitespace runs and case."""
+    return re.sub(r'\s+', ' ', value or '').strip().casefold()
+
+
+def _landing_product_title(driver) -> str | None:
+    return extract_single(driver, '//*[@id="productTitle"]')
+
 def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str,
-                 _continue_retry: bool = False) -> dict:
+                 _continue_retry: bool = False, listing_rec: dict | None = None) -> dict:
     asin = asin_from_url(url)
+    listing_name = (listing_rec or {}).get('retailer_sku_name') or ''
     rec: dict = {
         'account_name':   ACCOUNT_NAME,
         'product':        product,
@@ -492,19 +502,43 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str,
         if landing_asin == asin:
             rec['redirect'] = False
         else:
+            landing_name = _landing_product_title(driver)
+            same_name_redirect = bool(
+                listing_name
+                and landing_name
+                and _normalize_redirect_name(listing_name) == _normalize_redirect_name(landing_name)
+            )
             rec.update({
-                '_detail_skip': 'asin_mismatch',
                 'redirect': True,
                 'landing_url': landing_url,
                 'landing_asin': landing_asin,
+                '_original_asin': asin,
+                '_listing_retailer_sku_name': listing_name or None,
+                '_landing_retailer_sku_name': landing_name,
             })
-            if _logger:
-                _logger.warning(
-                    'detail skip: listed ASIN != landing ASIN listed=%s landing=%s landing_url=%s',
-                    asin, landing_asin, landing_url)
-            maybe_save_html(driver)
-            return rec
-
+            if same_name_redirect:
+                rec['_redirect_decision'] = 'same_name_collect_landing'
+                rec['_redirect_use_landing'] = True
+                rec['item'] = landing_asin or asin
+                if product == 'hhp':
+                    rec['sku'] = landing_asin or asin
+                if _logger:
+                    _logger.warning(
+                        'detail redirect collect: listed ASIN != landing ASIN but names match '
+                        'listed=%s landing=%s landing_url=%s',
+                        asin, landing_asin, landing_url)
+            else:
+                rec.update({
+                    '_detail_skip': 'asin_mismatch',
+                    '_redirect_decision': 'name_mismatch_listing_only',
+                })
+                if _logger:
+                    _logger.warning(
+                        'detail skip: listed ASIN != landing ASIN listed=%s landing=%s '
+                        'landing_url=%s listing_name=%r landing_name=%r',
+                        asin, landing_asin, landing_url, listing_name, landing_name)
+                maybe_save_html(driver)
+                return rec
     maybe_save_html(driver)
 
     for trigger_field in EXPAND_FIELDS:
@@ -666,7 +700,7 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str,
             _logger.warning('detail payload empty with continue_shopping page; retry url=%s', url)
         if check_and_recover_continue_shopping(driver, url):
             return crawl_detail(driver, product, url, selectors, batch_id,
-                                _continue_retry=True)
+                                _continue_retry=True, listing_rec=listing_rec)
         rec['_detail_skip'] = 'continue_shopping_page'
         if _logger:
             _logger.warning('detail skip: continue_shopping_page url=%s', url)

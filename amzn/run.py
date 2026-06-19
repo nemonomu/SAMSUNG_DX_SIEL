@@ -84,6 +84,13 @@ def _rec_key(rec: dict) -> str:
     return m.group(1) if m else _url_key(src)
 
 
+
+def _listing_rec_for_url(url: str) -> dict | None:
+    key = _rec_key({'product_url': url})
+    if not key:
+        return None
+    return _main_cache.get(key) or _bsr_cache.get(key)
+
 def _setup_db():
     """run 시작 시 DB connection long-lived. detail emit 마다 INSERT.
     5/10 사용자 룰: 본 운영 8 테이블 (4 retail_com + 4 product_list) 만 INSERT, test 제거."""
@@ -398,13 +405,11 @@ def _sync_logs_to_retail_com() -> None:
 
 
 def _make_dual(orig_emit):
-    """emit monkey-patch — original (stdout) + jsonl write + streaming INSERT (detail 마다)."""
+    """emit monkey-patch: stdout + jsonl + listing cache + optional streaming INSERT."""
     def dual(rec):
         orig_emit(rec)
         _write_results(rec)
         _log_record_event(rec)
-        if not _streaming_enabled:
-            return
         stage = rec.get('stage')
         key = _rec_key(rec)
         if not key:
@@ -413,7 +418,7 @@ def _make_dual(orig_emit):
             _main_cache.setdefault(key, rec)
         elif stage == 'bsr':
             _bsr_cache.setdefault(key, rec)
-        elif stage == 'detail':
+        elif stage == 'detail' and _streaming_enabled:
             _stream_insert(rec)
     return dual
 
@@ -592,7 +597,7 @@ def run_detail(driver, product: str, urls: list, sleep_s: float, batch_id: str |
         return 0
     n = 0
     for u in urls:
-        rec = D.crawl_detail(driver, product, u, sels, batch_id)
+        rec = D.crawl_detail(driver, product, u, sels, batch_id, listing_rec=_listing_rec_for_url(u))
         D.emit(rec)
         n += 1
         if sleep_s > 0:

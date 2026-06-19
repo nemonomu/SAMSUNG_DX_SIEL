@@ -407,9 +407,30 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             d.get('_detail_skip') == 'asin_mismatch'
             and d.get('redirect') is True
         )
-        final_price = normalize_price(primary.get('final_sku_price') or d.get('final_sku_price'))
-        original_price = normalize_price(primary.get('original_sku_price') or d.get('original_sku_price'))
-        savings = primary.get('savings') or d.get('savings')
+        redirect_use_landing = (
+            d.get('_redirect_use_landing') is True
+            and d.get('redirect') is True
+        )
+        if redirect_use_landing:
+            item = d.get('landing_asin') or d.get('item') or item
+            sku = d.get('sku') or d.get('landing_asin') or sku
+        detail_first = redirect_use_landing
+        final_price = normalize_price(
+            (d.get('final_sku_price') or primary.get('final_sku_price'))
+            if detail_first else
+            (primary.get('final_sku_price') or d.get('final_sku_price'))
+        )
+        original_price = normalize_price(
+            (d.get('original_sku_price') or primary.get('original_sku_price'))
+            if detail_first else
+            (primary.get('original_sku_price') or d.get('original_sku_price'))
+        )
+        savings = (d.get('savings') or primary.get('savings')) if detail_first else (primary.get('savings') or d.get('savings'))
+        retailer_sku_name = (
+            primary.get('retailer_sku_name')
+            if redirect_use_landing else
+            (d.get('retailer_sku_name') or primary.get('retailer_sku_name'))
+        )
         if (account or '').lower() == 'amazon':
             final_price, original_price, savings = amazon_price_fields(
                 final_price, original_price, savings)
@@ -423,7 +444,7 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             'sku':               sku,
             'account_name':      account or None,
             'page_type':         page_type,
-            'retailer_sku_name': d.get('retailer_sku_name') or primary.get('retailer_sku_name'),
+            'retailer_sku_name': retailer_sku_name,
             'product_url':       primary.get('product_url') or d.get('source_url'),
             'redirect':          redirect_value,
             'calendar_week':     calendar_week_iso(cdt),

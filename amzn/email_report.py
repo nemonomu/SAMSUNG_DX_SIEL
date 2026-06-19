@@ -244,9 +244,11 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
         asin = rec.get('asin')
 
         if rec.get('redirect') is True:
-            issues['redirect'].append(url)
-            # redirect 시 detail 본문 신뢰 X → 이하 모든 본문 검사 스킵
-            continue
+            redirect_decision = rec.get('_redirect_decision')
+            issues['redirect'].append(f'{url} ({redirect_decision})' if redirect_decision else url)
+            # name-mismatch redirect keeps listing-only data; same-name redirect still validates landing detail payload.
+            if rec.get('_redirect_use_landing') is not True:
+                continue
         if rec.get('_detail_skip'):
             continue
         valid_recs.append(rec)
