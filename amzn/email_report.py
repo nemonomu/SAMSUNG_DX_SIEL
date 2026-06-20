@@ -39,6 +39,10 @@ try:
 except Exception:
     _parse_int_field = None
 
+try:
+    import insert_test_retail_com as _insert_merge  # type: ignore
+except Exception:
+    _insert_merge = None
 
 def _parse_price_safe(v):
     if _parse_price is not None:
@@ -188,6 +192,7 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
         return issues, 0
 
     main_by_key: dict = {}
+    bsr_by_key: dict = {}
     detail_recs: list = []
     with open(jsonl_path, encoding='utf-8') as f:
         for line in f:
@@ -232,6 +237,10 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
                 key = rec.get('asin')
                 if key:
                     main_by_key.setdefault(key, rec)
+            elif stage == 'bsr':
+                key = rec.get('asin')
+                if key:
+                    bsr_by_key.setdefault(key, rec)
             elif stage == 'detail':
                 detail_recs.append(rec)
 
@@ -256,14 +265,29 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
         if rec.get('sku') in (None, ''):
             issues['sku_null'].append(url)
 
+        # Match DB insert semantics. The DB merge stores listing prices first for
+        # normal Amazon rows; checking raw detail final + main original creates
+        # false positives when detail price changes after listing capture.
         fsp = rec.get('final_sku_price')
         osp = rec.get('original_sku_price')
-        # HHP 등 가격이 main 에 있는 경우 보정
-        m = main_by_key.get(asin) or {}
-        if fsp in (None, ''):
-            fsp = m.get('final_sku_price')
-        if osp in (None, ''):
-            osp = m.get('original_sku_price')
+        m = main_by_key.get(asin)
+        b = bsr_by_key.get(asin)
+        if _insert_merge is not None:
+            try:
+                merged_row = _insert_merge.make_row(m, b, rec)
+            except Exception:
+                merged_row = None
+            if merged_row:
+                fsp = merged_row.get('final_sku_price')
+                osp = merged_row.get('original_sku_price')
+        else:
+            primary = m or b or {}
+            if rec.get('_redirect_use_landing') is True:
+                fsp = rec.get('final_sku_price') or primary.get('final_sku_price')
+                osp = rec.get('original_sku_price') or primary.get('original_sku_price')
+            else:
+                fsp = primary.get('final_sku_price') or rec.get('final_sku_price')
+                osp = primary.get('original_sku_price') or rec.get('original_sku_price')
         fpv = _parse_price_safe(fsp)
         opv = _parse_price_safe(osp)
         if fpv is not None and opv is not None and fpv >= opv:

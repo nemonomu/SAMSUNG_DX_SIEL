@@ -210,7 +210,7 @@ def parse_price_value(v):
     return s if s else None
 
 
-_AMZN_RUPEE_PRICE_RE = re.compile(r'₹[\d,]+')
+_AMZN_RUPEE_PRICE_RE = re.compile(r'₹\s*\d[\d,]*(?:\.\d+)?')
 
 
 _AMZN_PRICE_SENTINELS = (
@@ -241,7 +241,10 @@ def parse_amzn_apex_price(v):
         return None
     m = _AMZN_RUPEE_PRICE_RE.search(s)
     if m:
-        return m.group(0)
+        price = re.sub(r'₹\s+', '₹', m.group(0))
+        if price.endswith('.00'):
+            price = price[:-3]
+        return price
     if any(sentinel in s for sentinel in _AMZN_PRICE_SENTINELS):
         return s
     return None
