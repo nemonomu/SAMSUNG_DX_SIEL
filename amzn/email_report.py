@@ -155,9 +155,12 @@ def email_recipients(value: Any) -> list:
 # (URL param isAmazonFulfilled 로만 확인 가능). 5/29 HHP 362건 100% NULL 검증.
 _VALID_NULL_BY_PRODUCT = {
     'HHP': {'fastest_delivery', 'sku_assurance'},
-    'TV': set(),
+    'TV': {'fastest_delivery'},
     'REF': set(),
     'LDY': set(),
+}
+_NOTICE_NULL_BY_PRODUCT = {
+    'TV': {'fastest_delivery'},
 }
 
 
@@ -179,6 +182,7 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
         'rating_count_no_rating': [],
         'review_count_no_review_text': [],
         'all_null_fields': [],
+        'notice_null_fields': [],
         'type_mismatch': [],
         'run_error': [],
         'detail_zero': [],
@@ -330,11 +334,15 @@ def collect_url_issues(jsonl_path: str, product: str = '') -> tuple[dict, int]:
                 slot = field_counts.setdefault(k, [0, 0])
                 slot[0] += int(v not in (None, ''))
                 slot[1] += 1
-        valid_null_set = _VALID_NULL_BY_PRODUCT.get((product or '').upper(), set())
+        product_key = (product or '').upper()
+        valid_null_set = _VALID_NULL_BY_PRODUCT.get(product_key, set())
+        notice_null_set = _NOTICE_NULL_BY_PRODUCT.get(product_key, set())
         for k, (non_null, total) in sorted(field_counts.items()):
-            if k in valid_null_set:
-                continue
             if total >= 2 and non_null == 0:
+                if k in valid_null_set:
+                    if k in notice_null_set:
+                        issues['notice_null_fields'].append({'field': k, 'total': total})
+                    continue
                 issues['all_null_fields'].append({'field': k, 'total': total})
 
     if detail_count == 0:
@@ -379,6 +387,7 @@ def build_email_report_with_severity(product: str, jsonl_path: str) -> tuple[str
     rating_mis = issues['rating_count_no_rating']
     review_mis = issues['review_count_no_review_text']
     all_null = issues['all_null_fields']
+    notice_null = issues.get('notice_null_fields', [])
     type_mis = issues['type_mismatch']
     run_errors = issues.get('run_error', [])
     detail_zero = issues.get('detail_zero', [])
@@ -408,7 +417,13 @@ def build_email_report_with_severity(product: str, jsonl_path: str) -> tuple[str
     if db_insert_summary:
         lines.insert(-1, f"db insert rows: {db_insert_summary.get('inserted_total')}")
     if severity == 'ok':
-        lines.append('특이사항 없음')
+        if notice_null:
+            lines.append('NOTICE')
+            lines.append(f'- valid-null fields: {len(notice_null)}건')
+            for item in notice_null:
+                lines.append(f"  - {item['field']} (total={item['total']})")
+        else:
+            lines.append('특이사항 없음')
         return '\n'.join(lines) + '\n', severity
 
     lines.append('SOS' if severity == 'sos' else 'WARNING')
@@ -482,8 +497,13 @@ def build_email_report_with_severity(product: str, jsonl_path: str) -> tuple[str
             v = item['value']
             v_disp = str(v) if len(str(v)) <= 80 else str(v)[:80] + '...'
             lines.append(f"  - {item['url']} field={item['field']} value={v_disp!r}")
+    if notice_null:
+        lines.append('')
+        lines.append('NOTICE')
+        lines.append(f'- valid-null fields: {len(notice_null)}건')
+        for item in notice_null:
+            lines.append(f"  - {item['field']} (total={item['total']})")
     return '\n'.join(lines) + '\n', severity
-
 
 def build_email_report(product: str, jsonl_path: str) -> tuple[str, bool]:
     body, severity = build_email_report_with_severity(product, jsonl_path)
