@@ -4,6 +4,18 @@ chcp 65001 >nul
 
 cd /d "%~dp0.."
 
+rem Auto-deploy: pull latest, then re-run the updated bat in a fresh process
+rem (a bat must not modify itself mid-run). Pull failure is non-fatal - the run
+rem continues with local code. Set FPKT_SKIP_GIT_PULL=1 to disable.
+if /I not "%FPKT_SKIP_GIT_PULL%"=="1" if not "%FPKT_GIT_PULLED%"=="1" (
+  echo [fpkt_api_run_all] git pull --ff-only
+  git pull --ff-only
+  if errorlevel 1 echo [fpkt_api_run_all] git pull failed - continuing with local code
+  set "FPKT_GIT_PULLED=1"
+  cmd.exe /d /c ""%~f0" %*"
+  exit /b !ERRORLEVEL!
+)
+
 set "RUN_MODE=%~1"
 if "%RUN_MODE%"=="" set "RUN_MODE=insert"
 
