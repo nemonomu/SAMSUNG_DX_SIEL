@@ -1574,6 +1574,14 @@ def qa_issue(check: str, item: Any, message: str, **extra: Any) -> dict[str, Any
     return row
 
 
+def is_fatal_qa_issue(row: dict[str, Any]) -> bool:
+    # review_count_diff: Flipkart 인덱싱 차이로 자연 발생 — informational.
+    # missing_*: 필수 detail 필드가 원본에 없는 경우(예: 피처폰 hhp_storage) —
+    # 해당 필드만 NULL 로 적재하고 INSERT 는 차단하지 않음.
+    check = str(row.get("check") or "")
+    return check != "review_count_diff" and not check.startswith("missing_")
+
+
 REQUIRED_DETAIL_FIELDS_BY_PRODUCT = {
     "hhp": ["sku", "hhp_storage", "hhp_color"],
     "tv": ["sku", "screen_size", "model_year"],
@@ -2003,16 +2011,20 @@ def build_email_report(
     required_cols = ["retailer_sku_name", "final_sku_price", "product_url"]
     warnings: list[str] = []
     diffs: list[str] = []
+    null_loads: list[str] = []
     listing_errors = listing_errors or []
     is_sos = len(retail_rows) == 0
     if qa_issues:
         for row in qa_issues:
-            if row.get('check') == 'review_count_diff':
+            check = str(row.get('check') or '')
+            if check == 'review_count_diff':
                 diffs.append(
                     f"{row.get('item')} listing={row.get('listing_count')} "
                     f"review_page={row.get('review_page_count')} "
                     f"content={row.get('content_count')} review_rows={row.get('review_rows')}"
                 )
+            elif check.startswith('missing_'):
+                null_loads.append(f"{row.get('item')} {row.get('message')} (NULL 적재)")
 
     if is_sos:
         warnings.append("최종 DB 적재 대상 row 0건")
@@ -2069,12 +2081,16 @@ def build_email_report(
         lines.extend(f"- {warning}" for warning in warnings)
     if diffs:
         lines.append("")
+        # 상세내역은 qa_issues.csv 로 확인 — 메일에는 총 건수만 표기.
         lines.append(f"DIFF (review count — listing vs review page): {len(diffs)}건")
-        for d in diffs[:30]:
+    if null_loads:
+        lines.append("")
+        lines.append(f"INFO (필수 필드 없음 — NULL 적재): {len(null_loads)}건")
+        for d in null_loads[:30]:
             lines.append(f"- {d}")
-        if len(diffs) > 30:
-            lines.append(f"- 외 {len(diffs) - 30}건 생략")
-    if not warnings and not diffs:
+        if len(null_loads) > 30:
+            lines.append(f"- 외 {len(null_loads) - 30}건 생략")
+    if not warnings and not diffs and not null_loads:
         lines.append("")
         lines.append("특이사항 없음")
     return "\n".join(lines) + "\n", bool(warnings), is_sos
@@ -2424,9 +2440,9 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     if args.db_insert:
         if errors:
             lines.append(f"[db_insert] excluded detail/review errors={len(errors)}")
-        # DIFF (review_count_diff 등 informational) 는 INSERT 차단 X — fatal 만 차단.
-        fatal_qa = [row for row in qa_issues if row.get('check') != 'review_count_diff']
-        diff_qa = [row for row in qa_issues if row.get('check') == 'review_count_diff']
+        # DIFF (review_count_diff, missing_* 등 informational) 는 INSERT 차단 X — fatal 만 차단.
+        fatal_qa = [row for row in qa_issues if is_fatal_qa_issue(row)]
+        diff_qa = [row for row in qa_issues if not is_fatal_qa_issue(row)]
         if listing_errors:
             lines.append(f"[db_insert] skipped: listing_errors={len(listing_errors)}")
             db_status = f"skipped: listing_errors={len(listing_errors)}"
