@@ -1238,27 +1238,53 @@ def delivery_availability_value(response: dict[str, Any]) -> str | None:
     return find_delivery(widget_texts)
 
 
+SIMILAR_PRODUCT_VIEW_TYPES = {
+    "pp_reco_pmu_horizontal_scrollable_ads",
+    "pp_reco_pmu_horizontal_scrollable_ads_with_pill",
+}
+SIMILAR_PRODUCT_HEADERS = {
+    "similar products",
+    "discounts on similar products",
+}
+SIMILAR_PRODUCT_CARD_KEYS = (
+    "hp_reco_product-card_0",
+    "reco_product_card_with_Pill_0",
+)
+
+
 def similar_product_names(response: dict[str, Any]) -> str | None:
     names: list[str] = []
     slots = (response.get("RESPONSE") or {}).get("slots") or []
     for slot in slots:
-        widget = slot.get("widget") or {}
-        if widget.get("viewType") != "pp_reco_pmu_horizontal_scrollable_ads":
+        if not isinstance(slot, dict):
             continue
-        header = None
-        for text in json_texts((widget.get("data") or {}).get("dlsData", {}).get("hp_reco_header_0")):
-            if text:
-                header = text
-                break
-        if not header or header.strip().lower() != "similar products":
+        widget = slot.get("widget") or {}
+        if not isinstance(widget, dict):
+            continue
+        if widget.get("viewType") not in SIMILAR_PRODUCT_VIEW_TYPES:
             continue
         dls_data = (widget.get("data") or {}).get("dlsData") or {}
+        header_texts = json_texts(dls_data.get("hp_reco_header_0"))
+        if not any(normalize_text(text).lower() in SIMILAR_PRODUCT_HEADERS for text in header_texts):
+            continue
         cards = ((dls_data.get("MRCSV_0") or {}).get("value") or [])
         for card in cards:
-            card_value = ((card.get("value") or {}).get("hp_reco_product-card_0") or {}).get("value")
-            if not isinstance(card_value, dict):
+            if not isinstance(card, dict):
                 continue
-            name = json_text(((card_value.get("label_2") or {}).get("value") if isinstance(card_value.get("label_2"), dict) else None))
+            card_data = card.get("value") or {}
+            if not isinstance(card_data, dict):
+                continue
+            name = None
+            for card_key in SIMILAR_PRODUCT_CARD_KEYS:
+                candidate = (card_data.get(card_key) or {}).get("value")
+                if not isinstance(candidate, dict):
+                    continue
+                label = candidate.get("label_2")
+                name = json_text(
+                    label.get("value") if isinstance(label, dict) else None
+                )
+                if name:
+                    break
             if name and name not in names:
                 names.append(name)
     return " ||| ".join(names) if names else None
@@ -2067,6 +2093,12 @@ def build_email_report(
         if len(errors) > 10:
             warnings.append(f"detail/review 오류 {len(errors) - 10}건 추가 생략")
 
+    similar_nulls = null_count(retail_rows, "retailer_sku_name_similar")
+    if retail_rows and similar_nulls == len(retail_rows):
+        warnings.append(
+            f"retailer_sku_name_similar all NULL: {similar_nulls}/{len(retail_rows)} rows"
+        )
+
     for col in required_cols:
         count = null_count(retail_rows, col)
         if count:
@@ -2483,7 +2515,9 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     lines.append(
         f"[detail] requested={args.max_detail} ok={len(details)} errors={len(errors)} "
         f"missing_rating={sum(row.get('star_rating') in (None, '') for row in details)} "
-        f"missing_reviews={sum(row.get('count_of_reviews') in (None, '') for row in details)}"
+        f"missing_reviews={sum(row.get('count_of_reviews') in (None, '') for row in details)} "
+        f"similar_present={sum(row.get('retailer_sku_name_similar') not in (None, '') for row in details)} "
+        f"missing_similar={sum(row.get('retailer_sku_name_similar') in (None, '') for row in details)}"
     )
     if detail_retry_lines:
         lines.append(f"[detail_retry] events={len(detail_retry_lines)}")

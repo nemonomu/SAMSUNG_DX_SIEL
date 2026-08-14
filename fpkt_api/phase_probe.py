@@ -16,6 +16,7 @@ import csv
 import json
 import os
 import re
+import shlex
 import ssl
 import sys
 import urllib.error
@@ -77,42 +78,73 @@ def cmd_unescape(value: str) -> str:
 
 
 def split_curl_commands(text: str) -> list[str]:
+    # Chrome's current Windows export uses ``curl --url ^"...^"`` while
+    # older captures used ``curl ^"...^"``. Bash exports start each curl
+    # command on its own line. Normalize the Windows `` & curl`` separator
+    # first, then split without coupling discovery to either URL form.
+    text = re.sub(
+        r"\s+&\s+(?=curl(?:\.exe)?\s+)",
+        "\n",
+        text.lstrip("\ufeff").strip(),
+    )
     return [
         part.strip()
-        for part in re.split(r"\s+&\s+(?=curl \^\"https?://)", text)
-        if part.strip().startswith("curl ")
+        for part in re.split(r"(?m)^(?=curl(?:\.exe)?\s+)", text)
+        if re.match(r"curl(?:\.exe)?\s+", part.strip())
     ]
 
 
+def curl_tokens(command: str) -> list[str]:
+    if '^"' in command:
+        # Undo CMD line continuations and caret escaping first. The resulting
+        # command uses normal quoted arguments with backslash-escaped inner
+        # quotes, which shlex can tokenize without truncating Sec-CH-UA.
+        command = cmd_unescape(re.sub(r"\^\r?\n", " ", command))
+    else:
+        command = re.sub(r"\\\r?\n", " ", command)
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return []
+
+
 def curl_url(command: str) -> str | None:
-    match = re.match(r"curl \^\"(.*?)\^\"", command, re.S)
-    return cmd_unescape(match.group(1)) if match else None
+    tokens = curl_tokens(command)
+    for index, token in enumerate(tokens[1:], start=1):
+        if token == "--url" and index + 1 < len(tokens):
+            return tokens[index + 1]
+        if token.startswith(("http://", "https://")):
+            return token
+    return None
 
 
 def curl_data_raw(command: str) -> str | None:
-    pos = command.find("--data-raw")
-    if pos < 0:
-        return None
-    start = command.find("^\"", pos)
-    end = command.rfind("^\"")
-    if start < 0 or end <= start:
-        return None
-    data = cmd_unescape(command[start + 2 : end])
-    return data.replace('\\"', '"')
+    tokens = curl_tokens(command)
+    for index, token in enumerate(tokens[:-1]):
+        if token in {"--data-raw", "--data-binary", "--data", "-d"}:
+            return tokens[index + 1]
+    return None
 
 
 def curl_headers(command: str) -> dict[str, str]:
     headers: dict[str, str] = {}
-    for match in re.finditer(r"-H \^\"(.*?)\^\"", command, re.S):
-        header = cmd_unescape(match.group(1))
+    raw_headers: list[str] = []
+    cookie_value = None
+    tokens = curl_tokens(command)
+    for index, token in enumerate(tokens[:-1]):
+        if token in {"-H", "--header"}:
+            raw_headers.append(tokens[index + 1])
+        elif token in {"-b", "--cookie"}:
+            cookie_value = tokens[index + 1]
+
+    for header in raw_headers:
         if ":" not in header:
             continue
         key, value = header.split(":", 1)
         if key.lower() not in {"host", "content-length", "accept-encoding"}:
             headers[key] = value.strip()
-    cookie = re.search(r"-b \^\"(.*?)\^\"", command, re.S)
-    if cookie:
-        headers["Cookie"] = cmd_unescape(cookie.group(1))
+    if cookie_value:
+        headers["Cookie"] = cookie_value
     headers.setdefault("Content-Type", "application/json")
     headers.setdefault("Accept", "*/*")
     return headers
