@@ -450,9 +450,18 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             'calendar_week':     calendar_week_iso(cdt),
             'crawl_datetime':    cdt,
             'batch_id':          primary.get('batch_id') or d.get('batch_id'),
-            # 평점/리뷰: detail 우선, main fallback (양방향 보강 5/8). count 는 서양식 콤마 정규화 (5/10).
+            # 평점 값은 detail 우선. Flipkart 평점 인원수는 축약되지 않은 main/detail 값 중 최댓값 사용.
             'star_rating':               normalize_star_value(d.get('star_rating') or primary.get('star_rating')),
-            'count_of_star_ratings':     normalize_rating_count_value(d.get('count_of_star_ratings') or primary.get('count_of_star_ratings')),
+            'count_of_star_ratings':     (
+                siel_log.best_exact_count_text(
+                    d.get('count_of_star_ratings'),
+                    primary.get('count_of_star_ratings'),
+                )
+                if (account or '').lower() == 'flipkart'
+                else normalize_rating_count_value(
+                    d.get('count_of_star_ratings') or primary.get('count_of_star_ratings')
+                )
+            ),
             # 고객사 spec: count_of_reviews 는 listing(primary) 단계 값 우선. detail fallback.
             'count_of_reviews':          normalize_review_count_value(primary.get('count_of_reviews') or d.get('count_of_reviews')),
             'detailed_review_content':   d.get('detailed_review_content'),
