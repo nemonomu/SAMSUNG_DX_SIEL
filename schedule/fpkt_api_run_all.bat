@@ -30,6 +30,15 @@ if not defined MODE_OK (
   exit /b 2
 )
 
+if "%FPKT_PRODUCTS%"=="" set "FPKT_PRODUCTS=tv hhp ref ldy"
+
+rem Remove only 72h-old high-volume ops_* folders. Cleanup failure must not block collection.
+if /I not "%RUN_MODE%"=="check" (
+  echo [fpkt_api_run_all] cleanup old large artifacts
+  python cleanup_crawler_artifacts.py --scope fpkt --products %FPKT_PRODUCTS% --apply
+  if errorlevel 1 echo [fpkt_api_run_all] cleanup warning - collection continues
+)
+
 for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss_fff"') do set "RUN_STAMP=%%I"
 set "RUN_DIR=%CD%\fpkt_api\test_output\ops_all_%RUN_STAMP%"
 set "RUN_LOG=%RUN_DIR%\run_console.log"
@@ -46,7 +55,6 @@ set "DEFAULT_API_DIR=%CD%\..\siel_logs\api"
 if exist "C:\siel\logs\api\main_har.txt" set "DEFAULT_API_DIR=C:\siel\logs\api"
 if "%FPKT_API_DIR%"=="" set "FPKT_API_DIR=%DEFAULT_API_DIR%"
 
-if "%FPKT_PRODUCTS%"=="" set "FPKT_PRODUCTS=tv hhp ref ldy"
 if "%FPKT_MAIN_TARGET%"=="" set "FPKT_MAIN_TARGET=300"
 if "%FPKT_BSR_TARGET%"=="" set "FPKT_BSR_TARGET=100"
 if "%FPKT_MAX_PAGES_MAIN%"=="" set "FPKT_MAX_PAGES_MAIN=30"
