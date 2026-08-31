@@ -281,6 +281,43 @@ def parse_model_year(v):
 
 
 _RATINGS_RE = re.compile(r'(\d[\d,]*)\s*(?:global\s+)?[Rr]atings?\b')
+_COUNT_ABBREVIATION_RE = re.compile(
+    r'(?<!\w)\d+(?:\.\d+)?\s*'
+    r'(?:k|m|b|l|lac|lakh|cr|crore|thousand|million|billion)\b',
+    re.I,
+)
+
+
+def has_abbreviated_count(v) -> bool:
+    """'31K', '1.1L'처럼 단위로 축약된 count인지 확인한다."""
+    if v is None:
+        return False
+    return bool(_COUNT_ABBREVIATION_RE.search(str(v)))
+
+
+def parse_exact_count_int(v):
+    """정확한 정수 count만 int로 변환한다. K/L/M/Cr 축약값은 거부한다."""
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v if v >= 0 else None
+    if isinstance(v, float):
+        return int(v) if v >= 0 and v.is_integer() else None
+
+    s = str(v).strip()
+    if not s or has_abbreviated_count(s):
+        return None
+    s = re.sub(r'^[\(\[\|]+|[\)\]\|]+$', '', s).strip()
+    s = re.sub(r'\s*(?:global\s+)?ratings?\s*$', '', s, flags=re.I).strip()
+    raw = s.replace(',', '')
+    return int(raw) if raw.isdigit() else None
+
+
+def best_exact_count_text(*values):
+    """여러 정확한 count 중 최댓값을 서양식 천 단위 문자열로 반환한다."""
+    parsed = [parse_exact_count_int(value) for value in values]
+    parsed = [value for value in parsed if value is not None]
+    return f'{max(parsed):,}' if parsed else None
 
 
 def parse_count_of_ratings(v):

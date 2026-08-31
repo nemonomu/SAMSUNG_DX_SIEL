@@ -175,15 +175,7 @@ def count_text(value: Any) -> str | None:
 
 
 def best_count_text(*values: Any) -> str | None:
-    parsed = [to_int(value) for value in values if value not in (None, "")]
-    parsed = [value for value in parsed if value is not None]
-    if parsed:
-        return f"{max(parsed):,}"
-    for value in values:
-        text = text_or_none(value)
-        if text:
-            return text
-    return None
+    return siel_log.best_exact_count_text(*values)
 
 
 def price_text(value: Any) -> str | None:
@@ -1310,18 +1302,35 @@ def detail_from_api_response(response: dict[str, Any], source_url: str, product:
     price_values = detail_price_values(response)
     rating_value = None
     rating_count = None
+    rating_texts: list[str] = []
     for item in iter_dicts(response):
         if item.get("rating") is not None and item.get("reviewText") is not None:
             rating_value = item.get("rating")
-            rating_count = to_int(item.get("reviewText"))
+            review_text = text_or_none(item.get("reviewText"))
+            if review_text:
+                rating_texts.append(review_text)
+                rating_count = siel_log.parse_exact_count_int(review_text)
             break
     review_count = None
-    for text in texts:
-        match = re.search(r"([\d,]+)\s+ratings?\s+and\s+([\d,]+)\s+reviews?", text, re.I)
-        if match:
-            rating_count = to_int(match.group(1))
-            review_count = to_int(match.group(2))
+    # 대상 상품 reviewText가 확인되면 응답 내 유사상품 문구는 count 후보에서 제외한다.
+    # 대상 문구가 없는 예외 응답에서만 기존 전체 텍스트 fallback을 사용한다.
+    count_texts = rating_texts or texts
+    for text in count_texts:
+        if rating_count is None:
+            rating_match = re.search(r"([\d,]+)\s+ratings?\b", text, re.I)
+            if rating_match:
+                rating_count = siel_log.parse_exact_count_int(rating_match.group(1))
+        if review_count is None:
+            review_match = re.search(r"([\d,]+)\s+reviews?\b", text, re.I)
+            if review_match:
+                review_count = to_int(review_match.group(1))
+        if rating_count is not None and review_count is not None:
             break
+
+    abbreviated_rating_count = rating_count is None and any(
+        "rating" in text.lower() and siel_log.has_abbreviated_count(text)
+        for text in count_texts
+    )
 
     detail = {
         "source_url": source_url,
@@ -1340,6 +1349,8 @@ def detail_from_api_response(response: dict[str, Any], source_url: str, product:
         "retailer_sku_name_similar": similar_product_names(response),
         "review_url": fallback_review_url(source_url),
         "jsonld_review_count": None,
+        "_rating_count_abbreviated": abbreviated_rating_count,
+        "_rating_count_source": "detail_api" if rating_count is not None else None,
     }
     detail.update(product_detail_values(response, product))
     return detail
@@ -1517,7 +1528,7 @@ def listing_schema_record(
         "savings": price_fields["savings"],
         "discount_type": text_or_none(row.get("discount_type")),
         "star_rating": text_or_none(row.get("star_rating")),
-        "count_of_star_ratings": count_text(row.get("count_of_star_ratings")),
+        "count_of_star_ratings": best_count_text(row.get("count_of_star_ratings")),
         "count_of_reviews": count_text(row.get("count_of_reviews")),
         "sku_popularity": row.get("sku_popularity") or sku_popularity_from_url(row.get("product_url")),
         "sku_status": row.get("sku_status"),
@@ -1553,7 +1564,7 @@ def detail_schema_record(
         "discount_type": text_or_none(detail.get("discount_type")),
         "retailer_sku_name_similar": text_or_none(detail.get("retailer_sku_name_similar")),
         "star_rating": text_or_none(detail.get("star_rating")),
-        "count_of_star_ratings": count_text(detail.get("count_of_star_ratings")),
+        "count_of_star_ratings": best_count_text(detail.get("count_of_star_ratings")),
         "count_of_reviews": count_text(detail.get("count_of_reviews")),
         "detailed_review_content": detailed_review_content,
         "delivery_availability": text_or_none(detail.get("delivery_availability")),
@@ -1859,7 +1870,7 @@ def build_schema_outputs(
             "crawl_datetime": listing_crawl_dt,
             "batch_id": retail["batch_id"],
             "star_rating": text_or_none(primary.get("star_rating")),
-            "count_of_star_ratings": count_text(primary.get("count_of_star_ratings")),
+            "count_of_star_ratings": best_count_text(primary.get("count_of_star_ratings")),
             "count_of_reviews": count_text(primary.get("count_of_reviews")),
             "final_sku_price": listing_price_fields["final_sku_price"],
             "original_sku_price": listing_price_fields["original_sku_price"],
@@ -2314,8 +2325,29 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             detail["crawl_datetime"] = crawl_ts()
             if detail.get("star_rating") in (None, ""):
                 detail["star_rating"] = target.get("star_rating")
-            if detail.get("count_of_star_ratings") in (None, ""):
-                detail["count_of_star_ratings"] = target.get("count_of_star_ratings")
+            detail_api_count = best_count_text(detail.get("count_of_star_ratings"))
+            listing_count = best_count_text(target.get("count_of_star_ratings"))
+            selected_count = best_count_text(detail_api_count, listing_count)
+            if selected_count is not None:
+                detail["count_of_star_ratings"] = selected_count
+                detail["_rating_count_source"] = (
+                    "listing" if listing_count == selected_count and detail_api_count != selected_count
+                    else "detail_api"
+                )
+            else:
+                try:
+                    html_detail = detail_from_html(fetch_text(url, html_headers(args.api_dir)), url)
+                    html_count = best_count_text(html_detail.get("count_of_star_ratings"))
+                except Exception as exc:
+                    html_count = None
+                    local_detail_retry_lines.append(
+                        f"[rating_count_html_fallback] {label} failed={type(exc).__name__}"
+                    )
+                if html_count is not None:
+                    detail["count_of_star_ratings"] = html_count
+                    detail["_rating_count_source"] = "detail_html"
+                else:
+                    detail["_rating_count_source"] = "unresolved"
             if detail.get("count_of_reviews") in (None, ""):
                 detail["count_of_reviews"] = target.get("count_of_reviews")
         else:
@@ -2433,6 +2465,29 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         bsr_for_schema = bsr_final
         details_for_schema = details
         reviews_for_schema = reviews
+
+    rating_count_sources = {
+        source: sum(row.get("_rating_count_source") == source for row in details)
+        for source in ("detail_api", "listing", "detail_html", "unresolved")
+    }
+    abbreviated_count = sum(bool(row.get("_rating_count_abbreviated")) for row in details)
+    lines.append(
+        "[rating_count] "
+        f"detail_api={rating_count_sources['detail_api']} "
+        f"listing={rating_count_sources['listing']} "
+        f"detail_html={rating_count_sources['detail_html']} "
+        f"unresolved={rating_count_sources['unresolved']} "
+        f"detail_abbreviated={abbreviated_count}"
+    )
+    if abbreviated_count:
+        samples = [
+            str(row.get("product_id") or row.get("fsn") or "unknown")
+            for row in details if row.get("_rating_count_abbreviated")
+        ][:5]
+        lines.append(f"[rating_count] abbreviated_samples={','.join(samples)}")
+    for detail in details:
+        detail.pop("_rating_count_abbreviated", None)
+        detail.pop("_rating_count_source", None)
 
     write_csv(out_dir / "detail.csv", details)
     write_csv(out_dir / "review.csv", reviews)

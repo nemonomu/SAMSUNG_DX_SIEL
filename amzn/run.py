@@ -15,6 +15,7 @@ import sys
 import time
 import traceback
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
@@ -402,6 +403,38 @@ def _sync_logs_to_retail_com() -> None:
                 shutil.copy2(sp, os.path.join(dst, fname))
     except Exception:
         pass
+
+
+def _cleanup_large_artifacts(products: list[str]) -> None:
+    """Best-effort cleanup. Collection must continue even if cleanup fails."""
+    try:
+        from cleanup_crawler_artifacts import (
+            cleanup_amazon_artifacts,
+            cleanup_disabled,
+            retention_days_from_env,
+        )
+        if cleanup_disabled():
+            print('[artifact_cleanup] skipped by SIEL_SKIP_ARTIFACT_CLEANUP', file=sys.stderr)
+            return
+        results = cleanup_amazon_artifacts(
+            Path(_ROOT),
+            products,
+            days=retention_days_from_env(),
+            apply=True,
+        )
+        for result in results:
+            print(result.summary(), file=sys.stderr)
+            for failure in result.failures[:10]:
+                print(
+                    f'[artifact_cleanup][warning] {result.scope} {failure}',
+                    file=sys.stderr,
+                )
+    except Exception as exc:
+        print(
+            f'[artifact_cleanup][warning] cleanup failed; collection continues: '
+            f'{type(exc).__name__}: {exc}',
+            file=sys.stderr,
+        )
 
 
 def _make_dual(orig_emit):
@@ -839,6 +872,10 @@ def main() -> int:
                     help='product 별 크롤링 리포트 이메일 발송 (config.EMAIL_CONFIG). '
                          'final_sku_price>=original_sku_price, sku null, redirect=true URL 포함')
     args = ap.parse_args()
+
+    # 각 Amazon 인스턴스의 해당 제품 대용량 HTML/JSONL만 72시간 보존.
+    # 실패해도 기존 수집은 중단하지 않는다.
+    _cleanup_large_artifacts(args.product)
 
     # dual emit (stdout + jsonl + streaming INSERT) — emit monkey-patch 1번만
     L.emit = _make_dual(L.emit)
