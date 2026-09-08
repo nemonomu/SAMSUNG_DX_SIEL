@@ -241,6 +241,19 @@ def amazon_price_fields(final_price, original_price, savings):
     return final_norm, original_norm, f'₹{amount_text}'
 
 
+_AMAZON_QUANTITY_RE = re.compile(
+    r'Only\s+[1-9][0-9]*\s+left\s+in\s+stock\.?', re.IGNORECASE
+)
+
+
+def amazon_available_quantity(inventory_status):
+    """Copy explicit remaining-stock text; availability/delivery dates are not quantities."""
+    if (isinstance(inventory_status, str)
+            and _AMAZON_QUANTITY_RE.fullmatch(inventory_status.strip())):
+        return inventory_status
+    return None
+
+
 def normalize_count(v):
     """count_of_reviews / count_of_star_ratings 인도식 → 서양식 콤마.
     예: '12,34,567' → '1,234,567'. 4자리 미만 ('6,759' 등) 은 인도식=서양식 동일."""
@@ -364,6 +377,7 @@ def make_row_listing(main_rec, bsr_rec, detail_rec=None):
         {},
         max_n=1,
         redirect_by_key=redirect_by_key,
+        listing_only=True,
     )  # detail dict empty → detail 출처 컬럼 NULL
     return rows[0] if rows else None
 
@@ -401,10 +415,12 @@ def rank_maps_for_listing(items: list) -> tuple[dict, dict]:
 
 
 def merge(listing: dict, detail: dict, max_n: int = 10,
-          redirect_by_key=None, exclude_keys=None, renumber_ranks: bool = False) -> list:
+          redirect_by_key=None, exclude_keys=None, renumber_ranks: bool = False,
+          listing_only: bool = False) -> list:
     """listing[key] = {'main': rec or None, 'bsr': rec or None} + detail merge → row list.
     main_rank / bsr_rank 둘 다 set (같은 SKU 가 main+bsr 양쪽에 있으면).
     page_type: main 우선, 없으면 bsr.
+    listing_only=True: product_list 경로이며 detail은 빈 dict로 전달.
     max_n=0 → 무제한, >0 이면 cap."""
     rows = []
     items = list(listing.items())
@@ -471,6 +487,13 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             final_price = normalize_price(final_price)
             original_price = normalize_price(original_price)
 
+        available_quantity = primary.get('available_quantity_for_purchase')
+        if (account or '').lower() == 'amazon' and not listing_only:
+            # retail_com requires explicit detail inventory, even when detail
+            # is absent. Skipped pages must not supply another ASIN's quantity.
+            available_quantity = (amazon_available_quantity(d.get('inventory_status'))
+                                  if not d.get('_detail_skip') else None)
+
         row = {
             'country':           'SIEL',
             'product':           prod or None,
@@ -509,7 +532,7 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             'discount_type':      primary.get('discount_type'),
             # 배송/재고
             'delivery_availability':           d.get('delivery_availability') or primary.get('delivery_availability'),
-            'available_quantity_for_purchase': primary.get('available_quantity_for_purchase'),
+            'available_quantity_for_purchase': available_quantity,
             # 마케팅 — sku_popularity main NULL 시 detail fallback (Flipkart anti-bot 시 main 100% NULL 대응)
             'sku_popularity': primary.get('sku_popularity') or d.get('sku_popularity'),
             'sku_status':     primary.get('sku_status'),
@@ -620,7 +643,7 @@ def main() -> int:
     # product_list 용 — main + bsr only (detail 출처 컬럼 NULL, 사용자 룰 5/10)
     rows_listing = merge(listing_by_url, {}, max_n=max_n,
                          redirect_by_key=redirect_by_key,
-                         renumber_ranks=True)
+                         renumber_ranks=True, listing_only=True)
     print(f'[insert] merge: {len(rows_full)} rows (full) / {len(rows_listing)} rows (listing-only)',
           file=sys.stderr)
     if dry_run:
