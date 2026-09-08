@@ -19,6 +19,7 @@ import re
 import sys
 import traceback
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal, localcontext
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -202,12 +203,42 @@ def normalize_fpkt_price_values(final_price, original_price):
     return final_norm, original_norm, computed_savings_text(final_norm, original_norm)
 
 
+_AMAZON_AMOUNT_RE = re.compile(
+    r'₹?\s*(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+'
+    r'|[0-9]{1,2}(?:,[0-9]{2})*,[0-9]{3})(?:\.[0-9]{1,2})?'
+)
+
+
+def amazon_price_amount(value):
+    """Accept a complete rupee amount, never digits inside availability text."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not _AMAZON_AMOUNT_RE.fullmatch(text):
+        return None
+    return Decimal(text.removeprefix('₹').strip().replace(',', ''))
+
+
 def amazon_price_fields(final_price, original_price, savings):
+    """Derive Amazon savings from the prices being inserted; ignore raw savings."""
+    # Validate before normalization, which can repair malformed comma groups.
+    final_amount = amazon_price_amount(final_price)
+    original_amount = amazon_price_amount(original_price)
     final_norm = normalize_price(final_price)
     original_norm = normalize_price(original_price)
-    if final_norm not in (None, '') and price_to_int(final_norm) is None:
+    # Preserve the existing handling of unavailable final prices.
+    if final_norm not in (None, '') and not re.search(r'\d', str(final_norm)):
         return final_norm, None, None
-    return final_norm, original_norm, savings
+    if (final_amount is None or original_amount is None
+            or final_amount <= 0 or original_amount < final_amount):
+        return final_norm, original_norm, None
+    with localcontext() as ctx:
+        ctx.prec = max(len(final_amount.as_tuple().digits),
+                       len(original_amount.as_tuple().digits)) + 4
+        difference = original_amount - final_amount
+        amount_text = (f'{difference:,.0f}' if difference == difference.to_integral_value()
+                       else f'{difference:,.2f}')
+    return final_norm, original_norm, f'₹{amount_text}'
 
 
 def normalize_count(v):
@@ -415,12 +446,12 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             item = d.get('landing_asin') or d.get('item') or item
             sku = d.get('sku') or d.get('landing_asin') or sku
         detail_first = redirect_use_landing
-        final_price = normalize_price(
+        final_price = (
             (d.get('final_sku_price') or primary.get('final_sku_price'))
             if detail_first else
             (primary.get('final_sku_price') or d.get('final_sku_price'))
         )
-        original_price = normalize_price(
+        original_price = (
             (d.get('original_sku_price') or primary.get('original_sku_price'))
             if detail_first else
             (primary.get('original_sku_price') or d.get('original_sku_price'))
@@ -436,6 +467,9 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
                 final_price, original_price, savings)
         elif (account or '').lower() == 'flipkart':
             final_price, original_price, savings = normalize_fpkt_price_values(final_price, original_price)
+        else:
+            final_price = normalize_price(final_price)
+            original_price = normalize_price(original_price)
 
         row = {
             'country':           'SIEL',
