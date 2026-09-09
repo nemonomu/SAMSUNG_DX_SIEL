@@ -30,6 +30,7 @@ import psycopg2.extras
 import config
 import siel_item_mst
 import siel_log
+from amzn.quantity import LISTING_QUANTITY_PRODUCTS, quantity_text as amazon_available_quantity
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -239,19 +240,6 @@ def amazon_price_fields(final_price, original_price, savings):
         amount_text = (f'{difference:,.0f}' if difference == difference.to_integral_value()
                        else f'{difference:,.2f}')
     return final_norm, original_norm, f'₹{amount_text}'
-
-
-_AMAZON_QUANTITY_RE = re.compile(
-    r'Only\s+[1-9][0-9]*\s+left\s+in\s+stock\.?', re.IGNORECASE
-)
-
-
-def amazon_available_quantity(inventory_status):
-    """Copy explicit remaining-stock text; availability/delivery dates are not quantities."""
-    if (isinstance(inventory_status, str)
-            and _AMAZON_QUANTITY_RE.fullmatch(inventory_status.strip())):
-        return inventory_status
-    return None
 
 
 def normalize_count(v):
@@ -488,7 +476,13 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             original_price = normalize_price(original_price)
 
         available_quantity = primary.get('available_quantity_for_purchase')
-        if (account or '').lower() == 'amazon' and not listing_only:
+        if (account or '').lower() == 'amazon' and prod.lower() in LISTING_QUANTITY_PRODUCTS:
+            # Same primary listing as page_type: main first, otherwise BSR.
+            # Missing listing stock must never be filled from detail inventory.
+            available_quantity = amazon_available_quantity(available_quantity)
+            if item and item != listing_key(primary):
+                available_quantity = None  # The stock statement belongs to another ASIN.
+        elif (account or '').lower() == 'amazon' and not listing_only:
             # retail_com requires explicit detail inventory, even when detail
             # is absent. Skipped pages must not supply another ASIN's quantity.
             available_quantity = (amazon_available_quantity(d.get('inventory_status'))

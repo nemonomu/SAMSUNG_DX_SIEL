@@ -1,7 +1,7 @@
 """
 Amazon.In listing crawler (SIEL).
 - undetected_chromedriver
-- xpath: DB 로드 (dx_siel_xpath_selectors), 하드코딩 X
+- xpath: DB 로드 (dx_siel_xpath_selectors); TV/REF/LDY 수량은 카드 내 문구 엄격 검사
 - 4 제품군 (HHP/TV/REF/LDY) 공유 — --product 인자
 - stdout JSONL (account_name, batch_id, crawl_datetime 필수 컬럼 포함)
 - amzn/logs/ 에 로그 + 첫 페이지 HTML snapshot 저장
@@ -43,6 +43,7 @@ from selenium.webdriver.common.keys import Keys
 import config
 import siel_log
 from siel_batch import next_batch_id
+from amzn.quantity import LISTING_QUANTITY_JS, LISTING_QUANTITY_PRODUCTS, quantity_text
 
 # uc.Chrome.__del__ 가 GC 시점에 quit() 한 번 더 시도 → Windows OSError [WinError 6].
 # finally 에서 driver.quit() 명시 호출하므로 __del__ 은 불필요.
@@ -322,11 +323,11 @@ def _safe_find_elements(driver, xpath: str):
         return []
 
 
-def _js_bsr_records(driver) -> list[dict]:
+def _js_bsr_records(driver, collect_quantity: bool = False) -> list[dict]:
     """Extract BSR cards inside Chrome to avoid Selenium WebElement round trips."""
     try:
         rows = driver.execute_script(
-            """
+            'const stockQuantity = ' + LISTING_QUANTITY_JS + ';\n' + """
             const clean = (s) => (s || '').replace(/\\s+/g, ' ').trim();
             const text = (root, selectors) => {
               for (const sel of selectors) {
@@ -378,7 +379,7 @@ def _js_bsr_records(driver) -> list[dict]:
               if (!key || seen.has(key)) continue;
               seen.add(key);
               const imgAlt = attr(card, ['img[alt]'], 'alt');
-              rows.push({
+              const row = {
                 product_url: href || `https://www.amazon.in/dp/${asin}`,
                 retailer_sku_name: text(card, [
                   '.p13n-sc-css-line-clamp',
@@ -405,10 +406,12 @@ def _js_bsr_records(driver) -> list[dict]:
                   'a[href*="product-reviews"] span',
                   '.a-size-small'
                 ])
-              });
+              };
+              if (arguments[0]) row.available_quantity_for_purchase = stockQuantity(card);
+              rows.push(row);
             }
             return rows;
-            """
+            """, collect_quantity
         )
         return rows if isinstance(rows, list) else []
     except Exception as e:
@@ -558,7 +561,7 @@ def maybe_save_html(driver) -> None:
     _html_saved = True
 
 
-def extract_card(card, selectors: dict) -> dict:
+def extract_card(card, selectors: dict, collect_quantity: bool = False) -> dict:
     rec: dict = {}
     # 1) data-asin attr (Main 카드만 있음. BSR 카드엔 없음)
     try:
@@ -570,6 +573,8 @@ def extract_card(card, selectors: dict) -> dict:
     for field, sel in selectors.items():
         if field == 'base_container':
             continue
+        if collect_quantity and field == 'available_quantity_for_purchase':
+            continue  # This field uses strict card-local capture, not a broad DB XPath.
         xpath = sel.get('xpath')
         fallback = sel.get('fallback')
         if not xpath and not fallback:
@@ -593,6 +598,15 @@ def extract_card(card, selectors: dict) -> dict:
     # data-asin 으로 canonical /dp/<ASIN> URL 생성 (retail_com 분석 일관성)
     if rec.get('asin'):
         rec['product_url'] = canonical_product_url(rec['asin'])
+    if collect_quantity:
+        try:
+            value = card.parent.execute_script(
+                'return (' + LISTING_QUANTITY_JS + ')(arguments[0]);', card)
+            rec['available_quantity_for_purchase'] = quantity_text(value)
+        except WebDriverException:
+            rec['available_quantity_for_purchase'] = None
+            if _logger:
+                _logger.warning('listing quantity unavailable: card DOM could not be read')
     return rec
 
 
@@ -670,7 +684,8 @@ def crawl_main(driver, product: str, selectors: dict, batch_id: str,
         for raw_pos, card in enumerate(cards, start=1):
             if rank >= max_rank:
                 break
-            rec = extract_card(card, selectors)
+            rec = extract_card(card, selectors,
+                               collect_quantity=product in LISTING_QUANTITY_PRODUCTS)
             key = listing_record_key(rec) or f'__no_key_main_{page}_{raw_pos}'
             if key in seen_keys:
                 duplicate_count += 1
@@ -853,12 +868,13 @@ def _normalize_bsr_record(raw: dict) -> dict:
 
 
 def _load_bsr_records(driver, container_xpath: str, selectors: dict,
-                      expected_count: int = 50):
+                      expected_count: int = 50, collect_quantity: bool = False):
     best_records: list[dict] = []
 
     def remember_records():
         nonlocal best_records
-        records = [_normalize_bsr_record(r) for r in _js_bsr_records(driver)]
+        records = [_normalize_bsr_record(r)
+                   for r in _js_bsr_records(driver, collect_quantity=collect_quantity)]
         if len(records) > len(best_records):
             best_records = records
         return records
@@ -944,7 +960,9 @@ def _load_bsr_records(driver, container_xpath: str, selectors: dict,
         return best_records
 
     cards = _load_bsr_cards(driver, container_xpath, expected_count=expected_count)
-    return [_normalize_bsr_record(extract_card(card, selectors)) for card in cards]
+    return [_normalize_bsr_record(extract_card(card, selectors,
+                                             collect_quantity=collect_quantity))
+            for card in cards]
 
 
 def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
@@ -970,7 +988,9 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
             _logger.info('page=%d bsr post-get wait %.1fs before first DOM command',
                          page_no, BSR_POST_GET_WAIT)
         time.sleep(BSR_POST_GET_WAIT)
-        records = _load_bsr_records(driver, container_xpath, selectors, expected_count=50)
+        records = _load_bsr_records(
+            driver, container_xpath, selectors, expected_count=50,
+            collect_quantity=product in LISTING_QUANTITY_PRODUCTS)
         if page_no == 1:
             maybe_save_html(driver)
         if _logger:
@@ -982,7 +1002,9 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
             try:
                 driver.refresh()
                 time.sleep(3)
-                records = _load_bsr_records(driver, container_xpath, selectors, expected_count=50)
+                records = _load_bsr_records(
+                    driver, container_xpath, selectors, expected_count=50,
+                    collect_quantity=product in LISTING_QUANTITY_PRODUCTS)
                 if _logger:
                     _logger.info('page=%d records=%d (after refresh primary gridItemRoot)',
                                  page_no, len(records))
@@ -1008,7 +1030,9 @@ def crawl_bsr(driver, product: str, selectors: dict, batch_id: str,
             try:
                 driver.refresh()
                 time.sleep(3)
-                retry_records = _load_bsr_records(driver, container_xpath, selectors, expected_count=50)
+                retry_records = _load_bsr_records(
+                    driver, container_xpath, selectors, expected_count=50,
+                    collect_quantity=product in LISTING_QUANTITY_PRODUCTS)
                 if len(retry_records) > len(records):
                     records = retry_records
             except WebDriverException as e:

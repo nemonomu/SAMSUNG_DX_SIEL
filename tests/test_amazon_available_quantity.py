@@ -1,4 +1,4 @@
-"""Offline regressions for Amazon quantity derived from detail inventory text."""
+"""Offline regressions for listing quantity in TV/REF/LDY and unchanged HHP."""
 from __future__ import annotations
 
 import io
@@ -34,15 +34,18 @@ class AmazonAvailableQuantityTests(unittest.TestCase):
             with self.subTest(status=status):
                 self.assertIsNone(ITR.amazon_available_quantity(status))
 
-    def test_all_products_and_account_casing_copy_detail_inventory(self):
+    def test_target_products_use_listing_and_hhp_keeps_detail_inventory(self):
         for product in ITR.PRODUCT_LOWERS:
             for account in ('amazon', 'Amazon', 'AMAZON'):
                 with self.subTest(product=product, account=account):
-                    main = listing(product, account_name=account)
+                    main = listing(product, account_name=account,
+                                   available_quantity_for_purchase='Only 9 left in stock.')
                     detail = {'inventory_status': 'Only 2 left in stock.'}
                     before_main, before_detail = dict(main), dict(detail)
                     row = ITR.make_row(main, None, detail)
-                    self.assertEqual(row['available_quantity_for_purchase'], detail['inventory_status'])
+                    self.assertEqual(row['available_quantity_for_purchase'],
+                                     detail['inventory_status'] if product == 'hhp'
+                                     else 'Only 9 left in stock.')
                     self.assertEqual(row['inventory_status'], detail['inventory_status'])
                     self.assertEqual(row['savings'], '₹16,990')
                     self.assertEqual(row['final_sku_price'], '₹37,500')
@@ -50,14 +53,14 @@ class AmazonAvailableQuantityTests(unittest.TestCase):
                     self.assertEqual(detail, before_detail)
                     self.assertIn('available_quantity_for_purchase', ITR.COLUMNS_BY_PRODUCT[product])
 
-    def test_unknown_quantity_does_not_fall_back_to_stale_listing_quantity(self):
+    def test_listing_quantity_survives_unknown_detail_inventory(self):
         main = listing(available_quantity_for_purchase='Only 9 left in stock.')
         for detail in ({'inventory_status': 'In stock'},
                        {'inventory_status': 'Available to ship in 1-2 days'},
                        {'inventory_status': None}, {'asin': 'B000000001'}):
             with self.subTest(detail=detail):
                 row = ITR.make_row(main, None, detail)
-                self.assertIsNone(row['available_quantity_for_purchase'])
+                self.assertEqual(row['available_quantity_for_purchase'], 'Only 9 left in stock.')
                 self.assertEqual(row['inventory_status'], detail.get('inventory_status'))
 
     def test_product_list_never_uses_detail_inventory(self):
@@ -66,27 +69,30 @@ class AmazonAvailableQuantityTests(unittest.TestCase):
         self.assertIsNone(row['available_quantity_for_purchase'])
         self.assertIsNone(row['inventory_status'])
         main = listing(available_quantity_for_purchase='listing-only quantity')
-        self.assertEqual(ITR.make_row_listing(main, None, detail)['available_quantity_for_purchase'],
-                         'listing-only quantity')
+        self.assertIsNone(ITR.make_row_listing(main, None, detail)['available_quantity_for_purchase'])
 
-    def test_absent_detail_cannot_supply_retail_quantity_from_listing(self):
+    def test_listing_quantity_does_not_require_detail(self):
         for detail in (None, {}):
             with self.subTest(detail=detail):
-                main = listing(available_quantity_for_purchase='listing-only quantity')
+                main = listing(available_quantity_for_purchase='Only 9 left in stock.')
                 row = ITR.make_row(main, None, detail)
-                self.assertIsNone(row['available_quantity_for_purchase'])
+                self.assertEqual(row['available_quantity_for_purchase'], 'Only 9 left in stock.')
                 self.assertIsNone(row['inventory_status'])
 
-    def test_merge_explicitly_distinguishes_listing_from_retail_without_detail(self):
+    def test_merge_passes_same_listing_quantity_to_both_tables(self):
         main = listing(available_quantity_for_purchase='Only 9 left in stock.')
         records = {'sample': {'main': main, 'bsr': None}}
-        self.assertIsNone(ITR.merge(records, {})[0]['available_quantity_for_purchase'])
+        self.assertEqual(ITR.merge(records, {})[0]['available_quantity_for_purchase'],
+                         'Only 9 left in stock.')
         self.assertEqual(ITR.merge(records, {}, listing_only=True)[0]['available_quantity_for_purchase'],
                          'Only 9 left in stock.')
 
-    def test_bsr_only_uses_detail_inventory(self):
+    def test_bsr_only_never_uses_detail_inventory(self):
         row = ITR.make_row(None, listing(bsr_rank=1), {'inventory_status': 'Only 1 left in stock.'})
-        self.assertEqual(row['available_quantity_for_purchase'], 'Only 1 left in stock.')
+        self.assertIsNone(row['available_quantity_for_purchase'])
+        bsr = listing(bsr_rank=1, available_quantity_for_purchase='Only 4 left in stock.')
+        row = ITR.make_row(None, bsr, {'inventory_status': 'Only 1 left in stock.'})
+        self.assertEqual(row['available_quantity_for_purchase'], 'Only 4 left in stock.')
 
     def test_skipped_detail_cannot_supply_quantity(self):
         for reason in ('asin_mismatch', 'continue_shopping_page'):
@@ -97,13 +103,38 @@ class AmazonAvailableQuantityTests(unittest.TestCase):
                 })
                 self.assertIsNone(row['available_quantity_for_purchase'])
 
-    def test_accepted_redirect_uses_landing_inventory(self):
-        row = ITR.make_row(listing(), None, {
+    def test_accepted_redirect_never_copies_stock_between_different_asins(self):
+        row = ITR.make_row(listing(available_quantity_for_purchase='Only 9 left in stock.'), None, {
             'redirect': True, '_redirect_use_landing': True,
             'landing_asin': 'B000000002', 'inventory_status': 'Only 3 left in stock.',
         })
         self.assertEqual(row['item'], 'B000000002')
-        self.assertEqual(row['available_quantity_for_purchase'], 'Only 3 left in stock.')
+        self.assertIsNone(row['available_quantity_for_purchase'])
+
+    def test_missing_or_invalid_main_quantity_does_not_use_bsr_or_detail(self):
+        for product in ('tv', 'ref', 'ldy'):
+            for value in (None, '', 'In stock', 'Available to ship in 1-2 days',
+                          'Only 2 left in stock. Unavailable', '2', 2, True):
+                with self.subTest(product=product, value=value):
+                    main = listing(product, available_quantity_for_purchase=value)
+                    bsr = listing(product, available_quantity_for_purchase='Only 7 left in stock.')
+                    detail = {'inventory_status': 'Only 2 left in stock.'}
+                    for factory in (ITR.make_row, ITR.make_row_listing):
+                        row = factory(main, bsr, detail)
+                        self.assertIsNone(row['available_quantity_for_purchase'])
+                        self.assertEqual(row['page_type'], 'main')
+
+    def test_bsr_and_skipped_detail_keep_stock_for_same_listing_asin(self):
+        for product in ('tv', 'ref', 'ldy'):
+            for stage in ('main', 'bsr'):
+                for detail in (None, {}, {'_detail_skip': 'asin_mismatch', 'redirect': True,
+                                         'asin': 'B000000001', 'inventory_status': 'Only 2 left in stock.'}):
+                    with self.subTest(product=product, stage=stage, detail=detail):
+                        rec = listing(product, available_quantity_for_purchase='Only 7 left in stock.')
+                        for factory in (ITR.make_row, ITR.make_row_listing):
+                            row = factory(rec if stage == 'main' else None,
+                                          rec if stage == 'bsr' else None, detail)
+                            self.assertEqual(row['available_quantity_for_purchase'], 'Only 7 left in stock.')
 
     def test_other_accounts_keep_listing_quantity(self):
         for account in ('flipkart', 'other'):
@@ -116,7 +147,7 @@ class AmazonAvailableQuantityTests(unittest.TestCase):
                     self.assertEqual(row['available_quantity_for_purchase'], 'Only 7 left')
                     self.assertEqual(row['inventory_status'], detail['inventory_status'])
 
-    def test_stream_insert_separates_retail_and_listing_quantity(self):
+    def test_stream_insert_uses_listing_quantity_except_hhp_retail(self):
         amzn = types.ModuleType('amzn')
         amzn.listing = types.ModuleType('amzn.listing')
         amzn.detail = types.ModuleType('amzn.detail')
@@ -141,7 +172,8 @@ class AmazonAvailableQuantityTests(unittest.TestCase):
                     with self.subTest(product=product, status=status):
                         cursor.reset_mock()
                         connection.reset_mock()
-                        runner._main_cache = {'B000000001': listing(product)}
+                        runner._main_cache = {'B000000001': listing(
+                            product, available_quantity_for_purchase='Only 9 left in stock.')}
                         runner._stream_insert({'asin': 'B000000001', 'inventory_status': status})
                         inserts = [call.args for call in cursor.execute.call_args_list
                                    if call.args[0].startswith('INSERT INTO')]
@@ -150,12 +182,13 @@ class AmazonAvailableQuantityTests(unittest.TestCase):
                             self.assertTrue(sql.startswith(f'INSERT INTO dx_siel_{product}_{suffix} '))
                             self.assertIn('%(available_quantity_for_purchase)s', sql)
                             self.assertEqual(row['available_quantity_for_purchase'],
-                                             expected if suffix == 'retail_com' else None)
+                                             expected if product == 'hhp' and suffix == 'retail_com'
+                                             else 'Only 9 left in stock.')
                             self.assertEqual(row['savings'], '₹16,990')
                         connection.commit.assert_called_once()
                         connection.rollback.assert_not_called()
 
-    def test_batch_insert_separates_retail_and_listing_quantity(self):
+    def test_batch_insert_uses_listing_quantity_except_hhp_retail(self):
         records, expected = [], {}
         for product in ITR.PRODUCT_LOWERS:
             for status, quantity in (('Only 1 left in stock.', 'Only 1 left in stock.'),
@@ -171,7 +204,7 @@ class AmazonAvailableQuantityTests(unittest.TestCase):
                 records.append(main)
                 if status != 'missing-detail':
                     records.append(detail)
-                expected[asin] = quantity
+                expected[asin] = quantity if product == 'hhp' else 'Only 9 left in stock.'
         source = '\n'.join(json.dumps(row, ensure_ascii=False) for row in records)
         conn, batch = MagicMock(), Mock()
         with patch.object(ITR.config, 'DB_CONFIG', {}, create=True), \
