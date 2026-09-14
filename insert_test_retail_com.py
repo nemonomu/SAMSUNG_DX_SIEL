@@ -19,6 +19,7 @@ import re
 import sys
 import traceback
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal, localcontext
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -29,6 +30,7 @@ import psycopg2.extras
 import config
 import siel_item_mst
 import siel_log
+from amzn.quantity import LISTING_QUANTITY_PRODUCTS, quantity_text as amazon_available_quantity
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -202,12 +204,42 @@ def normalize_fpkt_price_values(final_price, original_price):
     return final_norm, original_norm, computed_savings_text(final_norm, original_norm)
 
 
+_AMAZON_AMOUNT_RE = re.compile(
+    r'₹?\s*(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+'
+    r'|[0-9]{1,2}(?:,[0-9]{2})*,[0-9]{3})(?:\.[0-9]{1,2})?'
+)
+
+
+def amazon_price_amount(value):
+    """Accept a complete rupee amount, never digits inside availability text."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not _AMAZON_AMOUNT_RE.fullmatch(text):
+        return None
+    return Decimal(text.removeprefix('₹').strip().replace(',', ''))
+
+
 def amazon_price_fields(final_price, original_price, savings):
+    """Derive Amazon savings from the prices being inserted; ignore raw savings."""
+    # Validate before normalization, which can repair malformed comma groups.
+    final_amount = amazon_price_amount(final_price)
+    original_amount = amazon_price_amount(original_price)
     final_norm = normalize_price(final_price)
     original_norm = normalize_price(original_price)
-    if final_norm not in (None, '') and price_to_int(final_norm) is None:
+    # Preserve the existing handling of unavailable final prices.
+    if final_norm not in (None, '') and not re.search(r'\d', str(final_norm)):
         return final_norm, None, None
-    return final_norm, original_norm, savings
+    if (final_amount is None or original_amount is None
+            or final_amount <= 0 or original_amount < final_amount):
+        return final_norm, original_norm, None
+    with localcontext() as ctx:
+        ctx.prec = max(len(final_amount.as_tuple().digits),
+                       len(original_amount.as_tuple().digits)) + 4
+        difference = original_amount - final_amount
+        amount_text = (f'{difference:,.0f}' if difference == difference.to_integral_value()
+                       else f'{difference:,.2f}')
+    return final_norm, original_norm, f'₹{amount_text}'
 
 
 def normalize_count(v):
@@ -333,6 +365,7 @@ def make_row_listing(main_rec, bsr_rec, detail_rec=None):
         {},
         max_n=1,
         redirect_by_key=redirect_by_key,
+        listing_only=True,
     )  # detail dict empty → detail 출처 컬럼 NULL
     return rows[0] if rows else None
 
@@ -370,10 +403,12 @@ def rank_maps_for_listing(items: list) -> tuple[dict, dict]:
 
 
 def merge(listing: dict, detail: dict, max_n: int = 10,
-          redirect_by_key=None, exclude_keys=None, renumber_ranks: bool = False) -> list:
+          redirect_by_key=None, exclude_keys=None, renumber_ranks: bool = False,
+          listing_only: bool = False) -> list:
     """listing[key] = {'main': rec or None, 'bsr': rec or None} + detail merge → row list.
     main_rank / bsr_rank 둘 다 set (같은 SKU 가 main+bsr 양쪽에 있으면).
     page_type: main 우선, 없으면 bsr.
+    listing_only=True: product_list 경로이며 detail은 빈 dict로 전달.
     max_n=0 → 무제한, >0 이면 cap."""
     rows = []
     items = list(listing.items())
@@ -415,12 +450,12 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             item = d.get('landing_asin') or d.get('item') or item
             sku = d.get('sku') or d.get('landing_asin') or sku
         detail_first = redirect_use_landing
-        final_price = normalize_price(
+        final_price = (
             (d.get('final_sku_price') or primary.get('final_sku_price'))
             if detail_first else
             (primary.get('final_sku_price') or d.get('final_sku_price'))
         )
-        original_price = normalize_price(
+        original_price = (
             (d.get('original_sku_price') or primary.get('original_sku_price'))
             if detail_first else
             (primary.get('original_sku_price') or d.get('original_sku_price'))
@@ -436,6 +471,22 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
                 final_price, original_price, savings)
         elif (account or '').lower() == 'flipkart':
             final_price, original_price, savings = normalize_fpkt_price_values(final_price, original_price)
+        else:
+            final_price = normalize_price(final_price)
+            original_price = normalize_price(original_price)
+
+        available_quantity = primary.get('available_quantity_for_purchase')
+        if (account or '').lower() == 'amazon' and prod.lower() in LISTING_QUANTITY_PRODUCTS:
+            # Same primary listing as page_type: main first, otherwise BSR.
+            # Missing listing stock must never be filled from detail inventory.
+            available_quantity = amazon_available_quantity(available_quantity)
+            if item and item != listing_key(primary):
+                available_quantity = None  # The stock statement belongs to another ASIN.
+        elif (account or '').lower() == 'amazon' and not listing_only:
+            # retail_com requires explicit detail inventory, even when detail
+            # is absent. Skipped pages must not supply another ASIN's quantity.
+            available_quantity = (amazon_available_quantity(d.get('inventory_status'))
+                                  if not d.get('_detail_skip') else None)
 
         row = {
             'country':           'SIEL',
@@ -475,7 +526,7 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             'discount_type':      primary.get('discount_type'),
             # 배송/재고
             'delivery_availability':           d.get('delivery_availability') or primary.get('delivery_availability'),
-            'available_quantity_for_purchase': primary.get('available_quantity_for_purchase'),
+            'available_quantity_for_purchase': available_quantity,
             # 마케팅 — sku_popularity main NULL 시 detail fallback (Flipkart anti-bot 시 main 100% NULL 대응)
             'sku_popularity': primary.get('sku_popularity') or d.get('sku_popularity'),
             'sku_status':     primary.get('sku_status'),
@@ -586,7 +637,7 @@ def main() -> int:
     # product_list 용 — main + bsr only (detail 출처 컬럼 NULL, 사용자 룰 5/10)
     rows_listing = merge(listing_by_url, {}, max_n=max_n,
                          redirect_by_key=redirect_by_key,
-                         renumber_ranks=True)
+                         renumber_ranks=True, listing_only=True)
     print(f'[insert] merge: {len(rows_full)} rows (full) / {len(rows_listing)} rows (listing-only)',
           file=sys.stderr)
     if dry_run:
