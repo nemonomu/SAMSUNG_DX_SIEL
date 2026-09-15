@@ -116,9 +116,9 @@ BEGIN
        NULL,
        'M.R.P. 가격 (할인 전) — 5/9 정밀화. variant carousel sub-card 의 strike-through 결함 (B0G3X99DLF realme P4X 사례) 회피. 정상 메인 가격은 항상 div[@aria-hidden="M.R.P: ..."] 안. variant/sub-element 는 그 외부 → 매치 X = OSP 정상 NULL (할인 없음). fallback 제거 (broad data-a-strike 가 결함 root cause)'),
       ('Amazon','main',d,'discount_type',
-       './/*[contains(@id,"DEAL_") and contains(@id,"-label")]//span[contains(@class,"a-badge-text")] | .//*[contains(@id,"DEAL_") and contains(@id,"-label")]/span/span',
-       './/span[contains(@class,"s-coupon-clipped")]',
-       'Limited time deal / Coupon 등. union: a-badge-text class layout | nested /span/span layout (class 부재). 첫 매치 우선'),
+       './/*[contains(@id,"DEAL_") and contains(@id,"-label")]//span[translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="limited time offer" or translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="hot deal" or translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="limited time deal" or translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="ends in" or starts-with(translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz"),"ends in ")]',
+       NULL,
+       'Amazon discount_type whitelist: Limited Time Offer / Hot deal / Limited time deal / Ends in ... 만 수집. s-coupon-clipped 쿠폰 문구 제외'),
       ('Amazon','main',d,'sku_popularity',
        './/span[@aria-label="Amazon''s Choice"] | .//*[contains(@id,"BEST_SELLER")]//span[normalize-space(text())]',
        './/*[contains(@id,"amazons-choice-label")]//span | .//*[contains(@id,"BEST_SELLER")]',
@@ -486,9 +486,9 @@ BEGIN
        NULL,
        'M.R.P. (strike-through) — corePriceDisplay scope 한정. 5/9 진단: centerCol union 제거 (variant carousel sub-card / sponsored sub-section 의 strike-through 가 잘못 매치되어 unavailable/no_featured 카드에도 OSP 채워지는 결함 root cause). page 에 노출 안 되는 OSP = selector 결함 → 정밀 scope 만. 할인 없는 product / unavailable / no_featured = OSP NULL 자연.'),
       ('Amazon','detail',d,'discount_type',
-       '//*[@id="dealBadgeSupportingText"] | //*[@id="dealBadge_feature_div"]//span[contains(@class,"a-badge-text")] | //*[contains(@id,"DEAL_") and contains(@id,"-label")]//span[contains(@class,"a-badge-text")]',
+       '//*[@id="dealBadgeSupportingText"][translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="limited time offer" or translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="hot deal" or translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="limited time deal" or translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="ends in" or starts-with(translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz"),"ends in ")] | //*[@id="dealBadge_feature_div"]//span[translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="limited time offer" or translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="hot deal" or translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="limited time deal" or translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="ends in" or starts-with(translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz"),"ends in ")] | //*[contains(@id,"DEAL_") and contains(@id,"-label")]//span[translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="limited time offer" or translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="hot deal" or translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="limited time deal" or translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz")="ends in" or starts-with(translate(normalize-space(.),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz"),"ends in ")]',
        NULL,
-       '신 layout: dealBadgeSupportingText (outer) — Selenium .text 가 visible inner span 모두 concat. timer 미발동 deal: "Limited time deal" / timer active: "Ends in HH:MM:SS" (시간 포함). screen reader labels (aok-offscreen/aok-hidden) 은 dealBadgeSupportingText 외부 sibling 이라 noise 없음 검증. 위치: main product apex_desktop 영역, 페이지당 1개. 구 layout (a-badge-text) 와 union. fallback NULL: corePrice savingsPercentage 는 위치 다른 영역 (할인%) 부적합')
+       'Amazon discount_type whitelist: Limited Time Offer / Hot deal / Limited time deal / Ends in ... 만 수집. coupon 및 기타 promotion 제외')
     ON CONFLICT (site_account, page_type, domain, data_field) DO UPDATE SET
       xpath_primary  = EXCLUDED.xpath_primary,
       fallback_xpath = EXCLUDED.fallback_xpath,

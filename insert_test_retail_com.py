@@ -475,6 +475,18 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             final_price = normalize_price(final_price)
             original_price = normalize_price(original_price)
 
+        discount_type = primary.get('discount_type')
+        if (account or '').lower() == 'amazon':
+            listing_discount = siel_log.parse_amzn_discount_type(
+                primary.get('discount_type'))
+            detail_discount = siel_log.parse_amzn_discount_type(
+                d.get('discount_type'))
+            discount_type = (
+                (detail_discount or listing_discount)
+                if detail_first else
+                (listing_discount or detail_discount)
+            )
+
         available_quantity = primary.get('available_quantity_for_purchase')
         if (account or '').lower() == 'amazon' and prod.lower() in LISTING_QUANTITY_PRODUCTS:
             # Same primary listing as page_type: main first, otherwise BSR.
@@ -523,7 +535,7 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             'final_sku_price':    final_price,
             'original_sku_price': original_price,
             'savings':            savings,
-            'discount_type':      primary.get('discount_type'),
+            'discount_type':      discount_type,
             # 배송/재고
             'delivery_availability':           d.get('delivery_availability') or primary.get('delivery_availability'),
             'available_quantity_for_purchase': available_quantity,

@@ -250,6 +250,35 @@ def parse_amzn_apex_price(v):
     return None
 
 
+_AMZN_DISCOUNT_TYPE_EXACT = {
+    'limited time offer': 'Limited Time Offer',
+    'hot deal': 'Hot deal',
+    'limited time deal': 'Limited time deal',
+}
+_AMZN_ENDS_IN_RE = re.compile(r'^ends in(?:\s+(.+))?$', re.I)
+
+
+def parse_amzn_discount_type(v):
+    """Amazon deal label whitelist.
+
+    Preserve the three supported fixed labels and dynamic ``Ends in ...``
+    timers. Coupon/accessibility text and every other promotion are rejected.
+    """
+    if not v:
+        return None
+    s = re.sub(r'\s+', ' ', str(v)).strip()
+    if not s:
+        return None
+    exact = _AMZN_DISCOUNT_TYPE_EXACT.get(s.casefold())
+    if exact:
+        return exact
+    match = _AMZN_ENDS_IN_RE.fullmatch(s)
+    if not match:
+        return None
+    timer = (match.group(1) or '').strip()
+    return f'Ends in {timer}' if timer else 'Ends in'
+
+
 _MODEL_YEAR_4DIGIT_RE = re.compile(r'\b(\d{4})\b')
 
 

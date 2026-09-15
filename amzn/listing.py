@@ -583,6 +583,9 @@ def extract_card(card, selectors: dict, collect_quantity: bool = False) -> dict:
             rec[field] = first_attr(card, xpath, fallback, 'href')
         elif field in ('final_sku_price', 'original_sku_price'):
             rec[field] = siel_log.parse_amzn_apex_price(first_text(card, xpath, fallback))
+        elif field == 'discount_type':
+            rec[field] = siel_log.parse_amzn_discount_type(
+                first_text(card, xpath, fallback))
         else:
             rec[field] = first_text(card, xpath, fallback)
     # 2) asin URL fallback — /dp/{ASIN}/ 패턴 (data-asin 없을 때, 예: BSR)
