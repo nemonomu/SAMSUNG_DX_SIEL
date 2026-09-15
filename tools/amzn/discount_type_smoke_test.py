@@ -12,6 +12,10 @@ r"""Amazon discount_type RDP 실페이지 점검 도구.
 제품 하나만 실행
   python tools\amzn\discount_type_smoke_test.py --products tv
 
+확인 후 직접 닫기
+  python tools\amzn\discount_type_smoke_test.py --products tv \
+    --main-limit 100 --detail-limit 10 --max-pages 7 --keep-browser-open
+
 기본 범위
   - 제품군: tv, ref, ldy
   - 메인: 제품별 최대 30개
@@ -366,6 +370,10 @@ def parse_args():
         '--headless', action='store_true',
         help='Chrome을 숨김 실행. 지정하지 않으면 RDP 화면에 표시',
     )
+    parser.add_argument(
+        '--keep-browser-open', action='store_true',
+        help='테스트 종료 후 Enter를 누를 때까지 Chrome을 열어 둠',
+    )
     return parser.parse_args()
 
 
@@ -408,6 +416,10 @@ def main() -> int:
     reporter.line(' Amazon 할인유형 RDP 실페이지 테스트')
     reporter.line(f' 제품군       : {", ".join(PRODUCT_LABELS[p] for p in args.products)}')
     reporter.line(f' 브라우저     : {"숨김" if args.headless else "화면 표시"}')
+    reporter.line(
+        ' 종료 후 유지 : '
+        + ('사용' if args.keep_browser_open and not args.headless else '사용 안 함')
+    )
     reporter.line(' DB 셀렉터    : 읽기 전용 조회')
     reporter.line(' DB 저장      : 사용 안 함')
     reporter.line(' SQL 적용     : 사용 안 함')
@@ -475,13 +487,6 @@ def main() -> int:
         errors.append(message)
         counters['fail'] += 1
         reporter.line(f'[오류] {message}')
-    finally:
-        if driver is not None:
-            try:
-                driver.quit()
-            except Exception:
-                pass
-
     write_csv(csv_path, csv_rows)
     duration = datetime.now() - started
     reporter.line()
@@ -510,6 +515,19 @@ def main() -> int:
     reporter.line(f'결과 CSV: {csv_path}')
     reporter.line(f'요약 파일: {summary_path}')
     reporter.line('-' * 72)
+    if driver is not None and args.keep_browser_open and not args.headless:
+        reporter.line()
+        reporter.line('Chrome을 열어 둔 상태입니다.')
+        reporter.line('직접 확인을 마친 뒤 이 PowerShell 창에서 Enter를 누르면 종료합니다.')
+        try:
+            input()
+        except (EOFError, KeyboardInterrupt):
+            pass
+    if driver is not None:
+        try:
+            driver.quit()
+        except Exception:
+            pass
     reporter.close()
     return 0 if passed else 1
 
