@@ -13,8 +13,6 @@
 --   retailer_sku_name_similar  다중 element. ', ' 합침
 -- =============================================================================
 
-\encoding UTF8
-
 -- 데이터 보존 — DROP 금지. INSERT 는 ON CONFLICT 로 update.
 
 CREATE TABLE IF NOT EXISTS dx_siel_xpath_selectors (
@@ -280,6 +278,9 @@ VALUES
    '//a[contains(@class,"a-expander-prompt") and contains(text(),"See more")]',
    NULL,
    'Item details 섹션 펼치기'),
+  ('Amazon','detail','tv','savings',
+   '//*[@id="corePriceDisplay_desktop_feature_div"]//span[contains(concat(" ",normalize-space(@class)," ")," apex-savings-percentage ")]',
+   NULL, '가격 영역에 표시된 할인율 (예: -50%)'),
   ('Amazon','detail','tv','delivery_availability',
    '//*[@id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE"]//span[1]',
    '//div[@id="deliveryBlockMessage"]//span', NULL),
@@ -345,6 +346,9 @@ VALUES
    '//a[contains(@class,"a-expander-prompt") and contains(text(),"See more")]',
    NULL,
    'Item details 섹션 펼치기'),
+  ('Amazon','detail','ref','savings',
+   '//*[@id="corePriceDisplay_desktop_feature_div"]//span[contains(concat(" ",normalize-space(@class)," ")," apex-savings-percentage ")]',
+   NULL, '가격 영역에 표시된 할인율 (예: -18%)'),
   ('Amazon','detail','ref','delivery_availability',
    '//*[@id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE"]//span[1]',
    '//div[@id="deliveryBlockMessage"]//span', NULL),
@@ -407,6 +411,9 @@ VALUES
    '//a[contains(@class,"a-expander-prompt") and contains(text(),"See more")]',
    NULL,
    'Item details 섹션 펼치기'),
+  ('Amazon','detail','ldy','savings',
+   '//*[@id="corePriceDisplay_desktop_feature_div"]//span[contains(concat(" ",normalize-space(@class)," ")," apex-savings-percentage ")]',
+   NULL, '가격 영역에 표시된 할인율 (예: -61%)'),
   ('Amazon','detail','ldy','delivery_availability',
    '//*[@id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE"]//span[1]',
    '//div[@id="deliveryBlockMessage"]//span', NULL),
