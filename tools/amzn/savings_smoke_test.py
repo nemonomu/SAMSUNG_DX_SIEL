@@ -19,9 +19,9 @@ from tools.amzn.discount_type_smoke_test import load_selectors_read_only
 
 
 SAMPLES = {
-    'tv': ('https://www.amazon.in/inches-Spectra-Ready-Android-VW32AQ3/dp/B0GX5BF141', '-50%'),
-    'ref': ('https://www.amazon.in/Samsung-Direct-Cool-Refrigerator-RR20H28249U-NL/dp/B0G8JR8VNZ', '-18%'),
-    'ldy': ('https://www.amazon.in/VW-Automatic-Washing-Machine-AquaSpin0075P/dp/B0DV43D663', '-61%'),
+    'tv': ('https://www.amazon.in/inches-Spectra-Ready-Android-VW32AQ3/dp/B0GX5BF141', '50%'),
+    'ref': ('https://www.amazon.in/Samsung-Direct-Cool-Refrigerator-RR20H28249U-NL/dp/B0G8JR8VNZ', '18%'),
+    'ldy': ('https://www.amazon.in/VW-Automatic-Washing-Machine-AquaSpin0075P/dp/B0DV43D663', '61%'),
 }
 
 
@@ -60,14 +60,18 @@ def check_detail(driver, product: str, source: str, url: str, listing_record: di
     if result.get('_error') or result.get('_detail_skip'):
         raise RuntimeError(f'{product} {source}: detail skipped: '
                            f"{result.get('_error') or result.get('_detail_skip')}")
-    raw = result.get('savings')
+    visible = detail.extract_single(driver, selectors['savings']['xpath'])
+    collected = result.get('savings')
     merged = rows.make_row(listing_record, None, result) or {}
     stored = merged.get('savings')
-    valid = rows.amazon_displayed_savings(raw) == raw and stored == raw
+    valid = (collected is not None and
+             rows.amazon_displayed_savings(visible) == collected and
+             stored == collected)
     if expected is not None:
-        valid = valid and raw == expected
+        valid = valid and collected == expected
     print(f'{product} {source} ASIN={result.get("asin")} '
-          f'page={raw or "NULL"} retail_com={stored or "NULL"} '
+          f'page={visible or "NULL"} collected={collected or "NULL"} '
+          f'retail_com={stored or "NULL"} '
           f'expected={expected or "displayed percentage"} '
           f'{"PASS" if valid else "FAIL"}', flush=True)
     return valid

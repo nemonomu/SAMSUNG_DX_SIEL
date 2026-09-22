@@ -656,6 +656,8 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str,
             rec[field] = siel_log.parse_delivery_availability(extract_single(driver, xpath))
         elif field == 'fastest_delivery':
             rec[field] = siel_log.parse_fastest_delivery(extract_single(driver, xpath))
+        elif field == 'savings' and product in ('tv', 'ref', 'ldy'):
+            rec[field] = siel_log.parse_amzn_savings_percentage(extract_single(driver, xpath))
         elif field == 'sku_assurance':
             v = extract_single(driver, xpath)
             if v is None and sel.get('fallback'):

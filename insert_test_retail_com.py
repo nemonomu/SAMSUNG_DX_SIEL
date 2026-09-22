@@ -244,15 +244,9 @@ def amazon_price_fields(final_price, original_price, savings, *, derive_savings=
     return final_norm, original_norm, f'₹{amount_text}'
 
 
-_AMAZON_DISPLAYED_SAVINGS_RE = re.compile(r'-\d+(?:\.\d+)?%')
-
-
 def amazon_displayed_savings(value):
-    """Keep only the discount percentage shown on an Amazon detail page."""
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text if _AMAZON_DISPLAYED_SAVINGS_RE.fullmatch(text) else None
+    """Normalize the discount percentage shown on an Amazon detail page."""
+    return siel_log.parse_amzn_savings_percentage(value)
 
 
 def normalize_count(v):
