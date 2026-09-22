@@ -556,6 +556,8 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str,
             continue
         if field == 'sku_assurance' and product == 'tv':
             continue
+        if field == 'fastest_delivery' and product in ('ldy', 'ref', 'tv'):
+            continue
         xpath = sel.get('xpath')
         if not xpath:
             rec[field] = None
