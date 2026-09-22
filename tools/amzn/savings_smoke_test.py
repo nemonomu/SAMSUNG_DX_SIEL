@@ -64,15 +64,17 @@ def check_detail(driver, product: str, source: str, url: str, listing_record: di
     collected = result.get('savings')
     merged = rows.make_row(listing_record, None, result) or {}
     stored = merged.get('savings')
+    displayed_expected = rows.amazon_displayed_savings(visible)
     valid = (collected is not None and
-             rows.amazon_displayed_savings(visible) == collected and
+             displayed_expected == collected and
              stored == collected)
     if expected is not None:
         valid = valid and collected == expected
+    expected_text = expected if expected is not None else displayed_expected
     print(f'{product} {source} ASIN={result.get("asin")} '
           f'page={visible or "NULL"} collected={collected or "NULL"} '
           f'retail_com={stored or "NULL"} '
-          f'expected={expected or "displayed percentage"} '
+          f'expected={expected_text or "NULL"} '
           f'{"PASS" if valid else "FAIL"}', flush=True)
     return valid
 
