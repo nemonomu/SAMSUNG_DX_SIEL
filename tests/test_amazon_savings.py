@@ -103,51 +103,76 @@ class AmazonSavingsTests(unittest.TestCase):
             self.assertEqual(ITR.amazon_price_fields(status, '₹54,490', 'old'),
                              (status, None, None))
 
-    def test_all_products_and_both_tables_derive_from_stored_prices(self):
+    def test_detail_savings_requires_page_value_for_tv_ref_ldy(self):
         for product in ITR.PRODUCT_LOWERS:
             for account in ('amazon', 'Amazon', 'AMAZON'):
                 with self.subTest(product=product, account=account):
                     main = listing(product, account_name=account)
                     before = dict(main)
-                    for row in (ITR.make_row(main, None, {}),
-                                ITR.make_row_listing(main, None)):
-                        self.assertEqual(row['savings'], '₹16,990')
+                    retail_row = ITR.make_row(main, None, {})
+                    list_row = ITR.make_row_listing(main, None)
+                    self.assertEqual(retail_row['savings'], '₹16,990' if product == 'hhp' else None)
+                    self.assertEqual(list_row['savings'], '₹16,990')
+                    for row in (retail_row, list_row):
                         self.assertEqual(row['original_sku_price'], '₹54,490')
                         self.assertEqual(row['final_sku_price'], '₹37,500')
                     self.assertEqual(main, before)
                     self.assertIn('savings', ITR.COLUMNS_BY_PRODUCT[product])
                     self.assertIn('savings', ITR.COLUMNS_LIST_AMZN)
 
+    def test_visible_detail_percentages_are_normalized_without_calculation(self):
+        for product, visible, expected in (('tv', '-50%', '50%'),
+                                           ('ref', '-18%', '18%'),
+                                           ('ldy', '-61%', '61%')):
+            with self.subTest(product=product):
+                main = listing(product)
+                detail = {'savings': visible}
+                self.assertEqual(ITR.make_row(main, None, detail)['savings'], expected)
+                self.assertEqual(ITR.make_row_listing(main, None, detail)['savings'], '₹16,990')
+
+    def test_detail_parser_removes_only_the_leading_minus(self):
+        for value, expected in (('-36%', '36%'), ('  -50%  ', '50%'),
+                                ('18%', '18%'), ('-61.5%', '61.5%')):
+            with self.subTest(value=value):
+                self.assertEqual(ITR.siel_log.parse_amzn_savings_percentage(value), expected)
+
+    def test_invalid_detail_percentages_do_not_fall_back_to_price_difference(self):
+        for value in (None, '', 'stale value', '₹16,990', '-50% off'):
+            with self.subTest(value=value):
+                self.assertIsNone(ITR.make_row(listing(), None, {'savings': value})['savings'])
+
     def test_detail_fallback_does_not_leak_into_product_list(self):
         main = listing(final_sku_price=None, original_sku_price=None)
-        detail = {'final_sku_price': '₹37,500', 'original_sku_price': '₹54,490'}
-        self.assertEqual(ITR.make_row(main, None, detail)['savings'], '₹16,990')
+        detail = {'final_sku_price': '₹37,500', 'original_sku_price': '₹54,490',
+                  'savings': '-31%'}
+        self.assertEqual(ITR.make_row(main, None, detail)['savings'], '31%')
         self.assertIsNone(ITR.make_row_listing(main, None, detail)['savings'])
 
     def test_listing_prices_and_status_take_priority_over_detail(self):
-        detail = {'final_sku_price': '₹1,000', 'original_sku_price': '₹2,000'}
+        detail = {'final_sku_price': '₹1,000', 'original_sku_price': '₹2,000',
+                  'savings': '-50%'}
         row = ITR.make_row(listing(), None, detail)
-        self.assertEqual(row['savings'], '₹16,990')
+        self.assertEqual(row['savings'], '50%')
         row = ITR.make_row(listing(final_sku_price='No featured offers available'), None, detail)
         self.assertEqual(row['final_sku_price'], 'No featured offers available')
         self.assertIsNone(row['savings'])
 
     def test_malformed_amount_is_rejected_before_comma_normalization(self):
         for field in ('final_sku_price', 'original_sku_price'):
-            row = ITR.make_row(listing(**{field: '₹1,,000'}), None, {})
+            row = ITR.make_row(listing('hhp', **{field: '₹1,,000'}), None, {})
             self.assertIsNone(row['savings'])
 
     def test_bsr_only_and_redirect_price_selection(self):
         bsr = listing(bsr_rank=1)
-        self.assertEqual(ITR.make_row(None, bsr, {})['savings'], '₹16,990')
+        self.assertIsNone(ITR.make_row(None, bsr, {})['savings'])
         detail = {
             'redirect': True, '_redirect_use_landing': True,
             'landing_asin': 'B000000002', 'final_sku_price': '₹100',
-            'original_sku_price': '₹250',
+            'original_sku_price': '₹250', 'savings': '-60%',
         }
         row = ITR.make_row(listing(), None, detail)
         self.assertEqual(row['item'], 'B000000002')
-        self.assertEqual(row['savings'], '₹150')
+        self.assertEqual(row['savings'], '60%')
         self.assertEqual(ITR.make_row_listing(listing(), None, detail)['savings'], '₹16,990')
 
     def test_flipkart_retains_percentage_and_invalid_price_policy(self):
@@ -189,14 +214,19 @@ class AmazonSavingsTests(unittest.TestCase):
                         cursor.reset_mock()
                         connection.reset_mock()
                         runner._main_cache = {'B000000001': listing(product, final_sku_price=final)}
-                        runner._stream_insert({'asin': 'B000000001'})
+                        detail = {'asin': 'B000000001'}
+                        if product != 'hhp' and expected is not None:
+                            detail['savings'] = '-50%'
+                        runner._stream_insert(detail)
                         inserts = [call.args for call in cursor.execute.call_args_list
                                    if call.args[0].startswith('INSERT INTO')]
                         self.assertEqual(len(inserts), 2)
                         for (sql, row), suffix in zip(inserts, ('retail_com', 'product_list')):
                             self.assertTrue(sql.startswith(f'INSERT INTO dx_siel_{product}_{suffix} '))
                             self.assertIn('%(savings)s', sql)
-                            self.assertEqual(row['savings'], expected)
+                            expected_savings = ('50%' if suffix == 'retail_com' and product != 'hhp'
+                                                and expected is not None else expected)
+                            self.assertEqual(row['savings'], expected_savings)
                             self.assertEqual(row['final_sku_price'], final)
                         connection.commit.assert_called_once()
                         connection.rollback.assert_not_called()

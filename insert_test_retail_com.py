@@ -220,8 +220,8 @@ def amazon_price_amount(value):
     return Decimal(text.removeprefix('₹').strip().replace(',', ''))
 
 
-def amazon_price_fields(final_price, original_price, savings):
-    """Derive Amazon savings from the prices being inserted; ignore raw savings."""
+def amazon_price_fields(final_price, original_price, savings, *, derive_savings=True):
+    """Normalize Amazon prices and optionally derive amount saved."""
     # Validate before normalization, which can repair malformed comma groups.
     final_amount = amazon_price_amount(final_price)
     original_amount = amazon_price_amount(original_price)
@@ -230,6 +230,8 @@ def amazon_price_fields(final_price, original_price, savings):
     # Preserve the existing handling of unavailable final prices.
     if final_norm not in (None, '') and not re.search(r'\d', str(final_norm)):
         return final_norm, None, None
+    if not derive_savings:
+        return final_norm, original_norm, None
     if (final_amount is None or original_amount is None
             or final_amount <= 0 or original_amount < final_amount):
         return final_norm, original_norm, None
@@ -240,6 +242,11 @@ def amazon_price_fields(final_price, original_price, savings):
         amount_text = (f'{difference:,.0f}' if difference == difference.to_integral_value()
                        else f'{difference:,.2f}')
     return final_norm, original_norm, f'₹{amount_text}'
+
+
+def amazon_displayed_savings(value):
+    """Normalize the discount percentage shown on an Amazon detail page."""
+    return siel_log.parse_amzn_savings_percentage(value)
 
 
 def normalize_count(v):
@@ -467,8 +474,13 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             (d.get('retailer_sku_name') or primary.get('retailer_sku_name'))
         )
         if (account or '').lower() == 'amazon':
+            use_detail_savings = not listing_only and prod in ('TV', 'REF', 'LDY')
             final_price, original_price, savings = amazon_price_fields(
-                final_price, original_price, savings)
+                final_price, original_price, savings,
+                derive_savings=not use_detail_savings)
+            if use_detail_savings:
+                savings = (amazon_displayed_savings(d.get('savings'))
+                           if amazon_price_amount(final_price) is not None else None)
         elif (account or '').lower() == 'flipkart':
             final_price, original_price, savings = normalize_fpkt_price_values(final_price, original_price)
         else:

@@ -400,6 +400,17 @@ def parse_savings(v):
     return s
 
 
+_AMZN_SAVINGS_PERCENT_RE = re.compile(r'-?([0-9]+(?:\.[0-9]+)?)%')
+
+
+def parse_amzn_savings_percentage(v):
+    """Normalize the displayed Amazon detail discount, e.g. -36% to 36%."""
+    if v is None:
+        return None
+    match = _AMZN_SAVINGS_PERCENT_RE.fullmatch(str(v).strip())
+    return f'{match.group(1)}%' if match else None
+
+
 def parse_sku_assurance(v):
     """'Fulfilled' → 'Amazon Fulfilled'. 이미 'Amazon ' prefix 있으면 그대로 (idempotent)."""
     if not v:

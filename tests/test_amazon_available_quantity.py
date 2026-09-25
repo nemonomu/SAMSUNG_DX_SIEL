@@ -47,7 +47,7 @@ class AmazonAvailableQuantityTests(unittest.TestCase):
                                      detail['inventory_status'] if product == 'hhp'
                                      else 'Only 9 left in stock.')
                     self.assertEqual(row['inventory_status'], detail['inventory_status'])
-                    self.assertEqual(row['savings'], '₹16,990')
+                    self.assertEqual(row['savings'], '₹16,990' if product == 'hhp' else None)
                     self.assertEqual(row['final_sku_price'], '₹37,500')
                     self.assertEqual(main, before_main)
                     self.assertEqual(detail, before_detail)
@@ -184,7 +184,7 @@ class AmazonAvailableQuantityTests(unittest.TestCase):
                             self.assertEqual(row['available_quantity_for_purchase'],
                                              expected if product == 'hhp' and suffix == 'retail_com'
                                              else 'Only 9 left in stock.')
-                            self.assertEqual(row['savings'], '₹16,990')
+                            self.assertEqual(row['savings'], '₹16,990' if product == 'hhp' or suffix == 'product_list' else None)
                         connection.commit.assert_called_once()
                         connection.rollback.assert_not_called()
 
@@ -229,7 +229,8 @@ class AmazonAvailableQuantityTests(unittest.TestCase):
                 self.assertEqual(row['available_quantity_for_purchase'],
                                  expected[row['item']] if table.endswith('_retail_com')
                                  else 'Only 9 left in stock.')
-                self.assertEqual(row['savings'], '₹16,990')
+                self.assertEqual(row['savings'], '₹16,990' if table.endswith('_product_list')
+                                 or '_hhp_' in table else None)
                 count += 1
         self.assertEqual(count, 40)
         self.assertEqual(tables, {f'dx_siel_{p}_{s}' for p in ITR.PRODUCT_LOWERS
