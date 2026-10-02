@@ -26,6 +26,7 @@ import sys
 import time
 import traceback
 from datetime import datetime, timezone, timedelta
+from urllib.parse import parse_qs, urlsplit
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -536,6 +537,71 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
     return _collect_reviews(driver, url, selectors, rec)
 
 
+def _wait_review_ready(driver, url, rec, review_xpath, *, need_body=True):
+    """Wait for required data, rather than sleeping after every navigation."""
+    if not same_review_url(url, driver.current_url):
+        return False
+    if any(rec.get(field) is None for field in ('count_of_reviews', 'count_of_star_ratings')):
+        try:
+            WebDriverWait(driver, 12, poll_frequency=0.3).until(
+                lambda d: extract_single(d, REVIEW_SUMMARY_XPATH))
+        except TimeoutException:
+            if _logger:
+                _logger.warning('review_summary_missing')
+    _fill_review_summary_counts(driver, rec)
+    if not need_body or siel_log.parse_int_field(rec.get('count_of_reviews')) == 0:
+        return True
+    try:
+        WebDriverWait(driver, 12, poll_frequency=0.3).until(
+            lambda d: _extract_multi_raw(d, review_xpath, max_n=None))
+        return True
+    except TimeoutException:
+        return False
+
+
+def _has_next_review_page(driver):
+    """Only accept visible pagination for the current product and next page."""
+    current = driver.current_url
+    try:
+        page = int(parse_qs(urlsplit(current).query).get('page', ['1'])[0])
+        for anchor in driver.find_elements(By.XPATH, '//a[contains(@href,"/product-reviews/") and contains(@href,"page=")]'):
+            href = anchor.get_attribute('href') or ''
+            if (same_review_url(current, href)
+                    and urlsplit(href).path == urlsplit(current).path
+                    and parse_qs(urlsplit(href).query).get('page') == [str(page + 1)]
+                    and anchor.is_displayed()):
+                return True
+    except (ValueError, WebDriverException):
+        pass
+    return False
+
+
+def _scroll_review_bodies(driver, review_xpath, target):
+    """Allow lazy mounting; a stable ten-body page with pagination can end early."""
+    stuck = 0
+    for _ in range(40):
+        count = len(driver.find_elements(By.XPATH, review_xpath))
+        if count >= target and len(_extract_multi_raw(driver, review_xpath, max_n=None)) >= target:
+            return count
+        driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+        try:
+            WebDriverWait(driver, 1.2, poll_frequency=0.2).until(
+                lambda d: len(d.find_elements(By.XPATH, review_xpath)) > count)
+            stuck = 0
+        except TimeoutException:
+            stuck += 1
+            # Current paginated pages contain ten bodies. Require a stable count
+            # after scrolling AND visible same-product pagination. Legacy pages
+            # without that evidence retain the three-stall fallback.
+            if count == 10 and _has_next_review_page(driver):
+                parts = _extract_multi_raw(driver, review_xpath, max_n=None)
+                if len(parts) == 10 and len(driver.find_elements(By.XPATH, review_xpath)) == 10:
+                    return 10
+            if stuck >= 3:
+                break
+    return len(_extract_multi_raw(driver, review_xpath, max_n=None))
+
+
 def _collect_reviews(driver, url, selectors, rec, *, need_body=True):
     _fill_product_rating_data(driver, rec)
     rec.setdefault('count_of_reviews', None)
@@ -558,83 +624,34 @@ def _collect_reviews(driver, url, selectors, rec, *, need_body=True):
         if rev_href:
             if _logger:
                 _logger.info('navigating to review page: %s (target=%d)', rev_href, target)
-            # A+C: 1회 retry (driver hang stochastic 대응) + 그래도 fail 시 부분 review
-            # 수용. urllib3 ReadTimeoutError 는 WebDriverException 자식 아니라 별도 catch.
-            # 5/10 #8 사용자 진단 — production 의 expand_specifications + expand_see_more
-            # click 흐름 후 review URL navigate 시 driver state 가 review page 의 lazy
-            # 미발동 trigger (count >= 1 단 review body 매치 0 결함 — Haier M80 evidence).
-            # 처치: review URL navigate 전 detail URL re-navigate (driver state refresh).
-            # 본 도구 의 review URL detection 흐름 (review URL 직접 검증 시 매치 OK)
-            # 와 같은 driver state.
-            try:
-                _detail_url_refresh = rev_href.replace('/product-reviews/', '/p/', 1)
-                driver.get(_detail_url_refresh)
-                time.sleep(1.5)
-            except (WebDriverException, _Urllib3RT) as e:
-                if _logger:
-                    _logger.info('detail URL re-navigate fail (전 review): %s',
-                                 type(e).__name__)
-            try:
-                driver.get(rev_href)
-                time.sleep(3)
+            # Try the review URL directly. The historical detail-page refresh is
+            # still available once when review mounting/navigation actually fails.
+            for attempt in range(2):
                 try:
-                    WebDriverWait(driver, 12, poll_frequency=0.3).until(
-                        lambda d: extract_single(d, REVIEW_SUMMARY_XPATH))
-                except TimeoutException:
-                    if _logger:
-                        _logger.warning('review_summary_missing')
-                _fill_review_summary_counts(driver, rec)
-                count_reviews = siel_log.parse_int_field(rec.get('count_of_reviews'))
-                if count_reviews is not None and count_reviews >= 1:
-                    target = min(count_reviews, REVIEW_MAX)
-                # review body count 기반 scroll loop — height-based 정지 조건 결함 회피
-                # (Flipkart React virtual scroll 시 첫 iteration height 안 변하 break 결함).
-                # target = min(count_of_reviews, REVIEW_MAX) review body element 등장
-                # 또는 추가 scroll 무효 (3회 stuck) 시 stop. 5/10 #4 사용자 evidence —
-                # 첫 navigate 직후 14-17건 (lazy 일부) → scroll 후 44-47건 (page 의 모든
-                # review body) 가 검증.
-                _scroll_target = min(target, REVIEW_MAX)
-                _last_n, _stuck = -1, 0
-                for _ in range(40):
-                    try:
-                        _now_n = len(driver.find_elements(By.XPATH, review_xpath))
-                    except WebDriverException:
-                        _now_n = 0
-                    if _now_n >= _scroll_target:
-                        break
-                    if _now_n == _last_n:
-                        _stuck += 1
-                        if _stuck >= 3:
-                            break
-                    else:
-                        _stuck = 0
-                    _last_n = _now_n
-                    try:
-                        driver.execute_script(
-                            'window.scrollTo(0, document.body.scrollHeight);')
-                    except WebDriverException:
-                        break
-                    time.sleep(1.2)
-                if _logger:
-                    _logger.info('review body count-based scroll: target=%d collected=%d',
-                                 _scroll_target, _last_n if _last_n >= 0 else 0)
-            except (WebDriverException, _Urllib3RT) as e:
-                if _logger:
-                    _logger.warning('review page navigate fail: %s — retry',
-                                    type(e).__name__)
-                try:
-                    time.sleep(2)
+                    if attempt:
+                        if _logger:
+                            _logger.info('review fallback: refresh product then retry')
+                        driver.get(rev_href.replace('/product-reviews/', '/p/', 1))
+                        time.sleep(1.5)
                     driver.get(rev_href)
-                    time.sleep(3)
-                    _fill_review_summary_counts(driver, rec)
+                    ready = _wait_review_ready(driver, url, rec, review_xpath, need_body=need_body)
+                    if not same_review_url(url, driver.current_url):
+                        break
                     count_reviews = siel_log.parse_int_field(rec.get('count_of_reviews'))
                     if count_reviews is not None and count_reviews >= 1:
                         target = min(count_reviews, REVIEW_MAX)
-                    scroll_to_bottom(driver, pause=1.2, max_scrolls=15)
-                except (WebDriverException, _Urllib3RT) as e2:
+                    if need_body and count_reviews != 0:
+                        body_count = _scroll_review_bodies(driver, review_xpath, target)
+                        if _logger:
+                            _logger.info('review body count-based scroll: target=%d collected=%d',
+                                         target, body_count)
+                        ready = body_count > 0
+                    if ready:
+                        break
+                except (WebDriverException, _Urllib3RT) as e:
                     if _logger:
-                        _logger.warning('review page navigate fail (after retry): %s',
-                                        type(e2).__name__)
+                        _logger.warning('review navigate attempt=%d failed: %s',
+                                        attempt + 1, type(e).__name__)
             # review page 진입 후 두 번째 HTML snapshot — review xpath 디버깅용
             if _html_path:
                 review_html = _html_path.replace('.html', '_review.html')
@@ -666,25 +683,21 @@ def _collect_reviews(driver, url, selectors, rec, *, need_body=True):
             if _logger:
                 _logger.info('review page %d: %s (collected=%d/%d)',
                              page, page_url, len(all_parts), target)
-            # A+C: 1회 retry + 그래도 fail 시 collected so far 사용 + break
-            try:
-                driver.get(page_url)
-                time.sleep(3)
-                scroll_to_bottom(driver, pause=1.0, max_scrolls=10)
-            except (WebDriverException, _Urllib3RT) as e:
-                if _logger:
-                    _logger.warning('review page %d navigate fail: %s — retry',
-                                    page, type(e).__name__)
+            for attempt in range(2):
                 try:
-                    time.sleep(2)
                     driver.get(page_url)
-                    time.sleep(3)
-                    scroll_to_bottom(driver, pause=1.0, max_scrolls=10)
-                except (WebDriverException, _Urllib3RT) as e2:
+                    ready = _wait_review_ready(driver, url, rec, review_xpath)
+                    if not same_review_url(url, driver.current_url):
+                        break
+                    # Do not stop at the remaining raw count: some bodies may
+                    # duplicate earlier pages and are removed during extraction.
+                    _scroll_review_bodies(driver, review_xpath, target)
+                    if ready or driver.find_elements(By.XPATH, review_xpath):
+                        break
+                except (WebDriverException, _Urllib3RT) as e:
                     if _logger:
-                        _logger.warning('review page %d navigate fail (after retry): %s',
-                                        page, type(e2).__name__)
-                    break
+                        _logger.warning('review page %d attempt=%d failed: %s',
+                                        page, attempt + 1, type(e).__name__)
             new_count = 0
             if not same_review_url(url, driver.current_url):
                 if _logger:

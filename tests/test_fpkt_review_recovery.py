@@ -10,6 +10,7 @@ import re
 import sys
 import tempfile
 from types import SimpleNamespace, ModuleType
+from urllib.parse import parse_qs, urlsplit
 import unittest
 from unittest.mock import Mock, patch
 
@@ -34,6 +35,9 @@ class Element:
 
     def get_attribute(self, name):
         return self.href if name == 'href' else self.text
+
+    def is_displayed(self):
+        return True
 
 
 class Wait:
@@ -92,11 +96,89 @@ def detail_env():
                WebDriverWait=Wait, TimeoutException=TimeoutError,
                WebDriverException=RuntimeError, NoSuchElementException=LookupError,
                _Urllib3RT=ConnectionError, time=SimpleNamespace(sleep=Mock()))
+    env.update(parse_qs=parse_qs, urlsplit=urlsplit)
     exec(compile(source, 'detail.py', 'exec'), env)
     return env
 
 
 class PanelTests(unittest.TestCase):
+    def test_blank_placeholders_are_not_treated_as_loaded_reviews(self):
+        env, driver = detail_env(), Driver()
+        driver.current_url = REVIEW
+        driver.find_elements = lambda by, xp: [Element(text='') for _ in range(20)] if xp == 'body' else []
+        self.assertFalse(env['_wait_review_ready'](driver, URL,
+            dict(count_of_reviews='100', count_of_star_ratings='200'), 'body'))
+        self.assertEqual(env['_scroll_review_bodies'](driver, 'body', 20), 0)
+
+    def test_ready_reviews_skip_product_refresh_and_fixed_sleep(self):
+        env, driver = detail_env(), Driver()
+        result = env['_collect_reviews'](driver, URL, SELECTORS, {'source_url': URL})
+        self.assertIn('Second body', result['detailed_review_content'])
+        self.assertEqual(driver.visited, [REVIEW])
+        env['time'].sleep.assert_not_called()
+
+    def test_empty_first_review_load_refreshes_product_once(self):
+        class NeedsRefresh(Driver):
+            def find_elements(self, by, xpath):
+                if xpath == 'body' and URL not in self.visited:
+                    return []
+                return super().find_elements(by, xpath)
+        env, driver = detail_env(), NeedsRefresh()
+        result = env['_collect_reviews'](driver, URL, SELECTORS, {'source_url': URL})
+        self.assertEqual(driver.visited, [REVIEW, URL, REVIEW])
+        self.assertIn('First body', result['detailed_review_content'])
+
+    def test_twenty_unique_bodies_and_third_page_for_duplicates(self):
+        class Paged(Driver):
+            def find_elements(self, by, xpath):
+                page = int(parse_qs(urlsplit(self.current_url).query).get('page', ['1'])[0])
+                if '/product-reviews/' in self.current_url:
+                    if xpath == 'body':
+                        start = {1: 0, 2: 9, 3: 19}[page]
+                        return [Element(text=f'Body {i}') for i in range(start, start + 10)]
+                    if xpath.startswith('//a[contains'):
+                        return [Element(REVIEW + f'&page={page + 1}')]
+                return super().find_elements(by, xpath)
+        env, driver = detail_env(), Paged()
+        result = env['_collect_reviews'](driver, URL, SELECTORS,
+            dict(source_url=URL, count_of_reviews='100', count_of_star_ratings='200'))
+        self.assertEqual(driver.visited, [REVIEW, REVIEW + '&page=2', REVIEW + '&page=3'])
+        self.assertEqual(len(result['detailed_review_content'].split(' ||| ')), 20)
+        self.assertIn('Body 19', result['detailed_review_content'])
+        self.assertNotIn('Body 20', result['detailed_review_content'])
+        env['time'].sleep.assert_not_called()
+
+    def test_ten_body_page_fast_exit_requires_same_product_visible_next_link(self):
+        for next_href, visible, expected_scrolls in [
+            (REVIEW + '&page=2', True, 1),
+            (REVIEW.replace('TVS123', 'TVS999') + '&page=2', True, 3),
+            (REVIEW + '&page=3', True, 3),
+            (REVIEW + '&page=2&an=Sound', True, 3),
+            (REVIEW + '&page=2', False, 3),
+        ]:
+            with self.subTest(href=next_href, visible=visible):
+                env, driver = detail_env(), Driver()
+                driver.current_url = REVIEW
+                anchor = Element(next_href)
+                anchor.is_displayed = lambda: visible
+                driver.find_elements = lambda by, xp: (
+                    [Element(text=f'Body {i}') for i in range(10)] if xp == 'body' else [anchor])
+                driver.execute_script = Mock()
+                self.assertEqual(env['_scroll_review_bodies'](driver, 'body', 20), 10)
+                self.assertEqual(driver.execute_script.call_count, expected_scrolls)
+
+    def test_lazy_bodies_can_grow_past_ten_before_next_page(self):
+        env, driver = detail_env(), Driver()
+        driver.current_url = REVIEW
+        counts = iter([10, 17, 20])
+        driver.count = next(counts)
+        driver.find_elements = lambda by, xp: [Element(text=f'Body {i}') for i in range(driver.count)]
+        def scroll(*args):
+            driver.count = next(counts)
+        driver.execute_script = Mock(side_effect=scroll)
+        self.assertEqual(env['_scroll_review_bodies'](driver, 'body', 20), 20)
+        self.assertEqual(driver.execute_script.call_count, 2)
+
     def test_null_count_opens_panel_then_recovers_count_and_body(self):
         env, driver = detail_env(), Driver()
         rec = {'source_url': URL, 'count_of_reviews': None}

@@ -229,6 +229,7 @@ def main(argv=None):
         unresolved = db_errors = updated = fetched = 0
         try:
             for index, candidate in enumerate(candidates, 1):
+                started = time.monotonic()
                 pid = candidate['fsn']
                 values = dict(candidate['values'])
                 fill_missing(values, cache.get(pid, {}))
@@ -285,7 +286,9 @@ def main(argv=None):
                     finally:
                         if conn is not None:
                             conn.close()
-                print(f'[{index}/{len(candidates)}] {pid} pending={",".join(pending) or "none"} error={error or "none"}', flush=True)
+                elapsed = time.monotonic() - started
+                print(f'[{index}/{len(candidates)}] {pid} pending={",".join(pending) or "none"} '
+                      f'error={error or "none"} elapsed={elapsed:.1f}s status={status}', flush=True)
         finally:
             if driver is not None:
                 try:
