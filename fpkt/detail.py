@@ -9,6 +9,7 @@ Flipkart product detail crawler (SIEL).
 특수 selector data_field:
   base_container             : (옵션, 보통 detail 에 없음)
   expand_specifications      : Specifications 클릭 (실패 무시)
+  open_reviews_panel         : Top rating link opens a client-side review panel
   click_show_all_reviews     : Show all reviews → review page (Buy now 회피)
   detailed_review_content    : review page 다중 element. 'review{n} - text ||| ...' 합침 (max 20)
   retailer_sku_name_similar  : 다중 element. ', ' 합침
@@ -44,6 +45,7 @@ from urllib3.exceptions import ReadTimeoutError as _Urllib3RT
 import config
 import siel_log
 from siel_batch import next_batch_id
+from fpkt.review_fields import FIELDS as REVIEW_FIELDS, aggregate_fields, fill_missing, product_pid, same_review_url
 
 # uc.Chrome.__del__ 가 GC 시점에 quit() 한 번 더 시도 → Windows OSError [WinError 6].
 # finally 에서 driver.quit() 명시 호출하므로 __del__ 은 불필요.
@@ -64,7 +66,7 @@ REVIEW_SUMMARY_XPATH = (
 )
 
 EXPAND_FIELDS = {'expand_specifications', 'expand_see_more'}
-NAVIGATE_FIELDS = {'click_show_all_reviews'}
+NAVIGATE_FIELDS = {'click_show_all_reviews', 'open_reviews_panel'}
 CONTROL_FIELDS = EXPAND_FIELDS | NAVIGATE_FIELDS | {'base_container'}
 
 _logger = None
@@ -234,6 +236,8 @@ def extract_single(driver, xpath: str):
 
 
 def _fill_review_summary_counts(driver, rec: dict):
+    if not same_review_url(rec.get('source_url'), driver.current_url):
+        return
     raw = extract_single(driver, REVIEW_SUMMARY_XPATH)
     if not raw:
         return
@@ -249,6 +253,90 @@ def _fill_review_summary_counts(driver, rec: dict):
     if changed and _logger:
         _logger.info('review summary counts recovered: raw=%r %s',
                      raw, ' '.join(changed))
+
+
+def _fill_product_rating_data(driver, rec):
+    """JSON-LD is a fallback only; require the target product's exact SKU."""
+    if product_pid(driver.current_url) != product_pid(rec['source_url']):
+        return
+    try:
+        scripts = [el.get_attribute('textContent') for el in
+                   driver.find_elements(By.CSS_SELECTOR, 'script[type="application/ld+json"]')]
+        changed = fill_missing(rec, aggregate_fields(scripts, product_pid(rec['source_url'])))
+        if changed and _logger:
+            _logger.info('product rating JSON-LD recovered: %s', ', '.join(changed))
+    except WebDriverException:
+        pass
+
+
+def _find_review_href(driver, url, selectors):
+    sel = selectors.get('click_show_all_reviews') or {}
+    for xpath in (sel.get('xpath'), sel.get('fallback')):
+        if not xpath:
+            continue
+        try:
+            for anchor in driver.find_elements(By.XPATH, xpath):
+                href = anchor.get_attribute('href') or ''
+                if same_review_url(url, href):
+                    return href
+        except WebDriverException:
+            continue
+    return None
+
+
+def _prepare_review_href(driver, url, selectors):
+    # Legacy pages may already contain a usable link. Modern pages mount it in a panel.
+    href = _find_review_href(driver, url, selectors)
+    if href:
+        return href
+    panel = selectors.get('open_reviews_panel') or {}
+    xpath = panel.get('xpath')
+    if not xpath:
+        if _logger:
+            _logger.warning('review_panel_selector_missing: apply review panel SQL migration')
+        return None
+    try:
+        # Never click another product's rating badge.
+        anchors = WebDriverWait(driver, 8, poll_frequency=0.3).until(
+            lambda d: [a for a in d.find_elements(By.XPATH, xpath)
+                       if product_pid(a.get_attribute('href') or '') == product_pid(url)])
+        driver.execute_script('arguments[0].scrollIntoView({block: "center"});', anchors[0])
+        driver.execute_script('arguments[0].click();', anchors[0])
+        href = WebDriverWait(driver, 15, poll_frequency=0.3).until(
+            lambda d: _find_review_href(d, url, selectors))
+        if _logger:
+            _logger.info('review_panel_ready: same-product unfiltered link found')
+        return href
+    except TimeoutException:
+        if _logger:
+            _logger.warning('review_panel_or_link_missing: pid=%s', product_pid(url))
+    except WebDriverException as e:
+        if _logger:
+            _logger.warning('review_panel_open_failed: %s', type(e).__name__)
+    return None
+
+
+def crawl_review_fields(driver, product, url, selectors, batch_id, *, need_body=True):
+    """Recovery entry point: no prices, specs, recommendations or listing collection."""
+    rec = dict(account_name=ACCOUNT_NAME, product=product, stage=STAGE,
+               source_url=url, fsn=fsn_from_url(url), batch_id=batch_id,
+               crawl_datetime=now_server_ts())
+    rec.update({field: None for field in REVIEW_FIELDS})
+    driver.get(url)
+    WebDriverWait(driver, 15).until(
+        lambda d: d.execute_script('return document.readyState') == 'complete')
+    # Wait for a top product badge or its structured data, not recommendation ratings.
+    time.sleep(2)
+    if product_pid(driver.current_url) != product_pid(url):
+        rec['_error'] = 'product_redirect_mismatch'
+        return rec
+    for field, parser in [('star_rating', siel_log.parse_star_rating),
+                          ('count_of_star_ratings', siel_log.parse_count_of_ratings),
+                          ('count_of_reviews', siel_log.parse_count_of_reviews)]:
+        xpath = (selectors.get(field) or {}).get('xpath')
+        if xpath:
+            rec[field] = parser(extract_single(driver, xpath))
+    return _collect_reviews(driver, url, selectors, rec, need_body=need_body)
 
 
 def _is_same_product_review_href(source_url: str, href: str) -> bool:
@@ -445,177 +533,123 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
         else:
             rec[field] = extract_single(driver, xpath)
 
-    # count_of_reviews 정책:
-    #   숫자 >=1: 명시적으로 리뷰 있음 → 추출
-    #   0:        명시적으로 리뷰 없음 → skip
-    #   None:     count 표기 자체가 페이지에 없음 (modern Flipkart) → click_show_all_reviews
-    #             가 매치되면 best-effort 시도, 매치 안 되면 skip
+    return _collect_reviews(driver, url, selectors, rec)
+
+
+def _collect_reviews(driver, url, selectors, rec, *, need_body=True):
+    _fill_product_rating_data(driver, rec)
+    rec.setdefault('count_of_reviews', None)
     count_reviews = siel_log.parse_int_field(rec.get('count_of_reviews'))
-    rev_btn = selectors.get('click_show_all_reviews')
-    rev_btn_xpath = rev_btn.get('xpath') if rev_btn else None
-
-    should_try_reviews = False
-    if review_xpath:
-        if count_reviews is not None and count_reviews >= 1:
-            should_try_reviews = True
-        elif count_reviews is None and rev_btn_xpath:
-            # count 표기 없음. show_all_reviews 버튼 존재 여부로 판단
-            try:
-                if driver.find_elements(By.XPATH, rev_btn_xpath):
-                    should_try_reviews = True
-            except WebDriverException:
-                pass
-
+    review_xpath = (selectors.get('detailed_review_content') or {}).get('xpath')
+    if count_reviews == 0:
+        rec['detailed_review_content'] = None
+        return rec
+    if not need_body and count_reviews is not None:
+        return rec
+    # Find/open the panel BEFORE deciding whether reviews can be collected.
+    rev_href = _prepare_review_href(driver, url, selectors)
+    if not rev_href:
+        rec['detailed_review_content'] = None
+        rec['_review_status'] = 'review_link_missing'
+        return rec
+    should_try_reviews = bool(review_xpath)
     if should_try_reviews:
-        # target: count_of_reviews 만큼 (최대 REVIEW_MAX). count None 이면 best-effort = REVIEW_MAX.
-        if count_reviews is not None and count_reviews >= 1:
-            target = min(count_reviews, REVIEW_MAX)
-        else:
-            target = REVIEW_MAX
-        rev_href = None
-        if rev_btn_xpath:
-            # click 대신 anchor href 직접 추출 + driver.get() — 새 탭 / JS interception 회피
-            # source_url 의 fsn (pid) 과 review URL fsn 일치 확인 → 다른 product review 링크 차단
-            # aspect 필터 없는 generic link 우선 (&an=Camera 같은 aspect-specific 후순위)
-            src_fsn = fsn_from_url(url)
+        target = min(count_reviews, REVIEW_MAX) if count_reviews is not None else REVIEW_MAX
+        if rev_href:
+            if _logger:
+                _logger.info('navigating to review page: %s (target=%d)', rev_href, target)
+            # A+C: 1회 retry (driver hang stochastic 대응) + 그래도 fail 시 부분 review
+            # 수용. urllib3 ReadTimeoutError 는 WebDriverException 자식 아니라 별도 catch.
+            # 5/10 #8 사용자 진단 — production 의 expand_specifications + expand_see_more
+            # click 흐름 후 review URL navigate 시 driver state 가 review page 의 lazy
+            # 미발동 trigger (count >= 1 단 review body 매치 0 결함 — Haier M80 evidence).
+            # 처치: review URL navigate 전 detail URL re-navigate (driver state refresh).
+            # 본 도구 의 review URL detection 흐름 (review URL 직접 검증 시 매치 OK)
+            # 와 같은 driver state.
             try:
-                anchors = driver.find_elements(By.XPATH, rev_btn_xpath)
-            except WebDriverException:
-                anchors = []
-            # 1차: same product (fsn 매치) + aspect 없음
-            for a in anchors:
-                try:
-                    href = a.get_attribute('href') or ''
-                except WebDriverException:
-                    continue
-                if '/product-reviews/' not in href:
-                    continue
-                href_fsn = fsn_from_url(href)
-                if src_fsn and href_fsn and src_fsn != href_fsn:
-                    continue  # 다른 product 의 review link → skip
-                if '&an=' not in href:
-                    rev_href = href
-                    break
-            # 2차 fallback: same product (aspect 있어도 OK)
-            if not rev_href:
-                for a in anchors:
-                    try:
-                        href = a.get_attribute('href') or ''
-                    except WebDriverException:
-                        continue
-                    if '/product-reviews/' not in href:
-                        continue
-                    href_fsn = fsn_from_url(href)
-                    if src_fsn and href_fsn and src_fsn != href_fsn:
-                        continue
-                    rev_href = href
-                    break
-            # Broad scan for same-product review anchors. Do not synthesize review URLs.
-            if not rev_href:
-                try:
-                    anchors = driver.find_elements(
-                        By.XPATH,
-                        '//a[contains(@href,"/product-reviews/") and not(contains(@href,"buynow"))]'
-                    )
-                except WebDriverException:
-                    anchors = []
-                for prefer_no_aspect in (True, False):
-                    for a in anchors:
-                        try:
-                            href = a.get_attribute('href') or ''
-                        except WebDriverException:
-                            continue
-                        if not _is_same_product_review_href(url, href):
-                            continue
-                        if prefer_no_aspect and '&an=' in href:
-                            continue
-                        rev_href = href
-                        break
-                    if rev_href:
-                        break
-                if _logger and not rev_href:
-                    _logger.info('same-product review anchor href not found')
-            if rev_href:
+                _detail_url_refresh = rev_href.replace('/product-reviews/', '/p/', 1)
+                driver.get(_detail_url_refresh)
+                time.sleep(1.5)
+            except (WebDriverException, _Urllib3RT) as e:
                 if _logger:
-                    _logger.info('navigating to review page: %s (target=%d)', rev_href, target)
-                # A+C: 1회 retry (driver hang stochastic 대응) + 그래도 fail 시 부분 review
-                # 수용. urllib3 ReadTimeoutError 는 WebDriverException 자식 아니라 별도 catch.
-                # 5/10 #8 사용자 진단 — production 의 expand_specifications + expand_see_more
-                # click 흐름 후 review URL navigate 시 driver state 가 review page 의 lazy
-                # 미발동 trigger (count >= 1 단 review body 매치 0 결함 — Haier M80 evidence).
-                # 처치: review URL navigate 전 detail URL re-navigate (driver state refresh).
-                # 본 도구 의 review URL detection 흐름 (review URL 직접 검증 시 매치 OK)
-                # 와 같은 driver state.
+                    _logger.info('detail URL re-navigate fail (전 review): %s',
+                                 type(e).__name__)
+            try:
+                driver.get(rev_href)
+                time.sleep(3)
                 try:
-                    _detail_url_refresh = rev_href.replace('/product-reviews/', '/p/', 1)
-                    driver.get(_detail_url_refresh)
-                    time.sleep(1.5)
-                except (WebDriverException, _Urllib3RT) as e:
+                    WebDriverWait(driver, 12, poll_frequency=0.3).until(
+                        lambda d: extract_single(d, REVIEW_SUMMARY_XPATH))
+                except TimeoutException:
                     if _logger:
-                        _logger.info('detail URL re-navigate fail (전 review): %s',
-                                     type(e).__name__)
+                        _logger.warning('review_summary_missing')
+                _fill_review_summary_counts(driver, rec)
+                count_reviews = siel_log.parse_int_field(rec.get('count_of_reviews'))
+                if count_reviews is not None and count_reviews >= 1:
+                    target = min(count_reviews, REVIEW_MAX)
+                # review body count 기반 scroll loop — height-based 정지 조건 결함 회피
+                # (Flipkart React virtual scroll 시 첫 iteration height 안 변하 break 결함).
+                # target = min(count_of_reviews, REVIEW_MAX) review body element 등장
+                # 또는 추가 scroll 무효 (3회 stuck) 시 stop. 5/10 #4 사용자 evidence —
+                # 첫 navigate 직후 14-17건 (lazy 일부) → scroll 후 44-47건 (page 의 모든
+                # review body) 가 검증.
+                _scroll_target = min(target, REVIEW_MAX)
+                _last_n, _stuck = -1, 0
+                for _ in range(40):
+                    try:
+                        _now_n = len(driver.find_elements(By.XPATH, review_xpath))
+                    except WebDriverException:
+                        _now_n = 0
+                    if _now_n >= _scroll_target:
+                        break
+                    if _now_n == _last_n:
+                        _stuck += 1
+                        if _stuck >= 3:
+                            break
+                    else:
+                        _stuck = 0
+                    _last_n = _now_n
+                    try:
+                        driver.execute_script(
+                            'window.scrollTo(0, document.body.scrollHeight);')
+                    except WebDriverException:
+                        break
+                    time.sleep(1.2)
+                if _logger:
+                    _logger.info('review body count-based scroll: target=%d collected=%d',
+                                 _scroll_target, _last_n if _last_n >= 0 else 0)
+            except (WebDriverException, _Urllib3RT) as e:
+                if _logger:
+                    _logger.warning('review page navigate fail: %s — retry',
+                                    type(e).__name__)
                 try:
+                    time.sleep(2)
                     driver.get(rev_href)
                     time.sleep(3)
                     _fill_review_summary_counts(driver, rec)
                     count_reviews = siel_log.parse_int_field(rec.get('count_of_reviews'))
                     if count_reviews is not None and count_reviews >= 1:
                         target = min(count_reviews, REVIEW_MAX)
-                    # review body count 기반 scroll loop — height-based 정지 조건 결함 회피
-                    # (Flipkart React virtual scroll 시 첫 iteration height 안 변하 break 결함).
-                    # target = min(count_of_reviews, REVIEW_MAX) review body element 등장
-                    # 또는 추가 scroll 무효 (3회 stuck) 시 stop. 5/10 #4 사용자 evidence —
-                    # 첫 navigate 직후 14-17건 (lazy 일부) → scroll 후 44-47건 (page 의 모든
-                    # review body) 가 검증.
-                    _scroll_target = min(target, REVIEW_MAX)
-                    _last_n, _stuck = -1, 0
-                    for _ in range(40):
-                        try:
-                            _now_n = len(driver.find_elements(By.XPATH, review_xpath))
-                        except WebDriverException:
-                            _now_n = 0
-                        if _now_n >= _scroll_target:
-                            break
-                        if _now_n == _last_n:
-                            _stuck += 1
-                            if _stuck >= 3:
-                                break
-                        else:
-                            _stuck = 0
-                        _last_n = _now_n
-                        try:
-                            driver.execute_script(
-                                'window.scrollTo(0, document.body.scrollHeight);')
-                        except WebDriverException:
-                            break
-                        time.sleep(1.2)
+                    scroll_to_bottom(driver, pause=1.2, max_scrolls=15)
+                except (WebDriverException, _Urllib3RT) as e2:
                     if _logger:
-                        _logger.info('review body count-based scroll: target=%d collected=%d',
-                                     _scroll_target, _last_n if _last_n >= 0 else 0)
-                except (WebDriverException, _Urllib3RT) as e:
-                    if _logger:
-                        _logger.warning('review page navigate fail: %s — retry',
-                                        type(e).__name__)
-                    try:
-                        time.sleep(2)
-                        driver.get(rev_href)
-                        time.sleep(3)
-                        _fill_review_summary_counts(driver, rec)
-                        count_reviews = siel_log.parse_int_field(rec.get('count_of_reviews'))
-                        if count_reviews is not None and count_reviews >= 1:
-                            target = min(count_reviews, REVIEW_MAX)
-                        scroll_to_bottom(driver, pause=1.2, max_scrolls=15)
-                    except (WebDriverException, _Urllib3RT) as e2:
-                        if _logger:
-                            _logger.warning('review page navigate fail (after retry): %s',
-                                            type(e2).__name__)
-                # review page 진입 후 두 번째 HTML snapshot — review xpath 디버깅용
-                if _html_path:
-                    review_html = _html_path.replace('.html', '_review.html')
-                    if siel_log.save_html(driver, review_html) and _logger:
-                        _logger.info('review page HTML saved: %s', review_html)
-            elif _logger:
-                _logger.info('review anchor href not found')
+                        _logger.warning('review page navigate fail (after retry): %s',
+                                        type(e2).__name__)
+            # review page 진입 후 두 번째 HTML snapshot — review xpath 디버깅용
+            if _html_path:
+                review_html = _html_path.replace('.html', '_review.html')
+                if siel_log.save_html(driver, review_html) and _logger:
+                    _logger.info('review page HTML saved: %s', review_html)
+        if not same_review_url(url, driver.current_url):
+            rec['_review_status'] = 'review_navigation_failed'
+            rec['detailed_review_content'] = None
+            return rec
+        if siel_log.parse_int_field(rec.get('count_of_reviews')) == 0:
+            rec['detailed_review_content'] = None
+            rec['_review_status'] = 'zero_reviews'
+            return rec
+        if not need_body:
+            return rec
         # 첫 페이지 + 부족 시 &page=N navigate. 페이지당 ~10. REVIEW_MAX=20 → 최대 page 2~3 까지.
         all_parts = []
         seen = set()
@@ -652,6 +686,10 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                                         page, type(e2).__name__)
                     break
             new_count = 0
+            if not same_review_url(url, driver.current_url):
+                if _logger:
+                    _logger.warning('review_pagination_redirect_mismatch')
+                break
             for p in _extract_multi_raw(driver, review_xpath, max_n=None):
                 if p not in seen:
                     seen.add(p)
@@ -665,6 +703,9 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
                 break
             page += 1
         rec['detailed_review_content'] = siel_log.format_review_content(all_parts)
+        rec['_review_status'] = 'collected' if all_parts else 'review_body_missing'
+        if not all_parts and _logger:
+            _logger.warning('review_body_missing: pid=%s count=%s', product_pid(url), count_reviews)
         # logic violation 검사 — count_of_reviews>=1 인데 review body 0 → batch 첫 1건 만 saved
         global _review_violation_saved
         if not _review_violation_saved and count_reviews and count_reviews >= 1 and not all_parts:
@@ -679,7 +720,7 @@ def crawl_detail(driver, product: str, url: str, selectors: dict, batch_id: str)
         rec['detailed_review_content'] = None
         if review_xpath and _logger:
             _logger.info('skip review extraction: count_of_reviews=%s rev_btn=%s',
-                         count_reviews, bool(rev_btn_xpath))
+                         count_reviews, bool(rev_href))
     return rec
 
 
