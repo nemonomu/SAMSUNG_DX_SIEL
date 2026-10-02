@@ -251,7 +251,7 @@ from fpkt import detail as D
 
 
 def run_listing_capture(driver, product: str, stage: str,
-                        max_rank: int, max_pages: int) -> list:
+                        max_rank: int, max_pages: int, batch_id: str | None = None) -> list:
     captured: list = []
     seen_keys: set = set()
     stats = {'emitted': 0, 'with_id': 0, 'with_url': 0}
@@ -293,10 +293,8 @@ def run_listing_capture(driver, product: str, stage: str,
         L.init_logging(product, stage)
         sels = L.load_selectors(L.SITE_ACCOUNT, stage, product)
         if not sels:
-            L.emit({'_error': 'no selectors loaded',
-                    'site': L.SITE_ACCOUNT, 'stage': stage, 'product': product})
-            return captured
-        batch_id = L.make_batch_id(stage, product)
+            raise RuntimeError(f'product={product} stage={stage}: no selectors loaded')
+        batch_id = batch_id or L.make_batch_id(stage, product)
         L.crawl_paged(driver, product, stage, base_url, sels, batch_id,
                       mr, max_pages, rank_field)
     finally:
@@ -386,7 +384,7 @@ def _hard_kill_driver(driver) -> None:
 
 
 def run_detail(driver, product: str, urls: list, sleep_s: float,
-               headless: bool, restart_every: int = 30):
+               headless: bool, restart_every: int = 30, batch_id: str | None = None):
     """detail loop — restart_every 카드 마다 driver quit + recreate (chrome 누적 메모리 release).
     5/11 사용자 evidence — long-run 중 chrome page "Out of memory" 노출. driver 자체 reset
     없이 driver.get N번 누적 시 chrome renderer 메모리 GB 단위 누적 → OOM. 30 카드 마다
@@ -394,7 +392,7 @@ def run_detail(driver, product: str, urls: list, sleep_s: float,
     참조 받아서 후속 호출 에 사용."""
     D.init_logging(product)
     sels = D.load_selectors(D.SITE_ACCOUNT, D.STAGE, product)
-    batch_id = D.make_batch_id(product)
+    batch_id = batch_id or D.make_batch_id(product)
     if not sels:
         D.emit({'_error': 'no selectors loaded',
                 'site': D.SITE_ACCOUNT, 'stage': D.STAGE,
@@ -439,17 +437,22 @@ def _run_one_product(driver, product: str, args):
     detail loop 가 주기 적 driver 재시작 시 새 driver 인스턴스 반환 — main 이 받아 다음 product 에 사용."""
     _reset_caches()
     _setup_results(product)
+    batch_id = L.make_batch_id('run', product)
+    print(f'[run] product={product} batch_id={batch_id} results={_results_path}', file=sys.stderr)
     captured: list = []
     seen = set()
     try:
-        for stage in args.stages:
+        # Finish all listings before detail emits can trigger streaming INSERT.
+        stages = list(dict.fromkeys(args.stages))
+        stages = [s for s in stages if s != 'detail'] + (['detail'] if 'detail' in stages else [])
+        for stage in stages:
             if stage in ('main', 'bsr'):
                 if stage == 'main':
                     mr = args.max_rank_main if args.max_rank_main is not None else args.max_rank
                 else:
                     mr = args.max_rank_bsr if args.max_rank_bsr is not None else args.max_rank
                 urls = run_listing_capture(driver, product, stage,
-                                           mr, args.max_pages)
+                                           mr, args.max_pages, batch_id=batch_id)
                 added = 0
                 for u in urls:
                     key = _listing_key_from_url(u)
@@ -469,7 +472,13 @@ def _run_one_product(driver, product: str, args):
                 print(f'[run] product={product} stage=detail processing={len(use_urls)} (dedupe 후)',
                       file=sys.stderr)
                 _n, driver = run_detail(driver, product, use_urls, args.detail_sleep,
-                                        args.headless, restart_every=30)
+                                        args.headless, restart_every=30, batch_id=batch_id)
+    except L.ShortListingPage as exc:
+        _write_results({'_error': 'ten_product_page', 'product': product,
+                        'batch_id': batch_id, 'message': str(exc),
+                        'status': 'aborted_before_detail_and_db'})
+        _reset_caches()
+        raise
     finally:
         _close_results()
     return driver
@@ -488,7 +497,8 @@ def main() -> int:
                     help='main 단계 max_rank. 있으면 --max-rank 보다 우선')
     ap.add_argument('--max-rank-bsr', type=int, default=None,
                     help='bsr 단계 max_rank. 있으면 --max-rank 보다 우선')
-    ap.add_argument('--max-pages', type=int, default=30)
+    ap.add_argument('--max-pages', type=int, default=0,
+                    help='Legacy option; ignored. Collect until the unique target or end of results.')
     ap.add_argument('--max-detail', type=int, default=None,
                     help='detail 단계 처리 URL 수 제한 (default 무제한)')
     ap.add_argument('--detail-sleep', type=float, default=2.0)
@@ -505,12 +515,18 @@ def main() -> int:
         _setup_db()
 
     driver = _make_driver_tracked(args.headless)
+    exit_code = 0
     try:
         for product in args.product:
             print(f'\n=== [run] starting product={product} ===\n', file=sys.stderr)
             try:
                 driver = _run_one_product(driver, product, args)
+            except L.ShortListingPage as e:
+                exit_code = 1
+                print(f'[run] product={product} aborted; skipping detail/DB; next product: {e}',
+                      file=sys.stderr)
             except Exception as e:
+                exit_code = 1
                 traceback.print_exc(file=sys.stderr)
                 # 5/11 — driver 가 죽었을 가능성 (urllib3 ReadTimeoutError 류 uncaught). quit 후
                 # 새 driver 재생성 — 같은 driver 로 다음 product 진행 시 첫 카드부터 cascade 사망.
@@ -520,7 +536,7 @@ def main() -> int:
                 print(f'[run] product={product} failed — driver 재시작 + 다음 product 진행', file=sys.stderr)
                 _hard_kill_driver(driver)
                 driver = _make_driver_tracked(args.headless)
-        return 0
+        return exit_code
     finally:
         _hard_kill_driver(driver)
         _close_results()

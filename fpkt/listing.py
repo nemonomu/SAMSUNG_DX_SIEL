@@ -275,6 +275,72 @@ def with_page(url: str, page: int) -> str:
     return f"{url}{sep}page={page}"
 
 
+class ShortListingPage(RuntimeError):
+    """A ten-card page stops this product before any detail/DB processing."""
+
+
+def save_listing_diagnostic(driver, product, stage, page, url, batch_id, cards,
+                            selectors):
+    """Capture the current browser state without navigating or retrying the page."""
+    folder = os.path.join(_HERE, 'logs')
+    os.makedirs(folder, exist_ok=True)
+    prefix = os.path.join(folder, f'{batch_id}_{product}_{stage}_page{page}_ten_products')
+    report = {
+        'reason': 'ten_product_page', 'product': product, 'stage': stage,
+        'page': page, 'batch_id': batch_id, 'requested_url': url,
+        'card_count': len(cards), 'selectors': selectors,
+        'screenshot_scope': 'current_viewport',
+        'products': [], 'errors': {},
+        'assessment': 'Cause unconfirmed; inspect saved DOM, selectors and screenshot.',
+    }
+    for i, card in enumerate(cards, 1):
+        try:
+            report['products'].append({'position': i, **extract_card(card, selectors)})
+        except Exception as exc:
+            report['errors'][f'card_{i}'] = repr(exc)
+    for key, read in (
+        ('current_url', lambda: driver.current_url),
+        ('title', lambda: driver.title),
+        ('ready_state', lambda: driver.execute_script('return document.readyState')),
+        ('dom_product_ids', lambda: driver.execute_script(
+            'return Array.from(document.querySelectorAll("[data-id]"))'
+            '.map(e => e.getAttribute("data-id"))')),
+        ('body_text_excerpt', lambda: driver.execute_script(
+            'return (document.body.innerText || "").slice(0, 6000)')),
+    ):
+        try:
+            report[key] = read()
+        except Exception as exc:
+            report['errors'][key] = repr(exc)
+    dom_ids = {pid for pid in report.get('dom_product_ids', []) if pid}
+    report['dom_unique_product_count'] = len(dom_ids)
+    report['signals'] = []
+    if len(dom_ids) > len(cards):
+        report['signals'].append('DOM contains additional product IDs; inspect container selector and other widgets.')
+    if report.get('current_url') and report['current_url'] != url:
+        report['signals'].append('Browser URL differs from requested URL; inspect redirect or query changes.')
+    text = str(report.get('body_text_excerpt') or '').lower()
+    markers = [word for word in ('captcha', 'access denied', 'unusual traffic', 'verify you are human')
+               if word in text]
+    if markers:
+        report['signals'].append('Possible access challenge text: ' + ', '.join(markers))
+    if not report['signals']:
+        report['signals'].append('No clear selector/redirect/access signal; inspect saved HTML and screenshot.')
+    try:
+        with open(prefix + '.html', 'w', encoding='utf-8') as fh:
+            fh.write(driver.page_source)
+    except Exception as exc:
+        report['errors']['html'] = repr(exc)
+    try:
+        if not driver.save_screenshot(prefix + '.png'):
+            raise RuntimeError('save_screenshot returned false')
+    except Exception as exc:
+        report['errors']['screenshot'] = repr(exc)
+    with open(prefix + '.json', 'w', encoding='utf-8') as fh:
+        json.dump(report, fh, ensure_ascii=False, indent=2)
+    return prefix
+
+
 def crawl_paged(driver, product: str, stage: str, base_url: str, selectors: dict,
                 batch_id: str, max_rank: int, max_pages: int, rank_field: str) -> int:
     container_xpath = (selectors.get('base_container') or {}).get('xpath')
@@ -282,10 +348,14 @@ def crawl_paged(driver, product: str, stage: str, base_url: str, selectors: dict
         emit({'_error': 'base_container selector missing',
               'product': product, 'stage': stage, 'batch_id': batch_id})
         return 0
+    # max_pages remains in the signature for existing callers; targets control stopping.
     rank = 0
-    for page in range(1, max_pages + 1):
-        if rank >= max_rank:
-            break
+    source_rank = 0
+    seen = set()
+    page = 0
+    stop_reason = 'target_reached'
+    while rank < max_rank:
+        page += 1
         url = with_page(base_url, page)
         if _logger:
             _logger.info('page=%d url=%s', page, url)
@@ -314,19 +384,44 @@ def crawl_paged(driver, product: str, stage: str, base_url: str, selectors: dict
         cards = driver.find_elements(By.XPATH, container_xpath)
         if _logger:
             _logger.info('page=%d cards=%d', page, len(cards))
+        if len(cards) == 10:
+            diagnostic = None
+            diagnostic_error = None
+            try:
+                diagnostic = save_listing_diagnostic(
+                    driver, product, stage, page, url, batch_id, cards, selectors)
+            except Exception as exc:
+                diagnostic_error = repr(exc)
+            message = (f'ten_product_page product={product} stage={stage} page={page} '
+                       f'unique={rank}/{max_rank} diagnostic={diagnostic} '
+                       f'diagnostic_error={diagnostic_error}')
+            if _logger:
+                _logger.error(message)
+            raise ShortListingPage(message)
         if not cards:
+            stop_reason = 'empty_page'
             break
-        for card in cards:
+        records = [extract_card(card, selectors) for card in cards]
+        keys = [rec.get('fsn') or (rec.get('product_url') or '').split('?', 1)[0].rstrip('/')
+                for rec in records]
+        if not any(keys):
+            raise RuntimeError(f'product={product} stage={stage} page={page}: no product identifiers')
+        before = rank
+        for rec, key in zip(records, keys):
             if rank >= max_rank:
                 break
+            source_rank += 1
+            if not key or key in seen:
+                continue
+            seen.add(key)
             rank += 1
-            rec = extract_card(card, selectors)
             rec.update({
                 'account_name':   ACCOUNT_NAME,
                 'product':        product,
                 'stage':          stage,
                 'page_no':        page,
                 rank_field:       rank,
+                'source_rank':    source_rank,
                 'company':        COMPANY,
                 'division':       DIVISION,
                 'source_url':     url,
@@ -334,6 +429,14 @@ def crawl_paged(driver, product: str, stage: str, base_url: str, selectors: dict
                 'crawl_datetime': now_server_ts(),
             })
             emit(rec)
+        if _logger:
+            _logger.info('page=%d new_unique=%d unique=%d target=%d',
+                         page, rank - before, rank, max_rank)
+    summary = (f'product={product} stage={stage} unique={rank} target={max_rank} '
+               f'shortfall={max(0, max_rank - rank)} pages={page} reason={stop_reason}')
+    if _logger:
+        _logger.info(summary)
+    print('[listing_summary] ' + summary, file=sys.stderr)
     return rank
 
 
@@ -343,7 +446,8 @@ def main() -> int:
     ap.add_argument('--stage', required=True, choices=['main', 'bsr'])
     ap.add_argument('--max-rank', type=int, default=None,
                     help='기본: main=300 / bsr=100')
-    ap.add_argument('--max-pages', type=int, default=30)
+    ap.add_argument('--max-pages', type=int, default=0,
+                    help='Legacy option; ignored. Collect until the unique target or end of results.')
     ap.add_argument('--headless', action='store_true')
     args = ap.parse_args()
 
