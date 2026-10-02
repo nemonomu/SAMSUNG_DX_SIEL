@@ -10,7 +10,7 @@ import re
 import sys
 import tempfile
 from types import SimpleNamespace, ModuleType
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 import unittest
 from unittest.mock import Mock, patch
 
@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 import siel_log
 import fpkt
 from fpkt import recover_reviews
-from fpkt.review_fields import FIELDS, aggregate_fields, fill_missing, product_pid, same_review_url
+from fpkt.review_fields import FIELDS, aggregate_fields, direct_review_url, fill_missing, product_pid, same_review_url
 from fpkt.recover_reviews import apply_missing, load_candidates, required_fields, read_resume
 
 URL = 'https://www.flipkart.com/test/p/itm123?pid=TVS123'
@@ -89,14 +89,15 @@ def detail_env():
     source = ast.parse((ROOT / 'fpkt/detail.py').read_text(encoding='utf-8'))
     source.body = [n for n in source.body if isinstance(n, ast.FunctionDef)]
     env = dict(json=json, re=re, siel_log=siel_log, product_pid=product_pid,
-               same_review_url=same_review_url, aggregate_fields=aggregate_fields,
+               same_review_url=same_review_url, direct_review_url=direct_review_url, aggregate_fields=aggregate_fields,
                fill_missing=fill_missing, REVIEW_FIELDS=FIELDS, REVIEW_MAX=20,
                REVIEW_SUMMARY_XPATH='summary', _logger=Mock(), _html_path=None,
                _review_violation_saved=False, By=SimpleNamespace(XPATH='xpath', CSS_SELECTOR='css'),
                WebDriverWait=Wait, TimeoutException=TimeoutError,
                WebDriverException=RuntimeError, NoSuchElementException=LookupError,
                _Urllib3RT=ConnectionError, time=SimpleNamespace(sleep=Mock()))
-    env.update(parse_qs=parse_qs, urlsplit=urlsplit)
+    env.update(parse_qs=parse_qs, parse_qsl=parse_qsl, urlencode=urlencode,
+               urlsplit=urlsplit, urlunsplit=urlunsplit)
     exec(compile(source, 'detail.py', 'exec'), env)
     return env
 
@@ -115,9 +116,10 @@ class PanelTests(unittest.TestCase):
         result = env['_collect_reviews'](driver, URL, SELECTORS, {'source_url': URL})
         self.assertIn('Second body', result['detailed_review_content'])
         self.assertEqual(driver.visited, [REVIEW])
+        self.assertFalse(driver.opened)
         env['time'].sleep.assert_not_called()
 
-    def test_empty_first_review_load_refreshes_product_once(self):
+    def test_empty_direct_load_refreshes_product_and_opens_panel_once(self):
         class NeedsRefresh(Driver):
             def find_elements(self, by, xpath):
                 if xpath == 'body' and URL not in self.visited:
@@ -127,6 +129,7 @@ class PanelTests(unittest.TestCase):
         result = env['_collect_reviews'](driver, URL, SELECTORS, {'source_url': URL})
         self.assertEqual(driver.visited, [REVIEW, URL, REVIEW])
         self.assertIn('First body', result['detailed_review_content'])
+        self.assertTrue(driver.opened)
 
     def test_twenty_unique_bodies_and_third_page_for_duplicates(self):
         class Paged(Driver):
@@ -148,42 +151,38 @@ class PanelTests(unittest.TestCase):
         self.assertNotIn('Body 20', result['detailed_review_content'])
         env['time'].sleep.assert_not_called()
 
-    def test_ten_body_page_fast_exit_requires_same_product_visible_next_link(self):
-        for next_href, visible, expected_scrolls in [
-            (REVIEW + '&page=2', True, 1),
-            (REVIEW.replace('TVS123', 'TVS999') + '&page=2', True, 3),
-            (REVIEW + '&page=3', True, 3),
-            (REVIEW + '&page=2&an=Sound', True, 3),
-            (REVIEW + '&page=2', False, 3),
-        ]:
-            with self.subTest(href=next_href, visible=visible):
-                env, driver = detail_env(), Driver()
-                driver.current_url = REVIEW
-                anchor = Element(next_href)
-                anchor.is_displayed = lambda: visible
-                driver.find_elements = lambda by, xp: (
-                    [Element(text=f'Body {i}') for i in range(10)] if xp == 'body' else [anchor])
-                driver.execute_script = Mock()
-                self.assertEqual(env['_scroll_review_bodies'](driver, 'body', 20), 10)
-                self.assertEqual(driver.execute_script.call_count, expected_scrolls)
-
-    def test_lazy_bodies_can_grow_past_ten_before_next_page(self):
+    def test_ten_nonempty_bodies_do_not_need_pagination_link_or_extra_scroll(self):
         env, driver = detail_env(), Driver()
         driver.current_url = REVIEW
-        counts = iter([10, 17, 20])
+        driver.find_elements = lambda by, xp: (
+            [Element(text=f'Body {i}') for i in range(10)] if xp == 'body' else [])
+        driver.execute_script = Mock()
+        self.assertEqual(env['_scroll_review_bodies'](driver, 'body', 10), 10)
+        driver.execute_script.assert_not_called()
+
+    def test_lazy_bodies_wait_past_two_and_three_until_ten(self):
+        class PollWait(Wait):
+            def until(self, predicate):
+                for _ in range(3):
+                    value = predicate(self.driver)
+                    if value:
+                        return value
+                raise TimeoutError('synthetic timeout')
+        env, driver = detail_env(), Driver()
+        env['WebDriverWait'] = PollWait
+        driver.current_url = REVIEW
+        counts = iter([2, 3, 10])
         driver.count = next(counts)
         driver.find_elements = lambda by, xp: [Element(text=f'Body {i}') for i in range(driver.count)]
-        def scroll(*args):
-            driver.count = next(counts)
-        driver.execute_script = Mock(side_effect=scroll)
-        self.assertEqual(env['_scroll_review_bodies'](driver, 'body', 20), 20)
+        driver.execute_script = Mock(side_effect=lambda *args: setattr(driver, 'count', next(counts)))
+        self.assertEqual(env['_scroll_review_bodies'](driver, 'body', 10), 10)
         self.assertEqual(driver.execute_script.call_count, 2)
 
-    def test_null_count_opens_panel_then_recovers_count_and_body(self):
+    def test_null_count_uses_direct_url_and_recovers_count_and_body(self):
         env, driver = detail_env(), Driver()
         rec = {'source_url': URL, 'count_of_reviews': None}
         result = env['_collect_reviews'](driver, URL, SELECTORS, rec)
-        self.assertTrue(driver.opened)
+        self.assertFalse(driver.opened)
         self.assertEqual(result['count_of_reviews'], '2')
         self.assertEqual(result['count_of_star_ratings'], '5')
         self.assertIn('First body', result['detailed_review_content'])
@@ -195,14 +194,19 @@ class PanelTests(unittest.TestCase):
         env, driver = detail_env(), Driver(panel=False, legacy=True)
         self.assertEqual(env['_prepare_review_href'](driver, URL, SELECTORS), REVIEW)
         self.assertFalse(driver.opened)
+        result = env['_collect_reviews'](driver, URL, SELECTORS, {'source_url': URL})
+        self.assertEqual(result['_review_status'], 'collected')
+        self.assertEqual(driver.visited, [REVIEW])
 
     def test_missing_panel_does_not_fabricate_zero_or_take_unrelated_body(self):
         env, driver = detail_env(), Driver(panel=False)
+        driver.find_elements = lambda *args: []
+        driver.find_element = Mock(side_effect=LookupError('no summary'))
         result = env['_collect_reviews'](driver, URL, SELECTORS, {'source_url': URL})
         self.assertIsNone(result['count_of_reviews'])
         self.assertIsNone(result['detailed_review_content'])
-        self.assertEqual(result['_review_status'], 'review_link_missing')
-        self.assertEqual(driver.visited, [])
+        self.assertEqual(result['_review_status'], 'review_body_missing')
+        self.assertEqual(driver.visited, [REVIEW, REVIEW + '&page=2', REVIEW + '&page=3', URL])
 
     def test_explicit_zero_skips_body(self):
         env, driver = detail_env(), Driver()
@@ -217,6 +221,133 @@ class PanelTests(unittest.TestCase):
         result = env['_collect_reviews'](driver, URL, SELECTORS,
                                         {'source_url': URL}, need_body=False)
         self.assertEqual(result['count_of_reviews'], '2')
+
+    def test_direct_urls_cover_tv_ref_ldy_and_drop_tracking_filters_and_page(self):
+        for pid in ('TVS123', 'RFR123', 'WMN123'):
+            with self.subTest(pid=pid):
+                source = URL.replace('TVS123', pid) + '&lid=listing&an=Quality&page=9#reviews'
+                expected = REVIEW.replace('TVS123', pid)
+                self.assertEqual(direct_review_url(source), expected)
+                self.assertTrue(same_review_url(source, expected))
+        for bad in (URL.replace('www.flipkart.com', 'example.com'),
+                    URL.replace('https:', 'http:'), URL + '&pid=TVS999',
+                    URL.replace('/p/itm123', '/search'), REVIEW, ''):
+            with self.subTest(url=bad):
+                self.assertIsNone(direct_review_url(bad))
+
+    def test_inline_partial_is_supplemented_by_direct_before_panel(self):
+        class InlinePartial(Driver):
+            def find_elements(self, by, xpath):
+                if xpath == 'links' and self.current_url == URL:
+                    return [Element(REVIEW + '&lid=legacy')]
+                if xpath == 'body' and '/product-reviews/' in self.current_url:
+                    start = 0 if 'lid=legacy' in self.current_url else 10
+                    return [Element(text=f'Body {i}') for i in range(start, start + 10)]
+                return super().find_elements(by, xpath)
+        env, driver = detail_env(), InlinePartial()
+        rec = dict(source_url=URL, count_of_reviews='100', count_of_star_ratings='200')
+        result = env['_collect_reviews'](driver, URL, SELECTORS, rec)
+        self.assertEqual(driver.visited,
+                         [REVIEW + '&lid=legacy', REVIEW + '&lid=legacy&page=2',
+                          REVIEW + '&lid=legacy&page=3', REVIEW])
+        self.assertFalse(driver.opened)
+        self.assertEqual(result['_review_status'], 'collected')
+        self.assertEqual(len(result['detailed_review_content'].split(' ||| ')), 20)
+        self.assertIn('Body 0', result['detailed_review_content'])
+        self.assertIn('Body 19', result['detailed_review_content'])
+
+    def test_direct_partial_is_supplemented_by_panel_and_preserves_numbers(self):
+        class PanelOnly(Driver):
+            def find_elements(self, by, xpath):
+                if xpath == 'body' and '/product-reviews/' in self.current_url:
+                    indices = range(5, 20) if self.opened else range(5)
+                    return [Element(text=f'Body {i}') for i in indices]
+                return super().find_elements(by, xpath)
+        env, driver = detail_env(), PanelOnly()
+        rec = dict(source_url=URL, star_rating='4.2', count_of_reviews='20', count_of_star_ratings='30')
+        result = env['_collect_reviews'](driver, URL, SELECTORS, rec)
+        self.assertEqual(driver.visited, [REVIEW, REVIEW + '&page=2', URL, REVIEW])
+        self.assertTrue(driver.opened)
+        self.assertEqual(result['_review_status'], 'collected')
+        self.assertEqual(len(result['detailed_review_content'].split(' ||| ')), 20)
+        self.assertEqual([result[field] for field in FIELDS[:3]], ['4.2', '30', '20'])
+
+    def test_failed_fallback_preserves_partial_body_and_marks_short(self):
+        class Partial(Driver):
+            def find_elements(self, by, xpath):
+                if xpath == 'body' and '/product-reviews/' in self.current_url:
+                    return [Element(text='Only body')]
+                return []
+        env, driver = detail_env(), Partial(panel=False)
+        result = env['_collect_reviews'](driver, URL, SELECTORS,
+            dict(source_url=URL, count_of_reviews='20', count_of_star_ratings='30'))
+        self.assertEqual(result['_review_status'], 'review_body_partial')
+        self.assertEqual(result['detailed_review_content'], 'review1 - Only body')
+        self.assertEqual(driver.visited, [REVIEW, REVIEW + '&page=2', URL])
+
+    def test_complete_existing_body_does_not_navigate(self):
+        env, driver = detail_env(), Driver()
+        body = 'review1 - Existing one ||| review2 - Existing two'
+        result = env['_collect_reviews'](driver, URL, SELECTORS,
+            dict(source_url=URL, count_of_reviews='2', detailed_review_content=body))
+        self.assertEqual(result['detailed_review_content'], body)
+        self.assertEqual(driver.visited, [])
+        self.assertFalse(driver.opened)
+
+    def test_main_embedded_bodies_are_used_before_direct_url(self):
+        for count, expected_visits in [('2', []), ('3', [REVIEW])]:
+            with self.subTest(count=count):
+                env, driver = detail_env(), Driver()
+                driver.find_elements = lambda by, xp: (
+                    [Element(text='Embedded one'), Element(text='Embedded two')]
+                    if xp == 'body' and driver.current_url == URL else
+                    [Element(text='Direct body') for _ in range(3)] if xp == 'body' else [])
+                result = env['_collect_reviews'](driver, URL, SELECTORS,
+                    dict(source_url=URL, count_of_reviews=count, count_of_star_ratings='30'))
+                self.assertEqual(driver.visited, expected_visits)
+                self.assertEqual(result['_review_status'], 'collected')
+                self.assertIn('Embedded one', result['detailed_review_content'])
+                self.assertFalse(driver.opened)
+
+    def test_duplicate_bodies_with_different_whitespace_count_once(self):
+        env = detail_env()
+        parts = []
+        env['_merge_review_parts'](parts, [' Nice\nTV ', 'Nice TV', '', 'Other body'], 20)
+        self.assertEqual(parts, ['Nice TV', 'Other body'])
+
+    def test_page_parameter_is_replaced_instead_of_duplicated(self):
+        env = detail_env()
+        self.assertEqual(env['_review_page_url'](REVIEW + '&page=7&page=8#reviews', 1), REVIEW)
+        self.assertEqual(env['_review_page_url'](REVIEW + '&page=7', 2), REVIEW + '&page=2')
+
+    def test_direct_redirect_does_not_accept_other_product_body(self):
+        class Redirect(Driver):
+            def get(self, url):
+                super().get(url)
+                if '/product-reviews/' in url:
+                    self.current_url = url.replace('TVS123', 'TVS999')
+        env, driver = detail_env(), Redirect(panel=False)
+        result = env['_collect_reviews'](driver, URL, SELECTORS,
+            dict(source_url=URL, count_of_reviews='20', count_of_star_ratings='30'))
+        self.assertIsNone(result['detailed_review_content'])
+        self.assertEqual(result['_review_status'], 'review_body_missing')
+        self.assertEqual(result['count_of_reviews'], '20')
+
+    def test_nine_body_page_keeps_partial_data_and_uses_third_page(self):
+        class NineBodies(Driver):
+            def find_elements(self, by, xpath):
+                if xpath == 'body' and '/product-reviews/' in self.current_url:
+                    page = int(parse_qs(urlsplit(self.current_url).query).get('page', ['1'])[0])
+                    indices = {1: range(9), 2: range(9, 19), 3: range(19, 29)}[page]
+                    return [Element(text=f'Body {i}') for i in indices]
+                return super().find_elements(by, xpath)
+        env, driver = detail_env(), NineBodies()
+        result = env['_collect_reviews'](driver, URL, SELECTORS,
+            dict(source_url=URL, count_of_reviews='100', count_of_star_ratings='200'))
+        self.assertEqual(result['_review_status'], 'collected')
+        self.assertEqual(len(result['detailed_review_content'].split(' ||| ')), 20)
+        self.assertEqual(driver.visited, [REVIEW, REVIEW + '&page=2', REVIEW + '&page=3'])
+        self.assertFalse(driver.opened)
 
     def test_review_redirect_does_not_read_other_product_counts(self):
         env, driver = detail_env(), Driver()

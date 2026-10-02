@@ -26,7 +26,7 @@ import sys
 import time
 import traceback
 from datetime import datetime, timezone, timedelta
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
@@ -46,7 +46,7 @@ from urllib3.exceptions import ReadTimeoutError as _Urllib3RT
 import config
 import siel_log
 from siel_batch import next_batch_id
-from fpkt.review_fields import FIELDS as REVIEW_FIELDS, aggregate_fields, fill_missing, product_pid, same_review_url
+from fpkt.review_fields import FIELDS as REVIEW_FIELDS, aggregate_fields, direct_review_url, fill_missing, product_pid, same_review_url
 
 # uc.Chrome.__del__ 가 GC 시점에 quit() 한 번 더 시도 → Windows OSError [WinError 6].
 # finally 에서 driver.quit() 명시 호출하므로 __del__ 은 불필요.
@@ -272,7 +272,9 @@ def _fill_product_rating_data(driver, rec):
 
 def _find_review_href(driver, url, selectors):
     sel = selectors.get('click_show_all_reviews') or {}
-    for xpath in (sel.get('xpath'), sel.get('fallback')):
+    # Preserve main's inline-link search before trying a synthesized URL or panel.
+    for xpath in (sel.get('xpath'), sel.get('fallback'),
+                  '//a[contains(@href,"/product-reviews/") and not(contains(@href,"buynow"))]'):
         if not xpath:
             continue
         try:
@@ -285,9 +287,9 @@ def _find_review_href(driver, url, selectors):
     return None
 
 
-def _prepare_review_href(driver, url, selectors):
+def _prepare_review_href(driver, url, selectors, *, force_panel=False):
     # Legacy pages may already contain a usable link. Modern pages mount it in a panel.
-    href = _find_review_href(driver, url, selectors)
+    href = None if force_panel else _find_review_href(driver, url, selectors)
     if href:
         return href
     panel = selectors.get('open_reviews_panel') or {}
@@ -559,181 +561,165 @@ def _wait_review_ready(driver, url, rec, review_xpath, *, need_body=True):
         return False
 
 
-def _has_next_review_page(driver):
-    """Only accept visible pagination for the current product and next page."""
-    current = driver.current_url
-    try:
-        page = int(parse_qs(urlsplit(current).query).get('page', ['1'])[0])
-        for anchor in driver.find_elements(By.XPATH, '//a[contains(@href,"/product-reviews/") and contains(@href,"page=")]'):
-            href = anchor.get_attribute('href') or ''
-            if (same_review_url(current, href)
-                    and urlsplit(href).path == urlsplit(current).path
-                    and parse_qs(urlsplit(href).query).get('page') == [str(page + 1)]
-                    and anchor.is_displayed()):
-                return True
-    except (ValueError, WebDriverException):
-        pass
-    return False
-
-
 def _scroll_review_bodies(driver, review_xpath, target):
-    """Allow lazy mounting; a stable ten-body page with pagination can end early."""
-    stuck = 0
-    for _ in range(40):
-        count = len(driver.find_elements(By.XPATH, review_xpath))
-        if count >= target and len(_extract_multi_raw(driver, review_xpath, max_n=None)) >= target:
+    """Wait for a page's nonempty bodies, including delayed React mounting."""
+    def ready(d):
+        count = len(_extract_multi_raw(d, review_xpath, max_n=None))
+        if count >= target:
             return count
-        driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+        d.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+        return False
+
+    try:
+        return WebDriverWait(driver, 15, poll_frequency=0.5).until(ready)
+    except TimeoutException:
+        # A page can legitimately have nine usable bodies. Keep these and paginate.
+        return len(_extract_multi_raw(driver, review_xpath, max_n=None))
+
+
+def _review_page_url(href, page):
+    parts = urlsplit(href)
+    query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+             if key != 'page']
+    if page > 1:
+        query.append(('page', str(page)))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ''))
+
+
+def _review_target(rec):
+    count = siel_log.parse_int_field(rec.get('count_of_reviews'))
+    return min(count, REVIEW_MAX) if count is not None else REVIEW_MAX
+
+
+def _merge_review_parts(all_parts, parts, target):
+    for part in parts:
+        if len(all_parts) >= target:
+            break
+        text = re.sub(r'\s+', ' ', part).strip()
+        if text and text not in all_parts:
+            all_parts.append(text)
+
+
+def _read_review_pages(driver, url, href, review_xpath, rec, all_parts, *, need_body=True):
+    """One bounded pass; keep partial results for the next fallback."""
+    for page in range(1, 4):
+        count = siel_log.parse_int_field(rec.get('count_of_reviews'))
+        if count is not None and (page - 1) * 10 >= count:
+            break
         try:
-            WebDriverWait(driver, 1.2, poll_frequency=0.2).until(
-                lambda d: len(d.find_elements(By.XPATH, review_xpath)) > count)
-            stuck = 0
-        except TimeoutException:
-            stuck += 1
-            # Current paginated pages contain ten bodies. Require a stable count
-            # after scrolling AND visible same-product pagination. Legacy pages
-            # without that evidence retain the three-stall fallback.
-            if count == 10 and _has_next_review_page(driver):
-                parts = _extract_multi_raw(driver, review_xpath, max_n=None)
-                if len(parts) == 10 and len(driver.find_elements(By.XPATH, review_xpath)) == 10:
-                    return 10
-            if stuck >= 3:
-                break
-    return len(_extract_multi_raw(driver, review_xpath, max_n=None))
+            driver.get(_review_page_url(href, page))
+            if not _wait_review_ready(driver, url, rec, review_xpath, need_body=False):
+                return
+            if not need_body or _review_target(rec) == 0:
+                return
+            count = siel_log.parse_int_field(rec.get('count_of_reviews'))
+            expected = min(10, max(0, count - (page - 1) * 10)) if count is not None else 10
+            if expected == 0:
+                return
+            _scroll_review_bodies(driver, review_xpath, expected)
+            # Recheck after asynchronous loading before accepting any body.
+            if not same_review_url(url, driver.current_url):
+                return
+            _merge_review_parts(all_parts, _extract_multi_raw(driver, review_xpath, max_n=None),
+                                _review_target(rec))
+            if _logger:
+                _logger.info('review page %d: collected=%d/%d', page,
+                             len(all_parts), _review_target(rec))
+            if page == 1 and _html_path:
+                siel_log.save_html(driver, _html_path.replace('.html', '_review.html'))
+            if len(all_parts) >= _review_target(rec):
+                return
+        except (WebDriverException, _Urllib3RT) as exc:
+            if _logger:
+                _logger.warning('review page %d failed: %s', page, type(exc).__name__)
+            return
 
 
 def _collect_reviews(driver, url, selectors, rec, *, need_body=True):
     _fill_product_rating_data(driver, rec)
     rec.setdefault('count_of_reviews', None)
-    count_reviews = siel_log.parse_int_field(rec.get('count_of_reviews'))
     review_xpath = (selectors.get('detailed_review_content') or {}).get('xpath')
-    if count_reviews == 0:
-        rec['detailed_review_content'] = None
+    if _review_target(rec) == 0:
+        rec.setdefault('detailed_review_content', None)
+        rec['_review_status'] = 'zero_reviews'
         return rec
-    if not need_body and count_reviews is not None:
+    if not need_body and siel_log.parse_int_field(rec.get('count_of_reviews')) is not None:
         return rec
-    # Find/open the panel BEFORE deciding whether reviews can be collected.
-    rev_href = _prepare_review_href(driver, url, selectors)
-    if not rev_href:
-        rec['detailed_review_content'] = None
-        rec['_review_status'] = 'review_link_missing'
+    if need_body and not review_xpath:
+        rec.setdefault('detailed_review_content', None)
+        rec['_review_status'] = 'review_selector_missing'
         return rec
-    should_try_reviews = bool(review_xpath)
-    if should_try_reviews:
-        target = min(count_reviews, REVIEW_MAX) if count_reviews is not None else REVIEW_MAX
-        if rev_href:
-            if _logger:
-                _logger.info('navigating to review page: %s (target=%d)', rev_href, target)
-            # Try the review URL directly. The historical detail-page refresh is
-            # still available once when review mounting/navigation actually fails.
-            for attempt in range(2):
-                try:
-                    if attempt:
-                        if _logger:
-                            _logger.info('review fallback: refresh product then retry')
-                        driver.get(rev_href.replace('/product-reviews/', '/p/', 1))
-                        time.sleep(1.5)
-                    driver.get(rev_href)
-                    ready = _wait_review_ready(driver, url, rec, review_xpath, need_body=need_body)
-                    if not same_review_url(url, driver.current_url):
-                        break
-                    count_reviews = siel_log.parse_int_field(rec.get('count_of_reviews'))
-                    if count_reviews is not None and count_reviews >= 1:
-                        target = min(count_reviews, REVIEW_MAX)
-                    if need_body and count_reviews != 0:
-                        body_count = _scroll_review_bodies(driver, review_xpath, target)
-                        if _logger:
-                            _logger.info('review body count-based scroll: target=%d collected=%d',
-                                         target, body_count)
-                        ready = body_count > 0
-                    if ready:
-                        break
-                except (WebDriverException, _Urllib3RT) as e:
-                    if _logger:
-                        _logger.warning('review navigate attempt=%d failed: %s',
-                                        attempt + 1, type(e).__name__)
-            # review page 진입 후 두 번째 HTML snapshot — review xpath 디버깅용
-            if _html_path:
-                review_html = _html_path.replace('.html', '_review.html')
-                if siel_log.save_html(driver, review_html) and _logger:
-                    _logger.info('review page HTML saved: %s', review_html)
-        if not same_review_url(url, driver.current_url):
-            rec['_review_status'] = 'review_navigation_failed'
-            rec['detailed_review_content'] = None
-            return rec
-        if siel_log.parse_int_field(rec.get('count_of_reviews')) == 0:
-            rec['detailed_review_content'] = None
-            rec['_review_status'] = 'zero_reviews'
-            return rec
+
+    existing = rec.get('detailed_review_content') or ''
+    all_parts = []
+    _merge_review_parts(all_parts, re.split(r'(?:^| \|\|\| )review\d+ - ', existing),
+                        _review_target(rec))
+
+    def complete():
         if not need_body:
-            return rec
-        # 첫 페이지 + 부족 시 &page=N navigate. 페이지당 ~10. REVIEW_MAX=20 → 최대 page 2~3 까지.
-        all_parts = []
-        seen = set()
-        for p in _extract_multi_raw(driver, review_xpath, max_n=None):
-            if p not in seen:
-                seen.add(p)
-                all_parts.append(p)
-                if len(all_parts) >= target:
-                    break
-        page = 2
-        while len(all_parts) < target and rev_href and page <= 3:
-            sep = '&' if '?' in rev_href else '?'
-            page_url = f'{rev_href}{sep}page={page}'
+            return siel_log.parse_int_field(rec.get('count_of_reviews')) is not None
+        return len(all_parts) >= _review_target(rec)
+
+    # Main's existing inline review link is the first choice.
+    inline = _find_review_href(driver, url, selectors)
+    # Main also reads embedded bodies when there is a positive count but no link.
+    if (need_body and not inline and not complete()
+            and siel_log.parse_int_field(rec.get('count_of_reviews')) is not None
+            and product_pid(driver.current_url) == product_pid(url)):
+        _merge_review_parts(all_parts, _extract_multi_raw(driver, review_xpath, max_n=None),
+                            _review_target(rec))
+    direct = direct_review_url(url)
+    tried = set()
+    for method, href in (('inline', inline), ('direct', direct)):
+        if complete():
+            break
+        if not href:
+            continue
+        first_page = _review_page_url(href, 1)
+        if first_page in tried:
+            continue
+        tried.add(first_page)
+        if _logger:
+            _logger.info('review route=%s pid=%s', method, product_pid(url))
+        _read_review_pages(driver, url, first_page, review_xpath, rec, all_parts,
+                           need_body=need_body)
+
+    # The panel is only needed after inline/direct collection is missing or short.
+    if not complete():
+        try:
+            if driver.current_url != url:
+                driver.get(url)
+                WebDriverWait(driver, 15, poll_frequency=0.3).until(
+                    lambda d: d.execute_script('return document.readyState') == 'complete')
+            if product_pid(driver.current_url) == product_pid(url):
+                _fill_product_rating_data(driver, rec)
+                href = _prepare_review_href(driver, url, selectors, force_panel=True)
+                if href and not complete():
+                    if _logger:
+                        _logger.info('review route=panel pid=%s', product_pid(url))
+                    _read_review_pages(driver, url, href, review_xpath, rec, all_parts,
+                                       need_body=need_body)
+        except (WebDriverException, _Urllib3RT) as exc:
             if _logger:
-                _logger.info('review page %d: %s (collected=%d/%d)',
-                             page, page_url, len(all_parts), target)
-            for attempt in range(2):
-                try:
-                    driver.get(page_url)
-                    ready = _wait_review_ready(driver, url, rec, review_xpath)
-                    if not same_review_url(url, driver.current_url):
-                        break
-                    # Do not stop at the remaining raw count: some bodies may
-                    # duplicate earlier pages and are removed during extraction.
-                    _scroll_review_bodies(driver, review_xpath, target)
-                    if ready or driver.find_elements(By.XPATH, review_xpath):
-                        break
-                except (WebDriverException, _Urllib3RT) as e:
-                    if _logger:
-                        _logger.warning('review page %d attempt=%d failed: %s',
-                                        page, attempt + 1, type(e).__name__)
-            new_count = 0
-            if not same_review_url(url, driver.current_url):
-                if _logger:
-                    _logger.warning('review_pagination_redirect_mismatch')
-                break
-            for p in _extract_multi_raw(driver, review_xpath, max_n=None):
-                if p not in seen:
-                    seen.add(p)
-                    all_parts.append(p)
-                    new_count += 1
-                    if len(all_parts) >= target:
-                        break
-            if new_count == 0:
-                if _logger:
-                    _logger.info('review page %d: no new parts — stop pagination', page)
-                break
-            page += 1
-        rec['detailed_review_content'] = siel_log.format_review_content(all_parts)
-        rec['_review_status'] = 'collected' if all_parts else 'review_body_missing'
-        if not all_parts and _logger:
-            _logger.warning('review_body_missing: pid=%s count=%s', product_pid(url), count_reviews)
-        # logic violation 검사 — count_of_reviews>=1 인데 review body 0 → batch 첫 1건 만 saved
-        global _review_violation_saved
-        if not _review_violation_saved and count_reviews and count_reviews >= 1 and not all_parts:
-            if _html_path:
-                violation_html = _html_path.replace('.html', '_review_violation.html')
-                if siel_log.save_html(driver, violation_html):
-                    _review_violation_saved = True
-                    if _logger:
-                        _logger.warning('logic violation saved (count=%s, body=0): %s',
-                                        count_reviews, violation_html)
-    else:
-        rec['detailed_review_content'] = None
-        if review_xpath and _logger:
-            _logger.info('skip review extraction: count_of_reviews=%s rev_btn=%s',
-                         count_reviews, bool(rev_href))
+                _logger.warning('review panel fallback failed: %s', type(exc).__name__)
+
+    if not need_body:
+        return rec
+    target = _review_target(rec)
+    # Never discard an already collected body when a later fallback fails.
+    rec['detailed_review_content'] = (siel_log.format_review_content(all_parts[:target])
+                                      if target else existing or None)
+    rec['_review_status'] = ('zero_reviews' if target == 0 else
+                             'collected' if len(all_parts) >= target else
+                             'review_body_partial' if all_parts else 'review_body_missing')
+    if _logger and rec['_review_status'] in ('review_body_partial', 'review_body_missing'):
+        _logger.warning('%s: pid=%s collected=%d target=%d',
+                        rec['_review_status'], product_pid(url), len(all_parts), target)
+    global _review_violation_saved
+    count_reviews = siel_log.parse_int_field(rec.get('count_of_reviews'))
+    if not _review_violation_saved and count_reviews and count_reviews >= 1 and not all_parts:
+        if _html_path and siel_log.save_html(driver, _html_path.replace('.html', '_review_violation.html')):
+            _review_violation_saved = True
     return rec
 
 

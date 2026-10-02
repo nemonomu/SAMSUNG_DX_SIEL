@@ -30,6 +30,16 @@ def same_review_url(source, href):
                 and 'buynow' not in href.lower() and 'an' not in query)
 
 
+def direct_review_url(source):
+    """Build an unfiltered first review page only from a valid product URL."""
+    pid = product_pid(source)
+    parts = urlsplit(source or '')
+    if not pid or not re.fullmatch(r'/.+/p/itm[A-Za-z0-9]+', parts.path):
+        return None
+    return ('https://www.flipkart.com' + parts.path.replace('/p/', '/product-reviews/', 1)
+            + '?pid=' + pid)
+
+
 def normalize_value(field, value):
     if missing(value) or isinstance(value, bool):
         return None
