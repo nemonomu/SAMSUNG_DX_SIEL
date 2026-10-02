@@ -272,6 +272,7 @@ def listing_until(
     query: str,
     target_unique: int,
     max_pages: int,
+    diagnostic_dir: Path | None = None,
     retries: int = 2,
     retry_delay: float = 5.0,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, list[dict[str, Any]], list[dict[str, Any]]]:
@@ -288,6 +289,7 @@ def listing_until(
     listing_pages: list[dict[str, Any]] = []
     seen: set[str] = set()
     previous_response = None
+    captured_short_page = False
     pages_used = 0
     html_meta_headers: dict[str, str] | None = None
     try:
@@ -352,8 +354,13 @@ def listing_until(
             )
             break
         previous_response = response
-        html_meta = listing_html_metadata_for_page(api_dir, query, stage, page, html_meta_headers)
+        html_meta, listing_html = listing_html_metadata_for_page(
+            api_dir, query, stage, page, html_meta_headers
+        )
         products = list(extract_products(response, page=page))
+        if stage == "main" and len(products) == 10 and not captured_short_page and diagnostic_dir:
+            captured_short_page = True
+            capture_short_listing_page(diagnostic_dir, query, page, response, listing_html)
         raw_before = len(raw_rows)
         final_before = len(final_rows)
         status = "ok"
@@ -412,6 +419,59 @@ def listing_until(
         if status == "target_reached":
             return raw_rows, final_rows, pages_used, listing_errors, listing_pages
     return raw_rows, final_rows, pages_used, listing_errors, listing_pages
+
+
+def capture_short_listing_page(
+    out_dir: Path,
+    query: str,
+    page: int,
+    response: dict[str, Any],
+    listing_html: str | None,
+) -> None:
+    """Keep the API response and HTML used for a ten-product main listing."""
+    prefix = out_dir / f"main_page{page}_ten_products"
+    try:
+        prefix.with_suffix(".json").write_text(
+            json.dumps(response, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        safe_print(f"[listing_diagnostic] main page={page} api={prefix.with_suffix('.json')}")
+    except Exception as exc:
+        safe_print(f"[listing_diagnostic_error] main page={page} api error={repr(exc)}")
+    if listing_html is None:
+        safe_print(f"[listing_diagnostic] main page={page} html unavailable; screenshot skipped")
+        return
+    try:
+        prefix.with_suffix(".html").write_text(listing_html, encoding="utf-8")
+        safe_print(f"[listing_diagnostic] main page={page} html={prefix.with_suffix('.html')}")
+    except Exception as exc:
+        safe_print(f"[listing_diagnostic_error] main page={page} html error={repr(exc)}")
+        return
+    try:
+        from playwright.sync_api import sync_playwright
+
+        url = listing_html_url(query, "main", page)
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch(channel="chrome", headless=True)
+            except Exception:
+                browser = playwright.chromium.launch(headless=True)
+            try:
+                browser_page = browser.new_page(
+                    viewport={"width": 1440, "height": 900}, java_script_enabled=False
+                )
+                browser_page.route(
+                    url,
+                    lambda route: route.fulfill(
+                        status=200, content_type="text/html; charset=utf-8", body=listing_html
+                    ),
+                )
+                browser_page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                browser_page.screenshot(path=str(prefix.with_suffix(".png")), full_page=True)
+            finally:
+                browser.close()
+        safe_print(f"[listing_diagnostic] main page={page} screenshot={prefix.with_suffix('.png')}")
+    except Exception as exc:
+        safe_print(f"[listing_diagnostic_error] main page={page} screenshot error={repr(exc)}")
 
 
 def html_headers(api_dir: Path) -> dict[str, str]:
@@ -541,7 +601,7 @@ def listing_html_metadata_for_page(
     stage: str,
     page: int,
     headers: dict[str, str] | None,
-) -> dict[str, dict[str, str | None]]:
+) -> tuple[dict[str, dict[str, str | None]], str | None]:
     text: str | None = None
     if headers:
         try:
@@ -554,7 +614,7 @@ def listing_html_metadata_for_page(
         if saved_html.exists():
             text = read_text(saved_html)
 
-    return listing_html_metadata(text) if text else {}
+    return (listing_html_metadata(text) if text else {}), text
 
 
 def same_pid(source_url: str, href: str) -> bool:
@@ -2236,6 +2296,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         query,
         args.main_target,
         args.max_pages_main,
+        diagnostic_dir=out_dir,
         retries=args.listing_retries,
         retry_delay=args.listing_retry_delay,
     )
