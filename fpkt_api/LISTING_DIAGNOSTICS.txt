@@ -1,0 +1,74 @@
+Flipkart API listing diagnostics
+
+실행 경로
+- schedule/fpkt_api_run_all.bat -> fpkt_api/ops_test.py가 API 운영 수집 경로입니다.
+- ops_test.py라는 기존 이름을 유지했습니다. BAT 기본 모드는 DB insert입니다.
+- 이번 변경의 Playwright는 이상 응답을 확인하는 별도 브라우저입니다.
+
+10개 감지 시
+1. MAIN/BSR 매 페이지의 API 상품 배열 개수, 기존 파서 추출 개수, 상품 ID,
+   페이지 내 고유 수, 이전 페이지와 중복 수, 서버 표시 범위/총수/총페이지를 기록합니다.
+   원본 배열 개수는 위젯별로도 남겨 새 위젯과 기존 파서 차이를 확인합니다.
+2. 원본 배열 또는 파서 추출 수가 10이면 해당 품목의 다음 목록 페이지,
+   상세/리뷰 수집 및 DB 적재를 중단합니다. 10개 페이지를 정상 수집 결과에 합치지 않습니다.
+3. 원래 요청/응답의 진단 자료를 먼저 저장합니다. 같은 실행·단계에서 앞서 나온
+   정상 24개 페이지가 있으면 비교 기준도 저장합니다. 없으면 없음으로 표시합니다.
+4. 같은 요청 -> as-show만 반전 -> 원래 요청 순서로 API 비교를 최대 3회 합니다.
+   각 요청 제한시간은 20초이며, 이 응답은 수집 결과나 다음 페이지 문맥에 사용하지 않습니다.
+   비교 결과가 10-24-10이어도 서버 내부 정책의 확정 증거라고 표현하지 않습니다.
+5. 별도 익명 Chromium에서 홈페이지 검색창에 같은 검색어를 입력합니다.
+   검색으로 진입한 URL을 보존하고 BSR 정렬/문제 페이지 번호를 적용합니다.
+   최초 화면과 한 번 스크롤 후 2초 대기한 화면의 상품 수/표시 문구를 기록하고
+   전체 페이지 PNG 1장을 저장합니다. 로딩 완료를 보장하는 검사는 아닙니다.
+   캡차/차단/검색 실패/캡처 실패는 진단 오류로 기록합니다.
+6. 종료 코드 86은 진단 중단입니다. BAT는 해당 품목을 자동 재수집하지 않습니다.
+   다른 품목의 일시 오류가 재시도로 복구돼도 기존 86 실패는 유지합니다.
+   기존 메일 옵션이 켜져 있으면 자동 재시도가 없는 중단 경고를 발송합니다.
+7. MAIN 30페이지 / BSR 15페이지 기본 제한은 그대로입니다. 제한에 도달해도 목표
+   고유 상품 수에 미달하면 target_shortfall_at_page_limit / 86으로 종료합니다.
+   페이지 제한 미달만으로는 브라우저/추가 API 비교를 실행하지 않습니다.
+
+자료 위치
+fpkt_api/test_output/ops_<품목>_<실행시각>/
+  summary.txt                             전체 결과와 진단 경로
+  listing_pages.csv / listing_errors.csv   페이지별 결과와 중단 이유
+  main_raw.csv / main_final.csv            이상 페이지 이전까지의 부분 결과
+  bsr_raw.csv / bsr_final.csv
+  diagnostics/listing_observations.jsonl   매 페이지 안전한 요청/응답 요약
+  diagnostics/<단계>_baseline_24.json      같은 실행·단계의 최근 정상 24개
+  diagnostics/<단계>_page<N>_ten_products/
+    summary.txt                           사람이 읽는 요약
+    report.json                           원래 응답, 비교 실험, 브라우저 관찰
+    browser.png                           실제 브라우저 화면 1장 (성공 시)
+    browser_initial.html                  최초 화면 텍스트만 HTML로 보관
+    browser_after_scroll.html             스크롤 후 화면 텍스트
+
+주의할 해석
+- server_returned_ten_products: 원본 상품 배열 자체가 10개입니다.
+- parser_count_mismatch: 원본 배열과 추출 개수가 다릅니다. 위젯별 수를 함께 확인합니다.
+- last_page_ten_products: 서버가 마지막 페이지라고 표시한 정상 잔여 10개일 수 있습니다.
+  이 경우도 요청한 10개 감지/중단 정책을 적용합니다.
+- DOM 수는 Add to Compare가 있는 상품 링크의 고유 PID를 우선 사용합니다.
+  없는 레이아웃은 보이는 상품 링크의 고유 PID를 사용하며 heuristic으로 명시합니다.
+- API와 브라우저는 동일 세션이 아닙니다. 서버 실험/세션 정책 원인을 단정하지 않습니다.
+- 쿠키, 인증 헤더, 세션 본문, HAR 원본, 브라우저 프로필은 진단 파일에 저장하지 않습니다.
+  요청 URL의 검색 필드와 허용된 클라이언트 헤더/숫자 페이지 제어값만 남깁니다.
+
+캡처 설치와 점검 (수집 실행 없음)
+RDP에서 스케줄러와 같은 Windows 계정/Python 환경, 저장소 루트에서 실행합니다.
+CMD:       call schedule\fpkt_api_setup_capture.bat
+PowerShell: .\schedule\fpkt_api_setup_capture.bat
+Git Bash:  python fpkt_api/check_capture.py --install
+
+이 설치 BAT는 고정 버전 Playwright와 Chromium을 필요한 경우 설치한 뒤
+외부 요청을 차단한 로컬 HTML로 PNG 생성만 점검합니다. DB/메일/수집은 실행하지 않습니다.
+설치 후 점검만: python fpkt_api/check_capture.py
+테스트 PNG 보관: python fpkt_api/check_capture.py --out fpkt_api/test_output/capture_check.png
+패키지/브라우저 설치는 공식 Playwright Python 방식입니다:
+https://playwright.dev/python/docs/browsers
+
+운영 BAT도 git pull 이후 같은 설치·점검을 수행합니다. 실패하면 수집을 시작하지 않고
+ops_all_<시각>/capture_setup.txt에 기록합니다. 준비된 환경에서는 다시 다운로드하지 않습니다.
+
+개발 검증 (합성 응답/모의 통신, 실제 수집 없음)
+python -m unittest discover -s tests -p "test_fpkt_*.py" -v

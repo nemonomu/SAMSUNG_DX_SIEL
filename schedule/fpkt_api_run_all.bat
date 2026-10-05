@@ -112,6 +112,17 @@ if errorlevel 1 (
 echo [fpkt_api_run_all] py_compile ok
 >> "%RUN_LOG%" echo [fpkt_api_run_all] py_compile ok
 
+rem Install/check capture support after pull, before any retailer collection.
+call "%~dp0fpkt_api_setup_capture.bat" > "%RUN_DIR%\capture_setup.txt" 2>&1
+set "CAPTURE_SETUP_CODE=!ERRORLEVEL!"
+type "%RUN_DIR%\capture_setup.txt"
+type "%RUN_DIR%\capture_setup.txt" >> "%RUN_LOG%"
+if not "!CAPTURE_SETUP_CODE!"=="0" (
+  echo [fpkt_api_run_all] capture setup failed - collection not started
+  set "EXIT_CODE=86"
+  goto fail
+)
+
 if /I "%RUN_MODE%"=="check" (
   echo [fpkt_api_run_all] check mode complete
   >> "%RUN_LOG%" echo [fpkt_api_run_all] check mode complete
@@ -159,6 +170,7 @@ set "EMAIL_FLAGS="
 set "FIRST_PASS_EMAIL_FLAGS="
 set "FAILED_PRODUCTS="
 set "FAILED_PRODUCT_NAMES="
+set "NO_RETRY_PRODUCTS="
 if /I "%RUN_MODE%"=="dry-run" set "DB_FLAGS=!DB_FLAGS! --db-insert --db-dry-run"
 if /I "%RUN_MODE%"=="insert" set "DB_FLAGS=!DB_FLAGS! --db-insert --real-batch-id"
 if /I "%FPKT_REAL_BATCH_ID%"=="1" set "DB_FLAGS=!DB_FLAGS! --real-batch-id"
@@ -185,7 +197,13 @@ for %%P in (%FPKT_PRODUCTS%) do (
     >> "%RUN_LOG%" echo [fpkt_api_run_all] failed %%P exit=!PRODUCT_CODE!
     if not defined EXIT_CODE set "EXIT_CODE=!PRODUCT_CODE!"
     set "FAILED_PRODUCTS=!FAILED_PRODUCTS! %%P(!PRODUCT_CODE!)"
-    set "FAILED_PRODUCT_NAMES=!FAILED_PRODUCT_NAMES! %%P"
+    if "!PRODUCT_CODE!"=="86" (
+      set "NO_RETRY_PRODUCTS=!NO_RETRY_PRODUCTS! %%P(!PRODUCT_CODE!)"
+      echo [fpkt_api_run_all] diagnostic stop %%P - automatic retry disabled
+      >> "%RUN_LOG%" echo [fpkt_api_run_all] diagnostic stop %%P - automatic retry disabled
+    ) else (
+      set "FAILED_PRODUCT_NAMES=!FAILED_PRODUCT_NAMES! %%P"
+    )
     if /I not "%FPKT_CONTINUE_ON_PRODUCT_FAIL%"=="1" goto fail
   ) else (
     echo [fpkt_api_run_all] done %%P
@@ -199,9 +217,10 @@ if defined FAILED_PRODUCT_NAMES if /I "%FPKT_PRODUCT_RETRY_AFTER_ALL%"=="1" (
   if not "%FPKT_PRODUCT_RETRY_DELAY%"=="0" powershell -NoProfile -Command "Start-Sleep -Seconds %FPKT_PRODUCT_RETRY_DELAY%"
   set "FIRST_PASS_FAILED_PRODUCTS=!FAILED_PRODUCTS!"
   set "RETRY_PRODUCTS=!FAILED_PRODUCT_NAMES!"
-  set "FAILED_PRODUCTS="
+  set "FAILED_PRODUCTS=!NO_RETRY_PRODUCTS!"
   set "FAILED_PRODUCT_NAMES="
   set "EXIT_CODE="
+  if defined NO_RETRY_PRODUCTS set "EXIT_CODE=86"
   for %%P in (!RETRY_PRODUCTS!) do (
     set "PRODUCT_LOG=%RUN_DIR%\%%P_retry_console.log"
     echo [fpkt_api_run_all] retry %%P

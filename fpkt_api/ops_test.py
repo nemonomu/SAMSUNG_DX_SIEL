@@ -1,7 +1,7 @@
-"""Operation-like Flipkart API test without DB inserts.
+"""Flipkart API operation runner used by schedule/fpkt_api_run_all.bat.
 
-This runner is intentionally isolated from the production crawler. It exercises
-the direct API/structured-data path and saves files for inspection:
+Despite the historical filename, the scheduler uses this for production and
+passes --db-insert. Direct CLI use inserts only when explicitly requested.
 
 - main listing: collect first N unique products, first-rank-wins
 - bsr listing: collect first N unique products, first-rank-wins
@@ -36,6 +36,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from main_probe import extract_products, request_headers
+from listing_diagnostics import STOP_EXIT_CODE, diagnose, record_page, response_snapshot
 from phase_probe import (
     curl_headers,
     curl_url,
@@ -274,6 +275,7 @@ def listing_until(
     max_pages: int,
     retries: int = 2,
     retry_delay: float = 5.0,
+    diagnostic_dir: Path | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, list[dict[str, Any]], list[dict[str, Any]]]:
     retries = max(0, int(retries))
     retry_delay = max(0.0, float(retry_delay))
@@ -289,6 +291,8 @@ def listing_until(
     seen: set[str] = set()
     previous_response = None
     pages_used = 0
+    baseline = None
+    diagnostic_dir = diagnostic_dir or output_dir("listing")
     html_meta_headers: dict[str, str] | None = None
     try:
         html_meta_headers = html_headers(api_dir)
@@ -303,8 +307,9 @@ def listing_until(
         attempts_used = 0
         for attempt in range(1, retries + 2):
             attempts_used = attempt
+            trace: dict[str, Any] = {}
             try:
-                response = listing_page(har_path, query, page, sort, previous_response)
+                response = listing_page(har_path, query, page, sort, previous_response, diagnostic=trace)
                 if attempt > 1:
                     safe_print(f"[listing_retry_ok] {stage} page={page} attempt={attempt}/{retries + 1}")
                 break
@@ -352,8 +357,45 @@ def listing_until(
             )
             break
         previous_response = response
-        html_meta = listing_html_metadata_for_page(api_dir, query, stage, page, html_meta_headers)
         products = list(extract_products(response, page=page))
+        evidence = response_snapshot(response, products)
+        page_keys = [row_url_pid(row) or row.get("product_id") or row.get("item_id") or row.get("product_url")
+                     for row in products]
+        evidence.update(stage=stage, requested_page=page, request=trace.get("request", {}),
+                        http=trace.get("http", {}), attempts=attempts_used,
+                        cross_page_duplicate_count=sum(key in seen for key in page_keys),
+                        new_unique_before_target=len({key for key in page_keys if key and key not in seen}))
+        short = evidence["raw_product_count"] == 10 or len(products) == 10
+        diagnostic_error = None
+        report_dir = ""
+        try:
+            record_page(diagnostic_dir, stage, evidence)
+            if short:
+                safe_print(f"[listing_diagnostic] {stage} page={page} raw={evidence['raw_product_count']} "
+                           f"parsed={len(products)}; stopping product, collecting bounded evidence")
+                report_dir = diagnose(diagnostic_dir, stage, page, query, evidence, baseline, trace.get("compare"))
+            elif evidence["raw_product_count"] == len(products) == 24:
+                baseline = evidence
+        except Exception as exc:
+            # Failed diagnostics must never allow a short listing into detail/DB.
+            diagnostic_error = type(exc).__name__
+        if short or diagnostic_error:
+            reason = "ten_product_page" if short else "diagnostic_write_failed"
+            error = {"stage": "listing", "listing_stage": stage, "page": page,
+                     "query": query, "attempts": attempts_used, "error": reason,
+                     "diagnostic_error": diagnostic_error, "diagnostic_dir": report_dir,
+                     "exit_code": STOP_EXIT_CODE, "retryable": False}
+            listing_errors.append(error)
+            listing_pages.append({"listing_stage": stage, "page": page, "query": query,
+                                  "status": reason, "rows": len(products), "processed_rows": 0,
+                                  "new_unique": 0, "duplicates": 0, "final_unique": len(final_rows),
+                                  "raw_rows": len(raw_rows), "attempts": attempts_used,
+                                  "elapsed_seconds": round(time.perf_counter() - page_started, 2),
+                                  "error": reason})
+            safe_print(f"[listing_stop] {stage} page={page} reason={reason} exit={STOP_EXIT_CODE} "
+                       f"diagnostics={report_dir or diagnostic_dir}")
+            break
+        html_meta = listing_html_metadata_for_page(api_dir, query, stage, page, html_meta_headers)
         raw_before = len(raw_rows)
         final_before = len(final_rows)
         status = "ok"
@@ -411,6 +453,11 @@ def listing_until(
         )
         if status == "target_reached":
             return raw_rows, final_rows, pages_used, listing_errors, listing_pages
+    if not listing_errors and len(final_rows) < target_unique:
+        listing_errors.append({"stage": "listing", "listing_stage": stage, "page": pages_used,
+                               "error": "target_shortfall_at_page_limit", "target": target_unique,
+                               "collected_unique": len(final_rows), "max_pages": max_pages,
+                               "exit_code": STOP_EXIT_CODE, "retryable": False})
     return raw_rows, final_rows, pages_used, listing_errors, listing_pages
 
 
@@ -2238,16 +2285,22 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         args.max_pages_main,
         retries=args.listing_retries,
         retry_delay=args.listing_retry_delay,
+        diagnostic_dir=out_dir,
     )
-    bsr_raw, bsr_final, bsr_pages, bsr_listing_errors, bsr_listing_pages = listing_until(
-        args.api_dir,
-        "bsr",
-        query,
-        args.bsr_target,
-        args.max_pages_bsr,
-        retries=args.listing_retries,
-        retry_delay=args.listing_retry_delay,
-    )
+    if any(row.get("exit_code") == STOP_EXIT_CODE for row in main_listing_errors):
+        bsr_raw, bsr_final, bsr_pages, bsr_listing_errors, bsr_listing_pages = [], [], 0, [], []
+        lines.append("[bsr] skipped: MAIN diagnostic stop")
+    else:
+        bsr_raw, bsr_final, bsr_pages, bsr_listing_errors, bsr_listing_pages = listing_until(
+            args.api_dir,
+            "bsr",
+            query,
+            args.bsr_target,
+            args.max_pages_bsr,
+            retries=args.listing_retries,
+            retry_delay=args.listing_retry_delay,
+            diagnostic_dir=out_dir,
+        )
     listing_errors = main_listing_errors + bsr_listing_errors
     listing_pages = main_listing_pages + bsr_listing_pages
     write_csv(out_dir / "main_raw.csv", main_raw)
@@ -2258,6 +2311,29 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     write_csv(out_dir / "listing_errors.csv", listing_errors)
     lines.append(summarize_listing("main", main_raw, main_final, main_pages, args.main_target))
     lines.append(summarize_listing("bsr", bsr_raw, bsr_final, bsr_pages, args.bsr_target))
+    if any(row.get("exit_code") == STOP_EXIT_CODE for row in listing_errors):
+        lines.extend([f"[listing_stop] exit={STOP_EXIT_CODE}; automatic product retry disabled",
+                      "[detail] skipped: listing diagnostic stop",
+                      "[db_insert] skipped: listing diagnostic stop",
+                      f"[diagnostics] {out_dir / 'diagnostics'}"])
+        for row in listing_errors:
+            lines.append(f"[listing_error] {row.get('listing_stage')} page={row.get('page')} "
+                         f"reason={row.get('error')} diagnostic_error={row.get('diagnostic_error')} "
+                         f"diagnostic_dir={row.get('diagnostic_dir')}")
+        body = "WARNING: Flipkart API listing stopped before detail/DB.\n" + "\n".join(lines)
+        (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        (out_dir / "email_report.txt").write_text(body, encoding="utf-8")
+        # No later retry will send this terminal warning. Retain the existing
+        # email opt-in, but do not suppress it with the first-pass retry flag.
+        if args.email_report:
+            try:
+                _sent, email_lines = send_email_report(
+                    f"WARNING [SIEL] FPKT {args.product.upper()} listing diagnostic stop", body)
+                lines.extend(email_lines)
+            except Exception as exc:
+                lines.append(f"[email] diagnostic warning failed: {type(exc).__name__}")
+        (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return out_dir, lines, STOP_EXIT_CODE
     slow_listing_pages = [
         row for row in listing_pages
         if float(row.get("elapsed_seconds") or 0) >= 10.0 or int(row.get("attempts") or 0) > 1
