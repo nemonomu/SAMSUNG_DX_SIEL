@@ -102,7 +102,8 @@ class EvidenceTests(unittest.TestCase):
         stream.read.return_value = wire
         stream.__enter__ = Mock(return_value=stream)
         stream.__exit__ = Mock(return_value=False)
-        with patch.object(phase.urllib.request, "urlopen", return_value=stream):
+        with patch.object(phase.urllib.request, "urlopen", return_value=stream), \
+                patch.object(phase.os, "environ", {}):
             telemetry = {}
             payload = phase.fetch_json("https://example.test/api", {}, {}, telemetry=telemetry)
             self.assertEqual(payload["STATUS_CODE"], 200)
@@ -138,6 +139,9 @@ class ListingTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.folder = Path(self.temp.name)
+        printer = patch.object(ops, "safe_print")
+        printer.start()
+        self.addCleanup(printer.stop)
         for name, value in (("html_headers", {}), ("listing_html_metadata_for_page", {})):
             mock = patch.object(ops, name, return_value=value)
             setattr(self, name, mock.start())
@@ -149,23 +153,38 @@ class ListingTests(unittest.TestCase):
                                        retry_delay=0, diagnostic_dir=self.folder, **kwargs)
         return result, fetch
 
-    def test_first_ten_stops_before_enrichment_and_next_page(self):
-        with patch.object(diagnostic, "capture_browser", side_effect=ImportError):
-            result, fetch = self.collect([response(10)])
+    def test_ten_pages_continue_beyond_30_until_300_unique_without_browser(self):
+        # Five products overlap each next page, so 59 pages are required.
+        with patch.object(diagnostic, "capture_browser") as browser, \
+                patch.object(phase, "compare_listing_requests") as compare:
+            result, fetch = self.collect([response(10, i * 5) for i in range(59)])
         raw, final, pages, errors, records = result
-        self.assertEqual((len(raw), len(final), pages, fetch.call_count), (0, 0, 1, 1))
-        self.assertEqual(errors[0]["exit_code"], 86)
+        self.assertEqual((len(raw), len(final), pages, fetch.call_count), (590, 300, 59, 59))
+        self.assertFalse(errors)
         self.assertEqual(records[0]["rows"], 10)
-        self.listing_html_metadata_for_page.assert_not_called()
-        self.assertTrue((self.folder / "diagnostics/main_page1_ten_products/report.json").exists())
+        self.assertEqual([r["main_rank"] for r in final], list(range(1, 301)))
+        self.assertEqual(final[-1]["source_rank"], 590)
+        browser.assert_not_called()
+        compare.assert_not_called()
+
+    def test_bsr_ten_pages_continue_beyond_15_until_100_unique(self):
+        with patch.object(ops, "listing_page", side_effect=[response(10, i * 5) for i in range(19)]) as fetch:
+            _, final, pages, errors, _ = ops.listing_until(
+                self.folder, "bsr", "tv", 100, 15, diagnostic_dir=self.folder)
+        self.assertEqual((len(final), pages, fetch.call_count), (100, 19, 19))
+        self.assertEqual([r["bsr_rank"] for r in final], list(range(1, 101)))
+        self.assertEqual(final[-1]["source_rank"], 190)
+        self.assertFalse(errors)
 
     def test_baseline_24_and_prior_rows_survive_later_ten(self):
-        with patch.object(diagnostic, "capture_browser", return_value={}):
-            result, fetch = self.collect([response(24), response(10, 24)])
-        self.assertEqual((len(result[0]), len(result[1]), fetch.call_count), (24, 24, 2))
-        report = json.loads((self.folder / "diagnostics/main_page2_ten_products/report.json").read_text(encoding="utf-8"))
-        self.assertEqual(report["baseline_24"]["requested_page"], 1)
-        self.assertEqual(report["api"]["requested_page"], 2)
+        result, fetch = self.collect([response(24), response(10, 24), response(24, 34)], target=40)
+        self.assertEqual((len(result[0]), len(result[1]), fetch.call_count), (40, 40, 3))
+        self.assertFalse(result[3])
+        self.assertEqual([r["rank"] for r in result[0]], list(range(1, 41)))
+        observations = [json.loads(line) for line in (self.folder / "diagnostics/listing_observations.jsonl").read_text().splitlines()]
+        self.assertEqual([r["raw_product_count"] for r in observations], [24, 10, 24])
+        self.assertEqual(observations[-1]["products"][0]["source_rank"], 35)
+        self.assertEqual(observations[1]["products"][0]["product_name"], "Test 24")
 
     def test_normal_24_dedupe_and_target_stop_unchanged(self):
         result, fetch = self.collect([response(24), response(24, 14)], target=30)
@@ -177,9 +196,21 @@ class ListingTests(unittest.TestCase):
         self.assertEqual(result[4][-1]["status"], "target_reached")
 
     def test_page_cap_shortfall_is_failure_not_success(self):
-        result, _ = self.collect([response(24)], max_pages=1)
+        # One new product every third page keeps advancing but misses the cap.
+        result, fetch = self.collect([response(1, i // 3) for i in range(6)], target=6, max_pages=1)
+        self.assertEqual(fetch.call_count, 6)
         self.assertEqual(result[3][0]["error"], "target_shortfall_at_page_limit")
         self.assertEqual(result[3][0]["exit_code"], 86)
+
+    def test_server_end_reports_shortfall(self):
+        result, fetch = self.collect([response(10, total=10, more=False)])
+        self.assertEqual((fetch.call_count, len(result[1])), (1, 10))
+        self.assertEqual(result[3][0]["error"], "target_shortfall_at_server_end")
+
+    def test_three_pages_without_new_products_stop_repeated_results(self):
+        result, fetch = self.collect([response(10)] * 4)
+        self.assertEqual((fetch.call_count, len(result[1])), (4, 10))
+        self.assertEqual(result[3][0]["error"], "target_shortfall_no_new_products")
 
     def test_network_failure_retains_existing_retries(self):
         result, fetch = self.collect([TimeoutError(), response(24)], target=24, retries=1)
@@ -197,7 +228,7 @@ class ListingTests(unittest.TestCase):
             real_batch_id=False, db_insert=True, db_dry_run=False, api_dir=self.folder,
             main_target=300, max_pages_main=30, bsr_target=100, max_pages_bsr=15,
             listing_retries=0, listing_retry_delay=0, email_report=False)
-        stop = ([], [], 1, [{"exit_code": 86, "error": "ten_product_page"}], [])
+        stop = ([], [], 1, [{"exit_code": 86, "error": "diagnostic_write_failed"}], [])
         with patch.object(ops, "listing_until", return_value=stop) as listing, \
                 patch.object(ops, "detail_from_api_with_retries") as detail, \
                 patch.object(ops, "send_email_report") as email, \
@@ -216,13 +247,71 @@ class ListingTests(unittest.TestCase):
             real_batch_id=False, db_insert=True, db_dry_run=False, api_dir=self.folder,
             main_target=300, max_pages_main=30, bsr_target=100, max_pages_bsr=15,
             listing_retries=0, listing_retry_delay=0, email_report=True, email_report_success_only=True)
-        stop = ([], [], 1, [{"exit_code": 86, "error": "ten_product_page"}], [])
+        stop = ([], [], 1, [{"exit_code": 86, "error": "target_shortfall_at_server_end"}], [])
         with patch.object(ops, "listing_until", side_effect=[([], [], 1, [], []), stop]) as listing, \
                 patch.object(ops, "send_email_report", side_effect=RuntimeError) as email, \
                 patch.object(ops.subprocess, "run") as external:
             _, _, code = ops.run(args)
         self.assertEqual((code, listing.call_count, email.call_count), (86, 2, 1))
         external.assert_not_called()
+
+    def run_collection(self, main_sizes, bsr_sizes, *, allow_qa=False, bsr_target=10):
+        args = argparse.Namespace(insecure=False, query=None, product="tv", out_dir=self.folder,
+            real_batch_id=False, db_insert=True, db_dry_run=False, api_dir=self.folder,
+            main_target=30, max_pages_main=30, bsr_target=bsr_target, max_pages_bsr=15,
+            listing_retries=0, listing_retry_delay=0, email_report=True, email_report_success_only=True,
+            max_detail=0, detail_retries=0, review_pages=0, review_retries=0,
+            review_short_max_pages=0, max_reviews_per_product=20, allow_qa_insert=allow_qa, insert_max_n=0)
+        def listing(_har, _query, page, sort, previous, **kwargs):
+            sizes = bsr_sizes if sort == "popularity" else main_sizes
+            return response(sizes[page-1], sum(sizes[:page-1]))
+        def detail(*args, **kwargs):
+            return {"count_of_star_ratings": "100", "count_of_reviews": "0"}, []
+        with patch.object(ops, "listing_page", side_effect=listing), \
+                patch.object(ops, "detail_from_api_with_retries", side_effect=detail) as details, \
+                patch.object(ops, "fetch_text", side_effect=AssertionError("no HTTP permitted")), \
+                patch.object(ops, "validate_schema_outputs", return_value=([], [])), \
+                patch.object(ops, "insert_into_db", return_value=(0, [])) as insert, \
+                patch.object(ops, "send_email_report", return_value=(True, [])) as email:
+            _, lines, code = ops.run(args)
+        self.assertEqual(details.call_count, 30)  # Collection must complete even when mixed.
+        for name, expected in (("main_final.csv", 30), ("bsr_final.csv", bsr_target), ("detail.csv", 30)):
+            import csv
+            with (self.folder / name).open(encoding="utf-8-sig", newline="") as f:
+                self.assertEqual(len(list(csv.DictReader(f))), expected)
+        self.assertTrue((self.folder / "output.csv").exists())
+        return code, lines, insert, email
+
+    def test_uniform_ten_still_reaches_db_and_detail(self):
+        code, _, insert, email = self.run_collection([10, 10, 10], [10])
+        self.assertEqual(code, 0)
+        insert.assert_called_once()
+        email.assert_called_once()
+
+    def test_uniform_24_still_reaches_db_even_when_last_page_is_partially_used(self):
+        code, _, insert, _ = self.run_collection([24, 24], [24])
+        self.assertEqual(code, 0)
+        insert.assert_called_once()
+
+    def test_mixed_within_main_collects_details_but_never_inserts_even_with_override(self):
+        code, lines, insert, email = self.run_collection([10, 24], [10], allow_qa=True)
+        self.assertEqual(code, 86)
+        insert.assert_not_called()
+        email.assert_not_called()
+        self.assertTrue(any("mixed_10_24_page_sizes" in line for line in lines))
+        report = json.loads((self.folder / "diagnostics/mixed_page_sizes.json").read_text())
+        self.assertFalse(report["db_insert_allowed"])
+        self.assertEqual([r["raw_product_count"] for r in report["pages"]], [10, 24, 10])
+
+    def test_different_sizes_between_main_and_bsr_also_block_db(self):
+        code, _, insert, _ = self.run_collection([10, 10, 10], [24])
+        self.assertEqual(code, 86)
+        insert.assert_not_called()
+
+    def test_mixed_in_bsr_also_blocks_db(self):
+        code, _, insert, _ = self.run_collection([24, 24], [24, 10], bsr_target=30)
+        self.assertEqual(code, 86)
+        insert.assert_not_called()
 
 
 @unittest.skipUnless(os.name == "nt", "Windows batch control flow")
