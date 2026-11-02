@@ -323,11 +323,71 @@ def _safe_find_elements(driver, xpath: str):
         return []
 
 
+_BSR_PRICE_PARTS_JS = r"""(card, price) => {
+    const result = {
+        final_sku_price: price ? (price.textContent || price.getAttribute('aria-label') || '').trim() : null
+    };
+    if (!price || !card.contains(price)) return result;
+    // Recover only inside the selected selling price, never from another price/card.
+    const scope = price.closest('.a-price') ||
+        (price.matches('.p13n-sc-price') ? price : null);
+    if (!scope || !card.contains(scope) ||
+        scope.closest('[data-a-strike="true"], .a-text-price, del, s')) return result;
+    const inCard = (el) => {
+        for (let parent = el; parent && parent !== card; parent = parent.parentElement) {
+            if (parent.matches('#gridItemRoot, .zg-grid-general-faceout') ||
+                (parent.hasAttribute('data-asin') && parent.getAttribute('data-asin') &&
+                 parent.getAttribute('data-asin') !== card.getAttribute('data-asin'))) return false;
+        }
+        return card.contains(el);
+    };
+    if (!inCard(scope)) return result;
+    const ownParts = (selector) => Array.from(scope.querySelectorAll(selector)).filter(el =>
+        inCard(el) && (scope.matches('.a-price') ? el.closest('.a-price') === scope : !el.closest('.a-price'))
+    );
+    const wholes = ownParts('.a-price-whole');
+    const fractions = ownParts('.a-price-fraction');
+    if (wholes.length !== 1 || fractions.length !== 1) return result;
+    const whole = wholes[0].cloneNode(true);
+    whole.querySelectorAll('.a-price-decimal').forEach(el => el.remove());
+    result._bsr_price_parts = {
+        whole: whole.textContent.trim(), fraction: fractions[0].textContent.trim()
+    };
+    return result;
+}"""
+
+
+def _bsr_xpath_price(card, primary, fallback=None) -> dict:
+    for xpath in (primary, fallback):
+        if not xpath:
+            continue
+        try:
+            el = card.find_element(By.XPATH, xpath)
+            raw = (el.text or el.get_attribute('textContent') or '').strip()
+        except (NoSuchElementException, WebDriverException):
+            continue
+        if not raw:
+            continue
+        record = {'final_sku_price': raw}
+        _, invalid = siel_log.parse_amzn_bsr_price(raw)
+        if invalid:
+            try:
+                parts = card.parent.execute_script(
+                    'return (' + _BSR_PRICE_PARTS_JS + ')(arguments[0], arguments[1]);', card, el)
+                if isinstance(parts, dict):
+                    record['_bsr_price_parts'] = parts.get('_bsr_price_parts') or {}
+            except WebDriverException:
+                pass  # Normalization records the invalid price and preserves NULL.
+        return record
+    return {'final_sku_price': None}
+
+
 def _js_bsr_records(driver, collect_quantity: bool = False) -> list[dict]:
     """Extract BSR cards inside Chrome to avoid Selenium WebElement round trips."""
     try:
         rows = driver.execute_script(
-            'const stockQuantity = ' + LISTING_QUANTITY_JS + ';\n' + """
+            'const stockQuantity = ' + LISTING_QUANTITY_JS + ';\n'
+            + 'const priceParts = ' + _BSR_PRICE_PARTS_JS + ';\n' + """
             const clean = (s) => (s || '').replace(/\\s+/g, ' ').trim();
             const text = (root, selectors) => {
               for (const sel of selectors) {
@@ -389,11 +449,12 @@ def _js_bsr_records(driver, collect_quantity: bool = False) -> list[dict]:
                   'a[href*="/dp/"] div',
                   'a[href*="/gp/product/"] div'
                 ]) || imgAlt,
-                final_sku_price: text(card, [
+                ...priceParts(card, [
                   '.p13n-sc-price',
                   '.a-price .a-offscreen',
                   '.a-color-price'
-                ]),
+                ].map(sel => card.querySelector(sel)).find(el => el &&
+                    clean(el.textContent || el.getAttribute('aria-label')))),
                 star_rating: attr(card, [
                   '[aria-label*="out of 5 stars"]',
                   'i.a-icon-star span'
@@ -561,7 +622,8 @@ def maybe_save_html(driver) -> None:
     _html_saved = True
 
 
-def extract_card(card, selectors: dict, collect_quantity: bool = False) -> dict:
+def extract_card(card, selectors: dict, collect_quantity: bool = False,
+                 bsr_price: bool = False) -> dict:
     rec: dict = {}
     # 1) data-asin attr (Main 카드만 있음. BSR 카드엔 없음)
     try:
@@ -581,6 +643,8 @@ def extract_card(card, selectors: dict, collect_quantity: bool = False) -> dict:
             continue
         if field == 'product_url':
             rec[field] = first_attr(card, xpath, fallback, 'href')
+        elif field == 'final_sku_price' and bsr_price:
+            rec.update(_bsr_xpath_price(card, xpath, fallback))
         elif field in ('final_sku_price', 'original_sku_price'):
             rec[field] = siel_log.parse_amzn_apex_price(first_text(card, xpath, fallback))
         elif field == 'discount_type':
@@ -837,9 +901,18 @@ def _load_bsr_cards(driver, container_xpath: str, expected_count: int = 50,
 
 def _normalize_bsr_record(raw: dict) -> dict:
     rec = dict(raw or {})
-    if rec.get('final_sku_price'):
-        rec['final_sku_price'] = siel_log.parse_amzn_apex_price(
-            rec.get('final_sku_price'))
+    parts = rec.pop('_bsr_price_parts', None) or {}
+    price = rec.get('final_sku_price')
+    rec['final_sku_price'], invalid = siel_log.parse_amzn_bsr_price(
+        price, parts.get('whole'), parts.get('fraction'))
+    if invalid:
+        rec['_bsr_price_invalid'] = True
+        if _logger:
+            _logger.warning('bsr invalid price: raw=%r; keeping NULL | asin=%s url=%s',
+                            price, rec.get('asin'), rec.get('product_url'))
+    elif price and siel_log.malformed_amzn_price(price) and _logger:
+        _logger.info('bsr price recovered: raw=%r price=%s | asin=%s url=%s',
+                     price, rec['final_sku_price'], rec.get('asin'), rec.get('product_url'))
     rating_label = rec.get('star_rating') or ''
     rating_count = rec.get('count_of_star_ratings') or ''
     combined_rating = None
@@ -964,7 +1037,8 @@ def _load_bsr_records(driver, container_xpath: str, selectors: dict,
 
     cards = _load_bsr_cards(driver, container_xpath, expected_count=expected_count)
     return [_normalize_bsr_record(extract_card(card, selectors,
-                                             collect_quantity=collect_quantity))
+                                              collect_quantity=collect_quantity,
+                                              bsr_price=True))
             for card in cards]
 
 
