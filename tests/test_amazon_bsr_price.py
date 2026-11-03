@@ -182,6 +182,57 @@ class BsrPriceBrowserTests(unittest.TestCase):
                     row.update(account_name='amazon', product='ref')
                     self.assertIsNone(ITR.make_row(None, row, {'final_sku_price': '₹35,490'})['final_sku_price'])
 
+    def test_nested_same_product_faceout_recovers_on_both_paths(self):
+        # Preserve the Nov 3 card hierarchy, including the ASIN-less outer grid.
+        for card_asin in ('', 'B000000001'):
+            for inner_asin in ('', 'B000000001'):
+                for raw, whole, fraction, expected in (
+                    ('₹17,99000', '17,990', '00', '₹17,990'),
+                    ('₹1,49,99900', '1,49,999', '00', '₹1,49,999'),
+                    ('₹9,99950', '9,999', '50', '₹9,999.50'),
+                ):
+                    with self.subTest(card_asin=card_asin, inner_asin=inner_asin, raw=raw):
+                        self.page.set_content(f'''<div id="zg"><div id="gridItemRoot" data-asin="{card_asin}">
+                            <div id="p13n-asin-index-2" class="a-cardui">
+                            <div class="has-ive-video" data-asin="{inner_asin}">
+                            <div class="zg-grid-general-faceout"><span>
+                            <div id="B000000001" class="p13n-sc-uncoverable-faceout">
+                            <a href="/dp/B000000001">Example refrigerator</a>
+                            <div><div><div class="a-row"><a href="/dp/B000000001">
+                            <span class="a-color-base"><span class="a-price">
+                            <span class="a-offscreen">{raw}</span><span aria-hidden="true">
+                            <span class="a-price-whole">{whole}<span class="a-price-decimal"></span></span>
+                            <span class="a-price-fraction">{fraction}</span></span></span></span>
+                            </a></div></div></div></div></span></div></div></div></div></div>''')
+                        before = self.page.content()
+                        card = BrowserCard(self.page.query_selector('#gridItemRoot'), self.driver)
+                        for row in self.paths(card):
+                            self.assertEqual(row['final_sku_price'], expected)
+                            self.assertNotIn('_bsr_price_invalid', row)
+                            for product in ('ref', 'tv', 'ldy'):
+                                row.update(account_name='amazon', product=product)
+                                for factory in (ITR.make_row, ITR.make_row_listing):
+                                    self.assertEqual(factory(None, row, {})['final_sku_price'],
+                                                     ITR.normalize_price(expected))
+                        self.assertEqual(self.page.content(), before)
+
+    def test_nested_other_product_and_separate_grid_still_rejected(self):
+        price = '''<span class="a-price"><span class="a-offscreen">₹17,99000</span>
+            <span class="a-price-whole">17,990</span><span class="a-price-fraction">00</span></span>'''
+        for markup in (
+            f'<div data-asin="B000000002">{price}</div>',
+            f'<div class="zg-grid-general-faceout"><a href="/dp/B000000002">Other</a>{price}</div>',
+            f'<div class="zg-grid-general-faceout">{price}</div>',
+            f'<div id="gridItemRoot"><a href="/dp/B000000001">Separate</a>{price}</div>',
+            '''<span class="a-price"><span data-asin="B000000002">
+                <span class="a-offscreen">₹17,99000</span></span>
+                <span class="a-price-whole">17,990</span><span class="a-price-fraction">00</span></span>''',
+        ):
+            with self.subTest(markup=markup):
+                for row in self.paths(self.set_card(markup)):
+                    self.assertIsNone(row['final_sku_price'])
+                    self.assertTrue(row['_bsr_price_invalid'])
+
     def test_absent_and_unavailable_prices_keep_existing_behavior(self):
         for markup, expected in (
             ('', None),

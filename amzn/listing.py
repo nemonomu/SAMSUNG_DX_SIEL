@@ -333,15 +333,26 @@ _BSR_PRICE_PARTS_JS = r"""(card, price) => {
         (price.matches('.p13n-sc-price') ? price : null);
     if (!scope || !card.contains(scope) ||
         scope.closest('[data-a-strike="true"], .a-text-price, del, s')) return result;
+    const asinOf = (el) => {
+        const asin = (el.getAttribute('data-asin') || '').trim();
+        if (asin) return asin;
+        const link = el.querySelector('a[href*="/dp/"], a[href*="/gp/product/"]');
+        const match = (link?.getAttribute('href') || '').match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/);
+        return match ? match[1] : null;
+    };
+    // gridItemRoot often has no ASIN; the same product's faceout is nested inside it.
+    const cardAsin = asinOf(card);
     const inCard = (el) => {
         for (let parent = el; parent && parent !== card; parent = parent.parentElement) {
-            if (parent.matches('#gridItemRoot, .zg-grid-general-faceout') ||
-                (parent.hasAttribute('data-asin') && parent.getAttribute('data-asin') &&
-                 parent.getAttribute('data-asin') !== card.getAttribute('data-asin'))) return false;
+            if (parent.matches('#gridItemRoot')) return false;
+            const asin = (parent.getAttribute('data-asin') || '').trim();
+            if (asin && asin !== cardAsin) return false;
+            if (parent.matches('.zg-grid-general-faceout') &&
+                (!cardAsin || asinOf(parent) !== cardAsin)) return false;
         }
         return card.contains(el);
     };
-    if (!inCard(scope)) return result;
+    if (!inCard(scope) || !inCard(price)) return result;
     const ownParts = (selector) => Array.from(scope.querySelectorAll(selector)).filter(el =>
         inCard(el) && (scope.matches('.a-price') ? el.closest('.a-price') === scope : !el.closest('.a-price'))
     );
