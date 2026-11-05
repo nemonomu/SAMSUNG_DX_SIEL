@@ -204,18 +204,12 @@ def normalize_fpkt_price_values(final_price, original_price):
     return final_norm, original_norm, computed_savings_text(final_norm, original_norm)
 
 
-_AMAZON_AMOUNT_RE = re.compile(
-    r'₹?\s*(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+'
-    r'|[0-9]{1,2}(?:,[0-9]{2})*,[0-9]{3})(?:\.[0-9]{1,2})?'
-)
-
-
 def amazon_price_amount(value):
     """Accept a complete rupee amount, never digits inside availability text."""
     if value is None:
         return None
     text = str(value).strip()
-    if not _AMAZON_AMOUNT_RE.fullmatch(text):
+    if not siel_log.is_amzn_price_amount(text):
         return None
     return Decimal(text.removeprefix('₹').strip().replace(',', ''))
 
@@ -225,7 +219,9 @@ def amazon_price_fields(final_price, original_price, savings, *, derive_savings=
     # Validate before normalization, which can repair malformed comma groups.
     final_amount = amazon_price_amount(final_price)
     original_amount = amazon_price_amount(original_price)
-    final_norm = normalize_price(final_price)
+    # Do not turn malformed comma groups (e.g. ₹35,49000) into larger amounts.
+    final_norm = (None if siel_log.malformed_amzn_price(final_price)
+                  else normalize_price(final_price))
     original_norm = normalize_price(original_price)
     # Preserve the existing handling of unavailable final prices.
     if final_norm not in (None, '') and not re.search(r'\d', str(final_norm)):
@@ -474,6 +470,9 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             (d.get('retailer_sku_name') or primary.get('retailer_sku_name'))
         )
         if (account or '').lower() == 'amazon':
+            # BSR format failures are intentional NULLs, not missing-price fallbacks.
+            if primary.get('_bsr_price_invalid') is True:
+                final_price = None
             use_detail_savings = not listing_only and prod in ('TV', 'REF', 'LDY')
             final_price, original_price, savings = amazon_price_fields(
                 final_price, original_price, savings,

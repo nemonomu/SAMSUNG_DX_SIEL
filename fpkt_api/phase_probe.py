@@ -12,6 +12,7 @@ collected without XPath-heavy browser scraping:
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import os
@@ -19,6 +20,7 @@ import re
 import shlex
 import ssl
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -28,6 +30,7 @@ from typing import Any
 from lxml import html
 
 from main_probe import extract_products, request_headers
+from listing_diagnostics import request_snapshot, response_snapshot, safe_url
 
 
 PAGE_FETCH = "api/4/page/fetch"
@@ -170,15 +173,53 @@ def page_fetch_har_requests(path: Path) -> list[tuple[int, dict[str, Any]]]:
     return found
 
 
-def fetch_json(url: str, headers: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
+def fetch_json(url: str, headers: dict[str, str], body: dict[str, Any], *,
+               telemetry: dict | None = None, timeout_seconds: int | None = None) -> dict[str, Any]:
     payload = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=payload, headers=headers, method="POST")
     context = None
     if os.environ.get("FPKT_API_INSECURE_SSL", "").lower() in {"1", "true", "yes", "y"}:
         context = ssl._create_unverified_context()
-    timeout = int(os.environ.get("FPKT_API_TIMEOUT", "60"))
-    with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
-        return json.loads(response.read().decode("utf-8", errors="replace"))
+    timeout = timeout_seconds or int(os.environ.get("FPKT_API_TIMEOUT", "60"))
+    started = time.perf_counter()
+    try:
+        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+            raw = response.read()
+            if telemetry is not None:
+                telemetry.update(status=response.status, bytes=len(raw), final_url=safe_url(response.url))
+            return json.loads(raw.decode("utf-8", errors="replace"))
+    except Exception as exc:
+        if telemetry is not None:
+            telemetry.update(error_type=type(exc).__name__)
+            if isinstance(exc, urllib.error.HTTPError):
+                telemetry["status"] = exc.code
+        raise
+    finally:
+        if telemetry is not None:
+            telemetry["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+
+
+def compare_listing_requests(url, headers, body, page):
+    """Three bounded probes: identical request, only as-show changed, restored.
+
+    Pagination/session inputs remain in memory. Only allow-listed evidence leaves
+    this function; probe responses never replace the collection response.
+    """
+    results = []
+    original = body["pageUri"]
+    alternate = re.sub(r"([?&]as-show=)(on|off)(?=&|$)",
+                       lambda match: match[1] + ("off" if match[2] == "on" else "on"), original)
+    for label, uri in (("control", original), ("as_show_changed", alternate), ("restored", original)):
+        probe_body = copy.deepcopy(body)
+        probe_body["pageUri"] = uri
+        evidence = {"label": label, "request": request_snapshot(url, headers, probe_body), "http": {}}
+        try:
+            response = fetch_json(url, headers, probe_body, telemetry=evidence["http"], timeout_seconds=20)
+            evidence["response"] = response_snapshot(response, extract_products(response, page=page))
+        except Exception as exc:
+            evidence["error_type"] = type(exc).__name__
+        results.append(evidence)
+    return results
 
 
 def first_har_request_for_page(har_path: Path, page_number: int = 1) -> dict[str, Any]:
@@ -204,6 +245,8 @@ def listing_page(
     page: int,
     sort: str | None,
     previous_response: dict[str, Any] | None = None,
+    *,
+    diagnostic: dict | None = None,
 ) -> dict[str, Any]:
     request = first_har_request_for_page(har_path, 1)
     body = json.loads((request.get("postData") or {}).get("text") or "{}")
@@ -228,7 +271,13 @@ def listing_page(
             or page_context.get("paginationContextMap")
             or {}
         )
-    return fetch_json(request["url"], request_headers(request), body)
+    headers = request_headers(request)
+    if diagnostic is None:
+        return fetch_json(request["url"], headers, body)
+    diagnostic["request"] = request_snapshot(request["url"], headers, body)
+    diagnostic["http"] = {}
+    diagnostic["compare"] = lambda: compare_listing_requests(request["url"], headers, body, page)
+    return fetch_json(request["url"], headers, body, telemetry=diagnostic["http"])
 
 
 def stage_listing(api_dir: Path, stage: str, query: str, max_pages: int) -> list[dict[str, Any]]:

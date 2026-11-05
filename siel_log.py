@@ -211,6 +211,9 @@ def parse_price_value(v):
 
 
 _AMZN_RUPEE_PRICE_RE = re.compile(r'₹\s*\d[\d,]*(?:\.\d+)?')
+_AMZN_INTEGER_PATTERN = r'(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+|[0-9]{1,2}(?:,[0-9]{2})*,[0-9]{3})'
+_AMZN_AMOUNT_RE = re.compile(r'₹?\s*' + _AMZN_INTEGER_PATTERN + r'(?:\.[0-9]{1,2})?')
+_AMZN_WHOLE_RE = re.compile(_AMZN_INTEGER_PATTERN)
 
 
 _AMZN_PRICE_SENTINELS = (
@@ -248,6 +251,37 @@ def parse_amzn_apex_price(v):
     if any(sentinel in s for sentinel in _AMZN_PRICE_SENTINELS):
         return s
     return None
+
+
+def is_amzn_price_amount(value) -> bool:
+    return value is not None and bool(_AMZN_AMOUNT_RE.fullmatch(str(value).strip()))
+
+
+def malformed_amzn_price(value) -> bool:
+    """Detect malformed amounts without treating availability messages as prices."""
+    text = str(value).strip() if value is not None else ''
+    if not text or any(sentinel in text for sentinel in _AMZN_PRICE_SENTINELS):
+        return False
+    looks_numeric = '₹' in text or bool(re.fullmatch(r'[0-9,.\s]+', text))
+    return looks_numeric and not is_amzn_price_amount(text)
+
+
+def parse_amzn_bsr_price(value, whole=None, fraction=None):
+    """Return (price, invalid). Recover only from a matched price's DOM parts."""
+    text = str(value).strip() if value is not None else ''
+    if not text:
+        return None, False
+    if is_amzn_price_amount(text):
+        text = re.sub(r'^₹\s+', '₹', text)
+        return (text[:-3] if text.endswith('.00') else text), False
+    if any(sentinel in text for sentinel in _AMZN_PRICE_SENTINELS):
+        return text, False
+    whole = str(whole).strip() if whole is not None else ''
+    fraction = str(fraction).strip() if fraction is not None else ''
+    if _AMZN_WHOLE_RE.fullmatch(whole) and re.fullmatch(r'[0-9]{2}', fraction):
+        suffix = '' if fraction == '00' else '.' + fraction
+        return '₹' + whole + suffix, False
+    return None, True
 
 
 _AMZN_DISCOUNT_TYPE_EXACT = {

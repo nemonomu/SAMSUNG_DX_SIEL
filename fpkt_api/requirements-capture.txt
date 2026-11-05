@@ -1,0 +1,2 @@
+# Optional diagnostic browser, independent of the API collection dependencies.
+playwright==1.62.0
