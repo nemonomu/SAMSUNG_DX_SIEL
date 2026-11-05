@@ -1584,6 +1584,7 @@ def listing_schema_record(
         "account_name": "flipkart",
         "product": product,
         "stage": stage,
+        "_preserve_listing_rank": True,
         "page_no": row.get("page"),
         rank_field: rank,
         "fsn": fsn,
@@ -2574,18 +2575,9 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     elif listing_errors:
         lines.append(f"[detail] skipped: listing_errors={len(listing_errors)}")
 
-    failed_keys = {str(row.get("product_id")) for row in errors if row.get("product_id")}
-    if failed_keys:
-        lines.append(f"[schema_filter] excluded_failed_items={len(failed_keys)}")
-        main_for_schema = [row for row in main_final if str(key_for_row(row)) not in failed_keys]
-        bsr_for_schema = [row for row in bsr_final if str(key_for_row(row)) not in failed_keys]
-        details_for_schema = [row for row in details if str(key_for_row(row)) not in failed_keys]
-        reviews_for_schema = [row for row in reviews if str(key_for_row(row)) not in failed_keys]
-    else:
-        main_for_schema = main_final
-        bsr_for_schema = bsr_final
-        details_for_schema = details
-        reviews_for_schema = reviews
+    if errors:
+        # A failed detail or review must not discard the observed listing.
+        lines.append(f"[schema] preserved listing for detail/review errors={len(errors)}")
 
     rating_count_sources = {
         source: sum(row.get("_rating_count_source") == source for row in details)
@@ -2620,7 +2612,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     db_query_view_cols = DB_QUERY_VIEW_COLS_BY_PRODUCT[product_key]
     api_run_path = out_dir / "api_run.jsonl"
     retail_rows, product_list_rows, jsonl_rows = build_schema_outputs(
-        args.product, main_for_schema, bsr_for_schema, details_for_schema, reviews_for_schema, crawl_dt, batch_id
+        args.product, main_final, bsr_final, details, reviews, crawl_dt, batch_id
     )
     write_csv_fields(out_dir / f"{product_key}_retail_com_preview.csv", retail_rows, retail_cols)
     write_csv_fields(out_dir / f"{product_key}_product_list_preview.csv", product_list_rows, product_list_cols)
@@ -2629,7 +2621,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     write_csv_fields(out_dir / "output.csv", retail_rows, retail_cols)
     write_csv_fields(out_dir / "db_query_view.csv", retail_rows, db_query_view_cols)
     write_jsonl(api_run_path, jsonl_rows)
-    qa_issues, qa_summary = validate_schema_outputs(args.product, retail_rows, reviews_for_schema, args.max_reviews_per_product)
+    qa_issues, qa_summary = validate_schema_outputs(args.product, retail_rows, reviews, args.max_reviews_per_product)
     write_csv(out_dir / "qa_issues.csv", qa_issues)
     lines.append(
         f"[schema:{product_key}_retail_com] rows={len(retail_rows)} "
@@ -2654,7 +2646,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         exit_code = STOP_EXIT_CODE
     elif args.db_insert:
         if errors:
-            lines.append(f"[db_insert] excluded detail/review errors={len(errors)}")
+            lines.append(f"[db_insert] retaining listings with detail/review errors={len(errors)}; see errors.csv")
         # DIFF (review_count_diff, missing_* 등 informational) 는 INSERT 차단 X — fatal 만 차단.
         fatal_qa = [row for row in qa_issues if is_fatal_qa_issue(row)]
         diff_qa = [row for row in qa_issues if not is_fatal_qa_issue(row)]
