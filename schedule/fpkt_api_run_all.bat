@@ -10,7 +10,12 @@ rem continues with local code. Set FPKT_SKIP_GIT_PULL=1 to disable.
 if /I not "%FPKT_SKIP_GIT_PULL%"=="1" if not "%FPKT_GIT_PULLED%"=="1" (
   echo [fpkt_api_run_all] git pull --ff-only
   git pull --ff-only
-  if errorlevel 1 echo [fpkt_api_run_all] git pull failed - continuing with local code
+  if errorlevel 1 (
+    set "FPKT_GIT_PULL_STATUS=failed"
+    echo [fpkt_api_run_all] git pull failed - continuing with local code
+  ) else (
+    set "FPKT_GIT_PULL_STATUS=success"
+  )
   set "FPKT_GIT_PULLED=1"
   cmd.exe /d /c ""%~f0" %*"
   exit /b !ERRORLEVEL!
@@ -32,11 +37,17 @@ if not defined MODE_OK (
 
 if "%FPKT_PRODUCTS%"=="" set "FPKT_PRODUCTS=tv hhp ref ldy"
 
-rem Remove only 72h-old high-volume ops_* folders. Cleanup failure must not block collection.
+rem Preserve old evidence while any requested product has an uncertain DB outcome.
 if /I not "%RUN_MODE%"=="check" (
-  echo [fpkt_api_run_all] cleanup old large artifacts
-  python cleanup_crawler_artifacts.py --scope fpkt --products %FPKT_PRODUCTS% --apply
-  if errorlevel 1 echo [fpkt_api_run_all] cleanup warning - collection continues
+  set "PENDING_FOUND="
+  for %%P in (%FPKT_PRODUCTS%) do if exist "fpkt_api\.db_pending_%%P.json" set "PENDING_FOUND=1"
+  if defined PENDING_FOUND (
+    echo [fpkt_api_run_all] cleanup skipped - pending DB result must be reviewed
+  ) else (
+    echo [fpkt_api_run_all] cleanup old large artifacts
+    python cleanup_crawler_artifacts.py --scope fpkt --products %FPKT_PRODUCTS% --apply
+    if errorlevel 1 echo [fpkt_api_run_all] cleanup warning - collection continues
+  )
 )
 
 for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss_fff"') do set "RUN_STAMP=%%I"
@@ -50,6 +61,13 @@ echo [fpkt_api_run_all] mode=%RUN_MODE%
 >> "%RUN_LOG%" echo [fpkt_api_run_all] mode=%RUN_MODE%
 echo [fpkt_api_run_all] output_dir=%RUN_DIR%
 >> "%RUN_LOG%" echo [fpkt_api_run_all] output_dir=%RUN_DIR%
+if not defined FPKT_GIT_PULL_STATUS set "FPKT_GIT_PULL_STATUS=skipped"
+echo [fpkt_api_run_all] git_pull=%FPKT_GIT_PULL_STATUS%
+>> "%RUN_LOG%" echo [fpkt_api_run_all] git_pull=%FPKT_GIT_PULL_STATUS%
+git rev-parse HEAD > "%RUN_DIR%\git_commit.txt" 2>&1
+echo [fpkt_api_run_all] git_commit:
+type "%RUN_DIR%\git_commit.txt"
+type "%RUN_DIR%\git_commit.txt" >> "%RUN_LOG%"
 
 set "DEFAULT_API_DIR=%CD%\..\siel_logs\api"
 if exist "C:\siel\logs\api\main_har.txt" set "DEFAULT_API_DIR=C:\siel\logs\api"
@@ -70,7 +88,9 @@ if "%FPKT_REVIEW_RETRIES%"=="" set "FPKT_REVIEW_RETRIES=2"
 if "%FPKT_MAX_REVIEWS_PER_PRODUCT%"=="" set "FPKT_MAX_REVIEWS_PER_PRODUCT=20"
 if "%FPKT_INSERT_MAX_N%"=="" set "FPKT_INSERT_MAX_N=0"
 if "%FPKT_LOCK_STALE_HOURS%"=="" set "FPKT_LOCK_STALE_HOURS=18"
-if "%FPKT_INSECURE_SSL%"=="" set "FPKT_INSECURE_SSL=1"
+rem Verify certificates by default, including when an inherited override exists.
+if "%FPKT_INSECURE_SSL%"=="" set "FPKT_INSECURE_SSL=0"
+if /I not "%FPKT_INSECURE_SSL%"=="1" set "FPKT_API_INSECURE_SSL="
 if "%FPKT_CONTINUE_ON_PRODUCT_FAIL%"=="" set "FPKT_CONTINUE_ON_PRODUCT_FAIL=1"
 if "%FPKT_PRODUCT_RETRY_AFTER_ALL%"=="" set "FPKT_PRODUCT_RETRY_AFTER_ALL=1"
 if "%FPKT_PRODUCT_RETRY_DELAY%"=="" set "FPKT_PRODUCT_RETRY_DELAY=0"
@@ -171,6 +191,7 @@ set "FIRST_PASS_EMAIL_FLAGS="
 set "FAILED_PRODUCTS="
 set "FAILED_PRODUCT_NAMES="
 set "NO_RETRY_PRODUCTS="
+set "NO_RETRY_CODE="
 if /I "%RUN_MODE%"=="dry-run" set "DB_FLAGS=!DB_FLAGS! --db-insert --db-dry-run"
 if /I "%RUN_MODE%"=="insert" set "DB_FLAGS=!DB_FLAGS! --db-insert --real-batch-id"
 if /I "%FPKT_REAL_BATCH_ID%"=="1" set "DB_FLAGS=!DB_FLAGS! --real-batch-id"
@@ -196,13 +217,23 @@ for %%P in (%FPKT_PRODUCTS%) do (
     echo [fpkt_api_run_all] failed %%P exit=!PRODUCT_CODE!
     >> "%RUN_LOG%" echo [fpkt_api_run_all] failed %%P exit=!PRODUCT_CODE!
     if not defined EXIT_CODE set "EXIT_CODE=!PRODUCT_CODE!"
+    if "!PRODUCT_CODE!"=="87" set "EXIT_CODE=87"
     set "FAILED_PRODUCTS=!FAILED_PRODUCTS! %%P(!PRODUCT_CODE!)"
+    rem An unknown DB outcome must never enter the automatic retry list.
+    if "!PRODUCT_CODE!"=="86" if not "!NO_RETRY_CODE!"=="87" set "NO_RETRY_CODE=86"
+    if "!PRODUCT_CODE!"=="87" set "NO_RETRY_CODE=87"
     if "!PRODUCT_CODE!"=="86" (
       set "NO_RETRY_PRODUCTS=!NO_RETRY_PRODUCTS! %%P(!PRODUCT_CODE!)"
       echo [fpkt_api_run_all] diagnostic stop %%P - automatic retry disabled
       >> "%RUN_LOG%" echo [fpkt_api_run_all] diagnostic stop %%P - automatic retry disabled
     ) else (
-      set "FAILED_PRODUCT_NAMES=!FAILED_PRODUCT_NAMES! %%P"
+      if "!PRODUCT_CODE!"=="87" (
+        set "NO_RETRY_PRODUCTS=!NO_RETRY_PRODUCTS! %%P(!PRODUCT_CODE!)"
+        echo [fpkt_api_run_all] DB result unknown %%P - check both tables before retrying
+        >> "%RUN_LOG%" echo [fpkt_api_run_all] DB result unknown %%P - check both tables before retrying
+      ) else (
+        set "FAILED_PRODUCT_NAMES=!FAILED_PRODUCT_NAMES! %%P"
+      )
     )
     if /I not "%FPKT_CONTINUE_ON_PRODUCT_FAIL%"=="1" goto fail
   ) else (
@@ -220,7 +251,7 @@ if defined FAILED_PRODUCT_NAMES if /I "%FPKT_PRODUCT_RETRY_AFTER_ALL%"=="1" (
   set "FAILED_PRODUCTS=!NO_RETRY_PRODUCTS!"
   set "FAILED_PRODUCT_NAMES="
   set "EXIT_CODE="
-  if defined NO_RETRY_PRODUCTS set "EXIT_CODE=86"
+  if defined NO_RETRY_PRODUCTS set "EXIT_CODE=!NO_RETRY_CODE!"
   for %%P in (!RETRY_PRODUCTS!) do (
     set "PRODUCT_LOG=%RUN_DIR%\%%P_retry_console.log"
     echo [fpkt_api_run_all] retry %%P
@@ -237,6 +268,7 @@ if defined FAILED_PRODUCT_NAMES if /I "%FPKT_PRODUCT_RETRY_AFTER_ALL%"=="1" (
       echo [fpkt_api_run_all] retry_failed %%P exit=!PRODUCT_CODE!
       >> "%RUN_LOG%" echo [fpkt_api_run_all] retry_failed %%P exit=!PRODUCT_CODE!
       if not defined EXIT_CODE set "EXIT_CODE=!PRODUCT_CODE!"
+      if "!PRODUCT_CODE!"=="87" set "EXIT_CODE=87"
       set "FAILED_PRODUCTS=!FAILED_PRODUCTS! %%P(!PRODUCT_CODE!)"
       set "FAILED_PRODUCT_NAMES=!FAILED_PRODUCT_NAMES! %%P"
     ) else (

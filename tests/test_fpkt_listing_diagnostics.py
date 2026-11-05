@@ -139,6 +139,10 @@ class ListingTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.folder = Path(self.temp.name)
+        (self.folder / "fpkt_api").mkdir()
+        root = patch.object(ops, "ROOT", self.folder)
+        root.start()
+        self.addCleanup(root.stop)
         printer = patch.object(ops, "safe_print")
         printer.start()
         self.addCleanup(printer.stop)
@@ -255,7 +259,7 @@ class ListingTests(unittest.TestCase):
         self.assertEqual((code, listing.call_count, email.call_count), (86, 2, 1))
         external.assert_not_called()
 
-    def run_collection(self, main_sizes, bsr_sizes, *, allow_qa=False, bsr_target=10):
+    def run_collection(self, main_sizes, bsr_sizes, *, allow_qa=False, bsr_target=10, insert_result=None, real_qa=False, screen_size="108 cm (43 inchs)"):
         args = argparse.Namespace(insecure=False, query=None, product="tv", out_dir=self.folder,
             real_batch_id=False, db_insert=True, db_dry_run=False, api_dir=self.folder,
             main_target=30, max_pages_main=30, bsr_target=bsr_target, max_pages_bsr=15,
@@ -266,14 +270,20 @@ class ListingTests(unittest.TestCase):
             sizes = bsr_sizes if sort == "popularity" else main_sizes
             return response(sizes[page-1], sum(sizes[:page-1]))
         def detail(*args, **kwargs):
-            return {"count_of_star_ratings": "100", "count_of_reviews": "0"}, []
+            return {"count_of_star_ratings": "100", "count_of_reviews": "0",
+                    "screen_size": screen_size, "sku": "test", "model_year": "2026"}, []
+        qa = (patch.object(ops, "validate_schema_outputs", wraps=ops.validate_schema_outputs) if real_qa
+              else patch.object(ops, "validate_schema_outputs", return_value=([], [])))
         with patch.object(ops, "listing_page", side_effect=listing), \
                 patch.object(ops, "detail_from_api_with_retries", side_effect=detail) as details, \
                 patch.object(ops, "fetch_text", side_effect=AssertionError("no HTTP permitted")), \
-                patch.object(ops, "validate_schema_outputs", return_value=([], [])), \
-                patch.object(ops, "insert_into_db", return_value=(0, [])) as insert, \
+                qa, \
+                patch.object(ops, "insert_into_db", return_value=insert_result or (0, ["[insert] OK: tv retail=30 list=30"])) as insert, \
                 patch.object(ops, "send_email_report", return_value=(True, [])) as email:
             _, lines, code = ops.run(args)
+        # The CLI removes the pending marker only after emitting final output.
+        if args._db_pending_to_clear:
+            args._db_pending_to_clear.unlink()
         self.assertEqual(details.call_count, 30)  # Collection must complete even when mixed.
         for name, expected in (("main_final.csv", 30), ("bsr_final.csv", bsr_target), ("detail.csv", 30)):
             import csv
@@ -313,6 +323,94 @@ class ListingTests(unittest.TestCase):
         self.assertEqual(code, 86)
         insert.assert_not_called()
 
+    def test_missing_db_counts_blocks_future_scheduled_insert(self):
+        code, lines, insert, email = self.run_collection([10, 10, 10], [10], insert_result=(0, ["missing counts"]))
+        self.assertEqual(code, 87)
+        insert.assert_called_once()
+        email.assert_called_once()
+        self.assertTrue(any("result unknown" in line for line in lines))
+        marker = self.folder / "fpkt_api/.db_pending_tv.json"
+        self.assertTrue(marker.exists())
+        args = argparse.Namespace(insecure=False, query=None, product="tv", out_dir=self.folder / "next",
+            real_batch_id=False, db_insert=True, db_dry_run=False, api_dir=self.folder)
+        with patch.object(ops, "listing_until") as listing:
+            _, lines, code = ops.run(args)
+        self.assertEqual(code, 87)
+        listing.assert_not_called()
+        self.assertTrue(any(str(marker) in line for line in lines))
+
+    def test_wrong_db_counts_are_not_reported_as_success(self):
+        code, lines, _, _ = self.run_collection([10, 10, 10], [10],
+            insert_result=(0, ["[insert] OK: tv retail=29 list=30"]))
+        self.assertEqual(code, 87)
+        self.assertTrue(any("retail=29/30" in line for line in lines))
+
+    def test_screen_size_variants_reach_db_after_real_quality_check(self):
+        code, _, insert, _ = self.run_collection([10, 10, 10], [10], real_qa=True)
+        self.assertEqual(code, 0)
+        insert.assert_called_once()
+        self.assertFalse((self.folder / "fpkt_api/.db_pending_tv.json").exists())
+
+    def test_invalid_screen_size_still_blocks_db(self):
+        code, lines, insert, _ = self.run_collection([10, 10, 10], [10], real_qa=True, screen_size="cm inch")
+        self.assertEqual(code, 1)
+        insert.assert_not_called()
+        self.assertTrue(any("fatal_qa=" in line for line in lines))
+        self.assertFalse((self.folder / "fpkt_api/.db_pending_tv.json").exists())
+
+
+class TvScreenSizeTests(unittest.TestCase):
+    def test_screen_size_format_accepts_source_variants_and_rejects_invalid(self):
+        for value in ("108 cm (43 inchs)", "108 cm (43 inch)", "108 cm (43 inches)", "108cm (43 inch)"):
+            with self.subTest(value=value):
+                issues, _ = ops.validate_schema_outputs("tv", [{"item": "TVSHRZGTXVGNCQYD", "screen_size": value}], [], 20)
+                self.assertNotIn("screen_size_format", [issue["check"] for issue in issues])
+        for value in ("cm inch", "108 cm (inch)", "108 cm", "43 inch"):
+            with self.subTest(value=value):
+                issues, _ = ops.validate_schema_outputs("tv", [{"item": "TVSHRZGTXVGNCQYD", "screen_size": value}], [], 20)
+                self.assertIn("screen_size_format", [issue["check"] for issue in issues])
+
+    def test_extraction_prefers_valid_size(self):
+        with patch.object(ops, "detail_label_values", return_value=["43 inch", "108 cm (43 inchs)"]):
+            self.assertEqual(ops.screen_size_value({}), "108 cm (43 inchs)")
+
+
+class DbRetryTests(unittest.TestCase):
+    def test_live_insert_error_or_timeout_never_retries(self):
+        from subprocess import CompletedProcess, TimeoutExpired
+        for outcome in (CompletedProcess([], 1, stdout="", stderr="failed"), TimeoutExpired("insert", 30)):
+            with self.subTest(outcome=outcome), patch.object(ops.subprocess, "run", side_effect=[outcome]) as invoke:
+                code, _ = ops.insert_into_db(Path("unused.jsonl"), 0)
+                self.assertEqual(code, 87)
+                self.assertEqual(invoke.call_count, 1)
+
+    def test_inherited_dry_run_cannot_be_mistaken_for_live_insert(self):
+        with patch.dict(os.environ, {"SIEL_INSERT_DRY_RUN": "1"}), \
+                patch.object(ops.subprocess, "run") as invoke:
+            code, lines = ops.insert_into_db(Path("unused.jsonl"), 0)
+        self.assertEqual(code, 87)
+        self.assertTrue(any("conflicting dry-run" in line for line in lines))
+        invoke.assert_not_called()
+
+    def test_marker_stays_if_final_console_output_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            marker = Path(temp) / "pending.json"
+            marker.write_text("{}")
+            def completed_run(args):
+                args._db_pending_to_clear = marker
+                return Path(temp), [], 0
+            with patch.object(sys, "argv", ["ops_test.py", "--product", "tv"]), \
+                    patch.object(ops, "run", side_effect=completed_run), \
+                    patch.object(ops, "safe_print", side_effect=BrokenPipeError):
+                with self.assertRaises(BrokenPipeError):
+                    ops.main()
+            self.assertTrue(marker.exists())
+            with patch.object(sys, "argv", ["ops_test.py", "--product", "tv"]), \
+                    patch.object(ops, "run", side_effect=completed_run), \
+                    patch.object(ops, "safe_print"):
+                self.assertEqual(ops.main(), 0)
+            self.assertFalse(marker.exists())
+
 
 @unittest.skipUnless(os.name == "nt", "Windows batch control flow")
 class SchedulerTests(unittest.TestCase):
@@ -340,6 +438,50 @@ class SchedulerTests(unittest.TestCase):
         self.assertIn("RETRY= ref", result.stdout)
         self.assertIn("FAILED= tv(86)", result.stdout)
         self.assertIn("CODE=86", result.stdout)
+
+    def test_unknown_commit_is_not_retried_when_other_product_fails(self):
+        source = (ROOT / "schedule/fpkt_api_run_all.bat").read_text(encoding="utf-8")
+        first = source.index('  if not "!PRODUCT_CODE!"=="0" (')
+        last = source.index('    if /I not "%FPKT_CONTINUE_ON_PRODUCT_FAIL%"', first)
+        record_failure = source[first:last] + "  )\n"
+        first = source.index('  set "FIRST_PASS_FAILED_PRODUCTS=')
+        last = source.index('  for %%P in (!RETRY_PRODUCTS!)', first)
+        reset_retry = source[first:last]
+        with tempfile.TemporaryDirectory() as temp:
+            harness = Path(temp) / "retry_unknown.bat"
+            harness.write_text(
+                '@echo off\nsetlocal EnableDelayedExpansion\nset "RUN_LOG=NUL"\n'
+                'set "FAILED_PRODUCTS="\nset "FAILED_PRODUCT_NAMES="\nset "NO_RETRY_PRODUCTS="\n'
+                'set "NO_RETRY_CODE="\nset "EXIT_CODE="\nset "PRODUCT_CODE=87"\nfor %%P in (tv) do (\n' + record_failure + ')\n'
+                'set "PRODUCT_CODE=1"\nfor %%P in (ref) do (\n' + record_failure + ')\n' + reset_retry +
+                '\necho RETRY=!RETRY_PRODUCTS!\necho FAILED=!FAILED_PRODUCTS!\necho CODE=!EXIT_CODE!\n',
+                encoding="ascii", newline="\r\n")
+            result = subprocess.run(["cmd.exe", "/d", "/c", str(harness)], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("RETRY= ref", result.stdout)
+        self.assertIn("FAILED= tv(87)", result.stdout)
+        self.assertIn("CODE=87", result.stdout)
+
+    def test_pending_result_preserves_old_evidence(self):
+        source = (ROOT / "schedule/fpkt_api_run_all.bat").read_text(encoding="utf-8")
+        start = source.index('rem Preserve old evidence')
+        end = source.index('for /f %%I in', start)
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            (folder / "fpkt_api").mkdir()
+            (folder / "fpkt_api/.db_pending_tv.json").write_text("{}")
+            (folder / "python.cmd").write_text('@echo off\necho called > called.txt\n', encoding="ascii")
+            harness = folder / "cleanup_harness.bat"
+            harness.write_text('@echo off\nsetlocal EnableDelayedExpansion\ncd /d "%~dp0"\n'
+                               'set "RUN_MODE=insert"\nset "FPKT_PRODUCTS=tv"\n' + source[start:end],
+                               encoding="ascii", newline="\r\n")
+            env = os.environ.copy()
+            env["PATH"] = str(folder) + os.pathsep + env.get("PATH", "")
+            result = subprocess.run(["cmd.exe", "/d", "/c", str(harness)], cwd=folder,
+                                    env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("cleanup skipped", result.stdout)
+            self.assertFalse((folder / "called.txt").exists())
 
 
 if __name__ == "__main__":

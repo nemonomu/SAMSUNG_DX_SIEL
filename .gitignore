@@ -65,3 +65,4 @@ test_output/
 !requirements.txt
 .gstack/
 .batch_ids/
+fpkt_api/.db_pending_*.json
