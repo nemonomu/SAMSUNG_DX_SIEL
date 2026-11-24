@@ -202,7 +202,9 @@ def _make_dual(orig_emit):
         if not key:
             return
         if stage == 'main':
-            _main_cache.setdefault(key, rec)
+            first = _main_cache.setdefault(key, rec)
+            if rec.get('sku_status') == 'Sponsored' and first.get('sku_status') != 'Sponsored':
+                _main_cache[key] = dict(first, sku_status='Sponsored')
         elif stage == 'bsr':
             _bsr_cache.setdefault(key, rec)
         elif stage == 'detail':

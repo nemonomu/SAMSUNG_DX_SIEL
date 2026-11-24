@@ -631,6 +631,9 @@ def main() -> int:
                     entry[stage] = rec
                 elif stage == 'main':
                     n_dup_main += 1
+                    if ((rec.get('account_name') or '').lower() == 'flipkart'
+                            and rec.get('sku_status') == 'Sponsored'):
+                        entry['main']['sku_status'] = 'Sponsored'
                 else:
                     n_dup_bsr += 1
                 if stage == 'main':
