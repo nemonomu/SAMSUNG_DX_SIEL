@@ -109,6 +109,7 @@ DB_QUERY_VIEW_COLS_BY_PRODUCT = {
 TV_RETAIL_COM_COLS = RETAIL_COM_COLS_BY_PRODUCT["tv"]
 TV_PRODUCT_LIST_COLS = PRODUCT_LIST_COLS_BY_PRODUCT["tv"]
 DB_QUERY_VIEW_COLS = DB_QUERY_VIEW_COLS_BY_PRODUCT["tv"]
+DB_RESULT_UNKNOWN_EXIT_CODE = 87
 
 
 def safe_print(value: str) -> None:
@@ -1084,10 +1085,18 @@ def detail_spec_texts(response: dict[str, Any]) -> list[str]:
     return found
 
 
+def valid_screen_size(value: str) -> bool:
+    # Flipkart uses inch, inches and inchs; keep the original measurement.
+    return bool(
+        re.search(r"\d+(?:\.\d+)?\s*cm\b", value, re.I)
+        and re.search(r"\d+(?:\.\d+)?\s*inch(?:es|s)?\b", value, re.I)
+    )
+
+
 def screen_size_value(response: dict[str, Any]) -> str | None:
     values = detail_label_values(response, "Display Size")
     for value in values:
-        if re.search(r"\bcm\b", value, re.I) and re.search(r"\binch\b", value, re.I):
+        if valid_screen_size(value):
             return value
     return values[0] if values else None
 
@@ -1575,6 +1584,7 @@ def listing_schema_record(
         "account_name": "flipkart",
         "product": product,
         "stage": stage,
+        "_preserve_listing_rank": True,
         "page_no": row.get("page"),
         rank_field: rank,
         "fsn": fsn,
@@ -1735,9 +1745,7 @@ def validate_schema_outputs(
 
         if product == "tv":
             screen_size = text_or_none(row.get("screen_size"))
-            if screen_size and not (
-                re.search(r"\bcm\b", screen_size, re.I) and re.search(r"\binch\b", screen_size, re.I)
-            ):
+            if screen_size and not valid_screen_size(screen_size):
                 issues.append(qa_issue("screen_size_format", item, "screen_size should include cm and inch",
                                        screen_size=screen_size))
         elif product == "hhp":
@@ -1997,8 +2005,11 @@ def insert_into_db(jsonl_path: Path, max_n: int, dry_run: bool = False) -> tuple
     env = os.environ.copy()
     if dry_run:
         env["SIEL_INSERT_DRY_RUN"] = "1"
+    elif env.get("SIEL_INSERT_DRY_RUN", "").lower() in ("1", "true", "yes", "y"):
+        return DB_RESULT_UNKNOWN_EXIT_CODE, ["[db_insert] conflicting dry-run environment; no INSERT started"]
     timeout_seconds = env_int("FPKT_DB_INSERT_TIMEOUT_SECONDS", 300, minimum=30)
-    retries = env_int("FPKT_DB_INSERT_RETRIES", 3, minimum=1)
+    # A failed live process may have committed before its response was lost.
+    retries = env_int("FPKT_DB_INSERT_RETRIES", 3, minimum=1) if dry_run else 1
     retry_delay = env_int("FPKT_DB_INSERT_RETRY_DELAY_SECONDS", 45, minimum=0)
     lines = [
         f"[db_insert] command={' '.join(command)}",
@@ -2020,18 +2031,20 @@ def insert_into_db(jsonl_path: Path, max_n: int, dry_run: bool = False) -> tuple
                 timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
-            last_returncode = 124
+            last_returncode = 124 if dry_run else DB_RESULT_UNKNOWN_EXIT_CODE
             lines.append(f"[db_insert] timeout after {timeout_seconds}s")
             append_process_output(lines, "[db_insert][stdout]", exc.stdout)
             append_process_output(lines, "[db_insert][stderr]", exc.stderr)
             break
 
-        last_returncode = proc.returncode
+        last_returncode = proc.returncode if dry_run else DB_RESULT_UNKNOWN_EXIT_CODE
         lines.append(f"[db_insert] returncode={proc.returncode}")
         append_process_output(lines, "[db_insert][stdout]", proc.stdout)
         append_process_output(lines, "[db_insert][stderr]", proc.stderr)
         if proc.returncode == 0:
             return 0, lines
+        if not dry_run:
+            lines.append("[db_insert] result unknown: check the batch in both DB tables before retrying")
         if attempt < retries and retry_delay:
             lines.append(f"[db_insert] retrying after {retry_delay}s")
             time.sleep(retry_delay)
@@ -2264,6 +2277,8 @@ def summarize_listing(stage: str, raw: list[dict[str, Any]], final: list[dict[st
 
 
 def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
+    args._db_insert_started = False
+    args._db_pending_to_clear = None
     if args.insecure:
         os.environ["FPKT_API_INSECURE_SSL"] = "1"
     query = args.query or PRODUCT_QUERY[args.product]
@@ -2288,6 +2303,13 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         "",
     ]
     (out_dir / "command.txt").write_text(" ".join(sys.argv) + "\n", encoding="utf-8")
+    # Keep this marker across runs until the previous DB outcome is confirmed.
+    pending_path = ROOT / "fpkt_api" / f".db_pending_{args.product}.json"
+    marker_created = False
+    if args.db_insert and not args.db_dry_run and pending_path.exists():
+        lines.append(f"[db_insert] result unknown from an earlier run; check both DB tables and {pending_path} before retrying")
+        (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return out_dir, lines, DB_RESULT_UNKNOWN_EXIT_CODE
 
     main_raw, main_final, main_pages, main_listing_errors, main_listing_pages = listing_until(
         args.api_dir,
@@ -2553,18 +2575,9 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     elif listing_errors:
         lines.append(f"[detail] skipped: listing_errors={len(listing_errors)}")
 
-    failed_keys = {str(row.get("product_id")) for row in errors if row.get("product_id")}
-    if failed_keys:
-        lines.append(f"[schema_filter] excluded_failed_items={len(failed_keys)}")
-        main_for_schema = [row for row in main_final if str(key_for_row(row)) not in failed_keys]
-        bsr_for_schema = [row for row in bsr_final if str(key_for_row(row)) not in failed_keys]
-        details_for_schema = [row for row in details if str(key_for_row(row)) not in failed_keys]
-        reviews_for_schema = [row for row in reviews if str(key_for_row(row)) not in failed_keys]
-    else:
-        main_for_schema = main_final
-        bsr_for_schema = bsr_final
-        details_for_schema = details
-        reviews_for_schema = reviews
+    if errors:
+        # A failed detail or review must not discard the observed listing.
+        lines.append(f"[schema] preserved listing for detail/review errors={len(errors)}")
 
     rating_count_sources = {
         source: sum(row.get("_rating_count_source") == source for row in details)
@@ -2599,7 +2612,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     db_query_view_cols = DB_QUERY_VIEW_COLS_BY_PRODUCT[product_key]
     api_run_path = out_dir / "api_run.jsonl"
     retail_rows, product_list_rows, jsonl_rows = build_schema_outputs(
-        args.product, main_for_schema, bsr_for_schema, details_for_schema, reviews_for_schema, crawl_dt, batch_id
+        args.product, main_final, bsr_final, details, reviews, crawl_dt, batch_id
     )
     write_csv_fields(out_dir / f"{product_key}_retail_com_preview.csv", retail_rows, retail_cols)
     write_csv_fields(out_dir / f"{product_key}_product_list_preview.csv", product_list_rows, product_list_cols)
@@ -2608,7 +2621,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
     write_csv_fields(out_dir / "output.csv", retail_rows, retail_cols)
     write_csv_fields(out_dir / "db_query_view.csv", retail_rows, db_query_view_cols)
     write_jsonl(api_run_path, jsonl_rows)
-    qa_issues, qa_summary = validate_schema_outputs(args.product, retail_rows, reviews_for_schema, args.max_reviews_per_product)
+    qa_issues, qa_summary = validate_schema_outputs(args.product, retail_rows, reviews, args.max_reviews_per_product)
     write_csv(out_dir / "qa_issues.csv", qa_issues)
     lines.append(
         f"[schema:{product_key}_retail_com] rows={len(retail_rows)} "
@@ -2633,7 +2646,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         exit_code = STOP_EXIT_CODE
     elif args.db_insert:
         if errors:
-            lines.append(f"[db_insert] excluded detail/review errors={len(errors)}")
+            lines.append(f"[db_insert] retaining listings with detail/review errors={len(errors)}; see errors.csv")
         # DIFF (review_count_diff, missing_* 등 informational) 는 INSERT 차단 X — fatal 만 차단.
         fatal_qa = [row for row in qa_issues if is_fatal_qa_issue(row)]
         diff_qa = [row for row in qa_issues if not is_fatal_qa_issue(row)]
@@ -2656,11 +2669,26 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
             product_list_db_ok = False
             exit_code = 1
         else:
-            insert_code, insert_lines = insert_into_db(api_run_path, args.insert_max_n, args.db_dry_run)
+            try:
+                if not args.db_dry_run:
+                    # Exclusive creation prevents two local runs from writing simultaneously.
+                    with pending_path.open("x", encoding="utf-8") as marker:
+                        json.dump({"product": args.product, "batch_id": batch_id,
+                                   "jsonl_path": str(api_run_path)}, marker)
+                    marker_created = True
+                args._db_insert_started = not args.db_dry_run
+                insert_code, insert_lines = insert_into_db(api_run_path, args.insert_max_n, args.db_dry_run)
+            except FileExistsError:
+                insert_code = DB_RESULT_UNKNOWN_EXIT_CODE
+                insert_lines = [f"[db_insert] pending marker exists: {pending_path}; check DB before retrying"]
             lines.extend(insert_lines)
             if insert_code != 0:
-                lines.append("[db_insert] FAIL")
-                db_status = f"FAIL returncode={insert_code}"
+                if insert_code == DB_RESULT_UNKNOWN_EXIT_CODE:
+                    lines.append(f"[db_insert] result unknown; check batch_id={batch_id} in both DB tables before retrying; marker={pending_path}")
+                    db_status = "result unknown: check DB before retrying"
+                else:
+                    lines.append("[db_insert] FAIL")
+                    db_status = f"FAIL returncode={insert_code}"
                 retail_db_ok = False
                 product_list_db_ok = False
                 exit_code = insert_code or 1
@@ -2668,10 +2696,16 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
                 inserted_retail, inserted_list = parse_db_insert_counts(insert_lines, product_key)
                 expected_retail = len(retail_rows) if args.insert_max_n == 0 else min(len(retail_rows), args.insert_max_n)
                 expected_list = len(product_list_rows) if args.insert_max_n == 0 else min(len(product_list_rows), args.insert_max_n)
-                retail_db_ok = True if inserted_retail is None else inserted_retail == expected_retail
-                product_list_db_ok = True if inserted_list is None else inserted_list == expected_list
-                lines.append("[db_insert] OK")
-                db_status = "DRY_RUN OK" if args.db_dry_run else "OK"
+                retail_db_ok = inserted_retail == expected_retail
+                product_list_db_ok = inserted_list == expected_list
+                if retail_db_ok and product_list_db_ok:
+                    lines.append(f"[db_insert] OK retail={inserted_retail}/{expected_retail} list={inserted_list}/{expected_list}")
+                    db_status = "DRY_RUN OK" if args.db_dry_run else "OK"
+                else:
+                    # The child may have committed even if its counts cannot be confirmed.
+                    lines.append(f"[db_insert] result unknown retail={inserted_retail}/{expected_retail} list={inserted_list}/{expected_list}; check DB before retrying")
+                    db_status = "result unknown: check DB before retrying"
+                    exit_code = 1 if args.db_dry_run else DB_RESULT_UNKNOWN_EXIT_CODE
     lines.append("")
 
     lines.append(
@@ -2762,7 +2796,7 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
         elif has_email_warning:
             subject = f"WARNING {subject}"
         (out_dir / "email_report.txt").write_text(body, encoding="utf-8")
-        if args.email_report_success_only and exit_code != 0:
+        if args.email_report_success_only and exit_code not in (0, DB_RESULT_UNKNOWN_EXIT_CODE):
             lines.append(f"[email] suppressed: success_only exit={exit_code}")
         else:
             _sent, email_lines = send_email_report(subject, body)
@@ -2770,6 +2804,8 @@ def run(args: argparse.Namespace) -> tuple[Path, list[str], int]:
 
     (out_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (out_dir / "command.txt").write_text(" ".join(sys.argv) + "\n", encoding="utf-8")
+    if marker_created and exit_code == 0:
+        args._db_pending_to_clear = pending_path
     return out_dir, lines, exit_code
 
 
@@ -2857,11 +2893,18 @@ def main() -> int:
             safe_print(line)
         safe_print(f"[saved] {out_dir}")
         safe_print(f"[summary] {out_dir / 'summary.txt'}")
-        return 1
+        return DB_RESULT_UNKNOWN_EXIT_CODE if getattr(args, "_db_insert_started", False) else 1
     for line in lines:
         safe_print(line)
     safe_print(f"[saved] {out_dir}")
     safe_print(f"[summary] {out_dir / 'summary.txt'}")
+    if args._db_pending_to_clear:
+        # Clear only after the committed result and final output were recorded.
+        try:
+            args._db_pending_to_clear.unlink()
+        except OSError as exc:
+            safe_print(f"[db_insert] could not clear pending marker: {exc}")
+            return DB_RESULT_UNKNOWN_EXIT_CODE
     return exit_code
 
 

@@ -431,6 +431,8 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
         d = detail.get(key, {})
         # account/product 정규화 (primary 기준)
         account = (primary.get('account_name') or d.get('account_name') or '').capitalize()
+        # API listing ranks describe the observed order, even when ranks have gaps.
+        preserve_rank = account.lower() == 'flipkart' and primary.get('_preserve_listing_rank') is True
         prod = (primary.get('product') or d.get('product') or '').upper()
         item = fpkt_pid_from_record(primary) or fpkt_pid_from_record(d) or d.get('fsn') or d.get('asin') or primary.get('fsn') or primary.get('asin')
         sku = d.get('sku') or primary.get('sku')
@@ -554,9 +556,9 @@ def merge(listing: dict, detail: dict, max_n: int = 10,
             'sku_popularity': primary.get('sku_popularity') or d.get('sku_popularity'),
             'sku_status':     primary.get('sku_status'),
             # 순위 — main + bsr 둘 다 보존 (같은 SKU 가 양쪽에 있으면 함께 set)
-            'main_rank': (main_rank_by_key.get(key) if (renumber_ranks and m)
+            'main_rank': (main_rank_by_key.get(key) if (renumber_ranks and not preserve_rank and m)
                           else (parse_int_safe(m.get('main_rank')) if m else None)),
-            'bsr_rank':  (bsr_rank_by_key.get(key) if (renumber_ranks and b)
+            'bsr_rank':  (bsr_rank_by_key.get(key) if (renumber_ranks and not preserve_rank and b)
                           else (parse_int_safe(b.get('bsr_rank')) if b else None)),
             # TV
             'screen_size':                      d.get('screen_size'),
